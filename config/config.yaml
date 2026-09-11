@@ -1,0 +1,592 @@
+# predictive-maintenance-ml configuration
+# Blocks marked [plant] are plant-behavior parameters (CLAUDE.md section 8): changeable between runs with approval.
+# Blocks marked [fixed] are measurement definitions, indicator formulas, rule thresholds, splits and chance levels:
+# set once at config approval, never changed to hit a target.
+# Ranges in comments are the CLAUDE.md ranges each value sits inside.
+
+meta:                                     # [fixed]
+  config_version: 9
+  generator_version: 0.1.0
+  run_seed: 20230701
+  record: {start: 2023-07-01, end: 2026-06-30}
+  shadow: {start: 2026-04-01, end: 2026-06-30}
+  timezone_store: UTC
+  timezone_report: America/Chicago
+
+# =====================================================================
+# Plant behavior
+# =====================================================================
+
+shop:                                     # [plant] section 4
+  calendar:
+    shifts_local:
+      first: {start: "06:00", end: "14:30"}
+      second: {start: "14:30", end: "23:00"}
+    workdays: [mon, tue, wed, thu, fri]
+    holidays: [new_years_day, memorial_day, independence_day, labor_day, thanksgiving, day_after_thanksgiving, christmas_eve, christmas_day]
+    saturday_first_shift_prob: {hmc: 0.35, other: 0.10}     # "occasional Saturday first shift"
+  staffing: {supervisors: 1, technicians: 2}
+
+production:                               # [plant] sections 4, 5.4
+  utilization_cutting_over_scheduled:     # check 15: HMC cell 0.65 to 0.80
+    hmc: 0.72
+    vmc: 0.55
+    lathe: 0.55
+    mill_turn: 0.60
+    grinder: 0.40
+  setup_share_of_noncutting: 0.55
+  job_length_days_lognormal: {median: 3.0, sigma: 0.7}
+  material_mix:                           # share of jobs by machine class
+    hmc: {aluminum: 0.35, steel: 0.30, stainless: 0.20, cast_iron: 0.15, titanium: 0.0}
+    vmc: {aluminum: 0.45, steel: 0.30, stainless: 0.20, cast_iron: 0.05, titanium: 0.0}
+    lathe: {aluminum: 0.30, steel: 0.40, stainless: 0.30, cast_iron: 0.0, titanium: 0.0}
+    mill_turn: {aluminum: 0.35, steel: 0.35, stainless: 0.30, cast_iron: 0.0, titanium: 0.0}
+    grinder: {aluminum: 0.0, steel: 0.80, stainless: 0.20, cast_iron: 0.0, titanium: 0.0}
+  cutting_regime_by_material:             # spindle speed as fraction of rated, spindle load pct (mean, sd)
+    aluminum: {speed_frac: [0.67, 1.00], load_pct: [22, 6]}
+    steel: {speed_frac: [0.33, 0.67], load_pct: [38, 8]}
+    stainless: {speed_frac: [0.25, 0.50], load_pct: [45, 9]}
+    cast_iron: {speed_frac: [0.33, 0.58], load_pct: [40, 8]}
+    titanium: {speed_frac: [0.25, 0.38], load_pct: [58, 9]}
+  flutes_by_material: {aluminum: [2, 3], steel: [4, 5], stainless: [4, 6], cast_iron: [5, 8], titanium: [4, 6]}
+  programs_active_per_machine: {hmc: 40, vmc: 30, lathe: 25, mill_turn: 30, grinder: 10}
+  new_programs_per_machine_month: {hmc: 3.0, vmc: 4.0, lathe: 4.0, mill_turn: 3.0, grinder: 0.5}
+  tsc_use_share_of_cutting: 0.45            # each program's mean share of cutting minutes with the pump on; approved 2026-10-21
+  flood_use_share_of_cutting: 0.75
+  coolant_share_spread: 0.15                # per-program share drawn uniform within +/- spread of the mean (keeps the mean)
+
+bearing_signature:                        # [plant] 8.1, McFadden and Smith; D'Elia et al.; Randall and Antoni
+  resonance_fn_hz:                        # 4,000 to 8,000 per point
+    spindle_front: 6800
+    spindle_rear: 6200
+    tsc_pump: 5200
+    flood_pump: 4600
+    compressor_motor: 4400
+    compressor_airend: 5600
+  resonance_fn_jitter_frac_by_point: 0.05 # point-to-point spread around the class value
+  housing_resonance_gain_db: [6.0, 15.0]  # healthy broadband shaped by the point's SDOF housing response; resonance region this far above the floor, drawn per point; after run-02
+  damping_ratio: {spindle: 0.060, pump: 0.045, compressor: 0.040}      # 0.03 to 0.06; spindle 0.050 -> 0.060 after pilot-01, approved 2026-10-20
+  slip_jitter_frac: {spindle: 0.015, pump: 0.020, compressor: 0.020}   # 0.01 to 0.03
+  amplitude_modulation_depth:             # inner-race load-zone depth drawn per instance by bearing type; after run-01 (was a single 0.6)
+    inner_race_at_shaft_by_kind: {angular_contact_ball: [0.1, 0.3], deep_groove_ball: [0.5, 0.8], cylindrical_roller: [0.5, 0.8]}
+    ball_at_cage: 0.4
+  measurement_noise_snr_db: {spindle: 26, pump: 24, compressor: 24}
+  defect_location_shares: {outer_race: 0.50, inner_race: 0.35, ball: 0.15}       # added pre-pilot, approved 2026-10-20
+  axis_gain:                              # x radial, y radial (load direction), z axial; added pre-pilot
+    impacts: [0.7, 1.0, 0.3]
+    noise: [1.0, 1.0, 0.6]
+  background:
+    shaft_harmonics_g:                    # 1x, 2x, 3x acceleration amplitude at rated speed, healthy
+      spindle: [0.020, 0.010, 0.005]
+      pump: [0.040, 0.015, 0.008]
+      compressor_motor: [0.050, 0.020, 0.010]
+      compressor_airend: [0.060, 0.025, 0.010]
+    lobe_pass_harmonics_g: [0.050, 0.020]  # airend, male rotor speed times lobe count
+    tooth_pass_harmonics_g_per_load_pct: [0.0020, 0.0008, 0.0004]
+    broadband_g_rms:                      # healthy structural and process noise, 10 Hz to 10 kHz
+      spindle_light: 0.16
+      spindle_heavy: 0.23
+      pump: 0.30
+      compressor: 0.35
+    periodic_variance_share_max: 0.35     # keeps healthy kurtosis at or above 2.8 (check 2)
+  transfer_function_by_mounting:          # gain and resonance shift after a remount
+    remount_gain_range: [0.80, 1.25]
+    remount_fn_shift_frac_range: [-0.06, 0.06]
+  severity_to_impact:
+    impact_peak_g_at_hi_1: {spindle: 6.0, pump: 9.0, compressor: 7.0}
+    exponent: 1.0                         # impact amplitude proportional to health index
+    amplitude_scatter_sigma_log: 0.3       # per-impact lognormal amplitude scatter (Antoni and Randall); added after pilot-02
+  stage1_hf_rise_at_stage2: 0.5            # HF RMS rise from stage-1 broadband 2-10 kHz content, reached at stage-2 entry; added after pilot-01
+  stage4:
+    jitter_frac_at_failure: 0.15          # impacts smear, kurtosis and crest fall back
+    broadband_gain_at_failure: 3.5
+    shaft_harmonic_gain_at_failure: 2.5
+    temp_rise_c_at_failure: 9.0
+
+bearing_degradation:                      # [plant] 8.2, exponential model (MathWorks; Saxena et al.)
+  health_index:
+    phi: 0.0
+    theta_lognormal: {median: 0.010, sigma_log: 0.30}
+    beta_per_running_h:                   # normal (mean, sd); sets stage-2-to-failure lead (check 5)
+      spindle: [0.0065, 0.0013]           # about 7.5 weeks at 62 running h per week
+      tsc_pump: [0.0270, 0.0054]          # about 4 weeks at 28 h per week
+      flood_pump: [0.0162, 0.0032]        # about 4 weeks at 46 h per week
+      compressor: [0.0061, 0.0012]        # about 8 weeks on the duty unit
+    noise: {sd: 0.10, ar1_per_h: 0.98}    # about 10 percent near the alarm level
+  stage_thresholds_hi: {stage1: 0.0, stage2: 0.05, stage3: 0.25, stage4: 0.60}
+  failure: {hi_threshold: 1.0, offset_days: [0, 10]}
+  onset_weibull_shape: 2.1                # 1.8 to 2.4
+  characteristic_life_running_h:          # older machines at the low end of each range
+    spindle_front: {older: 18500, newer: 25000}     # 18,000 to 26,000
+    spindle_rear: {older: 30500, newer: 39000}      # 30,000 to 40,000
+    tsc_pump_motor: {older: 7500, newer: 10000}     # 7,000 to 11,000
+    flood_pump_motor: {older: 9500, newer: 13000}   # 9,000 to 14,000
+    compressor_motor: {older: 22000, newer: 28000}  # 20,000 to 30,000
+    compressor_airend: {older: 27000, newer: 38000} # 25,000 to 40,000
+  hazard_multipliers:
+    crash_remaining_life_factor: [0.3, 0.7]          # spindle front set, per collision above severity threshold
+    lubrication_loss: 0.5                            # remaining life multiplier while the state persists
+    age_class: {older: 1.0, newer: 1.0}              # age enters through characteristic life; kept neutral here
+
+lubrication:                              # [plant] 8.3
+  episodes_per_spindle_year: {older_hmc: 2.0, newer_hmc: 0.75}      # 1 to 3 on older; fewer on newer
+  hf_rise_frac: [0.30, 0.80]
+  temp_rise_c: [3.0, 8.0]
+  ramp_days: [5, 15]
+  recovery_days: [1, 3]
+  conversion_window_days: [20, 40]
+  missed_lube_pm_rate_multiplier: 1.5
+  inspection_detection_prob: 0.75         # temperature check finds an active episode
+
+crash:                                    # [plant] 8.4
+  rate_per_machine_year: 1.5              # base before multipliers; effective about 3.6 with multipliers (target 2 to 5 effective); after run-01, was 2.5
+  second_shift_multiplier: 1.5
+  new_program_first_week_multiplier: 3.0
+  severity_above_threshold_share: 0.10    # share of collisions above the register severity threshold
+  outcome_proportions: {no_effect: 0.975, brinelling: 0.015, immediate_failure: 0.010}
+  brinelling_initial_hi: 0.06             # stage 2 signature immediately after the event
+
+pump:                                     # [plant] 8.5
+  seal_wear: {onset_rate_per_pump_year: 0.30, growth_days_to_end: [60, 180]}
+  impeller_wear: {onset_rate_per_pump_year: 0.15, growth_days_to_end: [90, 240]}
+  wear_signature_at_end: {shaft_1x_gain: 2.0, broadband_gain: 1.6, temp_rise_c: 5.0}
+  tsc_pressure_drop_frac_at_wear_end: 0.20
+  cavitation:
+    rate_per_pump_year: {tsc: 3.0, flood: 2.0}
+    hf_rise_frac: [0.6, 2.0]
+    operator_topup_prob_per_day: 0.30     # after the controller low-pressure alarm
+    max_duration_days: 7
+  seal_failure:
+    rate_per_pump_year: {tsc: 0.25, flood: 0.10}
+    wear_hazard_multiplier: 3.0
+    pressure_drop_lead_h: [1, 6]
+
+compressor:                               # [plant] 8.6
+  lead_pattern_weeks: [CMP-01, CMP-01, CMP-02]       # weekly alternation, 2:1; standby about 0.6 of duty hours
+  lag_trim_share_of_lead_hours: 0.15
+  demand_frac_of_one_unit: {first_shift: 0.75, second_shift: 0.65, saturday: 0.50, off_shift: 0.0}
+  load_unload_band_bar: [6.9, 7.6]
+  discharge_temp_c: {base: 78.0, per_c_ambient: 0.5, per_load_frac: 10.0}
+  airend_lube_events_per_year_duty: 1     # exactly one per year, timing random
+  other_stoppages_per_running_year: 0.7   # trips and valve faults; a running year is the duty unit's running hours per year; added after pilot-01
+  other_stoppage_repair_hours: [2, 8]     # added with the stoppage rate
+  oil_sample:
+    particle_count_iso_code_healthy: [17, 15, 12]
+    particle_count_multiplier_before_stage3: [2.0, 4.0]   # in the quarter before stage 3
+    viscosity_cst: {nominal: 46.0, sd: 1.5}
+    water_ppm: {median: 150, sigma_log: 0.4}
+
+drawbar_force:                            # [plant] 5.3, monthly at PM, HMC only
+  nominal_kn: 18.0
+  gauge_sd_kn: 0.4
+  spring_fatigue_frac_per_year: 0.04
+  reset_on_spindle_rebuild: true
+  gauge_ids: [DBG-01]
+
+axis_wear:                                # [plant] 8.7, Bertolino et al. (2019)
+  events_in_record: [3, 5]                # count drawn uniformly, then placed
+  machine_weight: {older_vmc: 3.0, older_lathe: 3.0, newer_vmc: 1.0, newer_lathe: 1.0, hmc: 1.0, mill_turn: 1.0, grinder: 0.5}
+  friction_multiplier_at_end: [1.10, 1.30]          # axis load p95 drift 10 to 30 percent
+  preload_fraction_at_end: [0.50, 0.75]
+  duration_months: [6, 18]
+  backlash_entry_increase_um_at_end: [5, 15]
+
+other_stoppages:                          # [plant] 8.8, work-order-level stoppages per machine-year
+  rates_per_machine_year:
+    atc_fault: 0.025
+    pallet_changer_hydraulic: {hmc: 0.08, other: 0.0}
+    servo_drive: 0.025
+    electrical: 0.020
+    lube_system: 0.012
+    way_cover: 0.008
+    chip_conveyor: 0.012
+    coolant_pump_non_hmc: {hmc: 0.0, other: 0.020}
+  repair_hours:
+    atc_fault: [2, 8]
+    pallet_changer_hydraulic: [3, 10]
+    servo_drive: [4, 24]
+    electrical: [2, 12]
+    lube_system: [2, 6]
+    way_cover: [3, 8]
+    chip_conveyor: [2, 6]
+    coolant_pump_non_hmc: [4, 12]
+    ball_screw_or_guide: [24, 72]
+
+controller_events:                        # [plant] 5.2, alarms cleared at the machine without a work order
+  tool_breakage_per_cutting_hour: 0.004
+  alarms_per_machine_year:
+    atc_fault: 6.0
+    servo: 2.0
+    lube: 4.0
+    hydraulic_low_pressure: {hmc: 3.0, other: 0.0}
+    spindle_overheat: 0.5
+    overload_below_crash: 4.0
+
+benign:                                   # [plant] 8.9; episode count 10 to 20 per year
+  episodes_per_year:
+    heavy_new_program_hmc: 4.0            # regime shift on spindle points
+    coolant_concentration_drift_hmc: 4.0
+    compressor_room_heat: 2.0             # room above 32 C for 3 or more days
+  compressor_room_heat: {add_c: [3.0, 6.0], days: [3, 7], months: [6, 8]}   # shape of a heat spell; approved 2026-10-21
+  heavy_new_program_load_gain: [1.20, 1.45]
+  coolant_drift_spindle_load_gain: [1.04, 1.10]
+  coolant_drift_duration_days: [7, 21]
+  titanium_job: {machines: [HMC-01, HMC-02], start_window: [2024-09-01, 2025-03-31], duration_weeks: 4}
+  sensor_remounts:                        # two in the record
+    - {point: HMC-03-SP-F, date: 2024-08-12}
+    - {point: CMP-01-AE, date: 2025-10-06}
+  ambient_room_c: {annual_mean: 24.0, annual_amplitude: 11.0, daily_amplitude: 3.0, daily_peak_hour_local: 15, coldest_day_of_year: 20}
+  shop_ambient_c: {annual_mean: 22.0, annual_amplitude: 4.0}
+
+maintenance:                              # [plant] 8.10
+  pm_program:
+    hmc:
+      spindle_lube_check: {basis: calendar_days, interval: 30}
+      drawbar_force: {basis: calendar_days, interval: 30}
+      tsc_filter: {basis: calendar_days, interval: 30}
+      coolant_check: {basis: calendar_days, interval: 7}
+      way_lube_hydraulic: {basis: calendar_days, interval: 91}
+      backlash_check: {basis: calendar_days, interval: 182}
+      tsc_pump_unit_replacement: {basis: calendar_days, interval: 730}
+      spindle_rebuild_older: {basis: spindle_running_h, interval: 20000}
+    vmc_lathe_mill_turn:
+      lube: {basis: calendar_days, interval: 91}
+      backlash_check: {basis: calendar_days, interval: 365}
+    compressor:
+      oil_sample: {basis: calendar_days, interval: 91}
+      oil_filter_change: {basis: running_h, interval: 2000}
+  pm_outcome_shares: {on_time: 0.70, late: 0.22, skipped: 0.08}   # completion compliance about 70 percent
+  pm_late_days_lognormal: {median: 10, sigma: 0.6}
+  alert_to_inspection_working_days: [1, 3]
+  repeat_alert_inspection_prob: 0.20      # repeat alert within the window after a no_fault_found close
+  repeat_alert_window_days: 30
+  inspection_detection_prob_by_stage: {stage1: 0.10, stage2: 0.20, stage3: 0.70, stage4: 0.95}
+  cavitation_found_if_active: true        # added pre-pilot
+  wear_stage_by_fraction: [0.25, 0.50, 0.75]   # wear fraction edges for stages 2, 3, 4; added pre-pilot
+  planned_repair_lead_days: [5, 21]
+  planned_repair_windows: [weekend, pallet_cell_window]
+  repair_time:
+    spindle_rebuild_days: [3, 7]
+    pump_hours: [4, 12]
+    compressor_bearing_days: [1, 3]
+  rebaseline_after_component_replacement: true
+
+sensor_temperature_rise_c:                # [plant] running rise over ambient; spindle scales with speed; added pre-pilot
+  spindle: 10.0
+  pump: 15.0
+  compressor_motor: 25.0
+  compressor_airend: 35.0
+
+sensor_behavior:                          # [plant] 5.1
+  install_dates: {first: 2023-07-05, last: 2023-07-07}
+  battery_life_months: [14, 20]
+  battery_gap_days: [1, 3]
+  gateways: {GW-HMC: [HMC-01, HMC-02, HMC-03, HMC-04], GW-CMP: [CMP-01, CMP-02]}
+  dropouts: {rate_per_gateway_year: 8.0, duration_h: [1, 12]}
+  radio_noise_row_frac: 0.002
+  radio_noise_modes: {temp_jump_c: [40, 60], spike_gain: [20, 50]}   # implausible-row forms: temperature jump, spike, stuck repeat
+
+label_noise:                              # [plant] 5.3
+  wrong_code_frac: 0.12                   # 0.10 to 0.15 of unplanned repairs
+  missing_code_frac: 0.10                 # about 0.10 of unplanned stoppages, free text only
+  close_lag_days: [0, 2]
+
+economics:                                # [plant] 5.4, USD per hour
+  contribution_margin_per_hour: {hmc: 185, vmc: 110, lathe: 95, mill_turn: 160, grinder: 80}
+
+controller_signals:                       # [plant] 5.2 signal levels; approved 2026-10-21; frozen at checkpoint (a)
+  speed_noise_frac: 0.002
+  spindle_load_noise_frac: 0.08
+  idle_spindle_load_pct: 2.0
+  idle_axis_load_pct: 3.0
+  axis_load_pct_by_material: {aluminum: 12.0, steel: 18.0, stainless: 22.0, cast_iron: 20.0, titanium: 26.0}
+  axis_gain: {x: 1.0, y: 1.0, z: 1.4, b: 0.6}
+  axis_load_program_sd_frac: 0.25
+  axis_load_noise_frac: 0.10
+  spindle_load_gain_at_failure_pct: 8.0
+  spindle_temp: {rise_c_at_rated: 18.0, time_constant_min: 20.0, noise_c: 0.1, rise_c_at_failure: 12.0}
+  feed_override: {nominal_share: 0.70, range_pct: [80, 120], step_pct: 10}
+  hydraulic_bar: {nominal: 70.0, noise: 0.3, alarm_drop: 15.0, fault_drop: 30.0}
+  tsc_bar: {nominal: 69.0, noise: 0.5, cavitation_drop_frac: 0.25, seal_lead_drop_frac: 0.40}
+  event_duration_s:
+    collision: [1, 3]
+    overload_below_crash: [1, 5]
+    tool_breakage: [1, 2]
+    servo: [5, 60]
+    atc_fault: [30, 600]
+    lube: [60, 900]
+    hydraulic_low_pressure: [30, 300]
+    spindle_overheat: [300, 1800]
+    coolant_low_pressure: [60, 600]
+    operator_stop: [60, 600]
+  event_stops_machine: {collision: true, overload_below_crash: false, tool_breakage: true, servo: true, atc_fault: true,
+                        lube: false, hydraulic_low_pressure: true, spindle_overheat: true, coolant_low_pressure: false,
+                        operator_stop: true}
+  khz_event_types: [collision, overload_below_crash, tool_breakage]
+  khz_shape: {rate_hz: 1000, window_s: 30, collision_decay_s: 0.2, overload_width_s: 1.0}
+  peak_frac_of_limit: {collision: [1.0, 1.6], overload_below_crash: [0.70, 0.95]}
+  failure_event_type:
+    bearing_spindle: spindle_overheat
+    crash: collision
+    bearing_pump: coolant_low_pressure
+    seal_failure: coolant_low_pressure
+    atc_fault: atc_fault
+    pallet_changer_hydraulic: hydraulic_low_pressure
+    servo_drive: servo
+    electrical: servo
+    lube_system: lube
+    way_cover: operator_stop
+    chip_conveyor: operator_stop
+    coolant_pump_non_hmc: coolant_low_pressure
+    ball_screw_or_guide: servo
+
+compressor_ctrl:                          # [plant] compressor Modbus signals; approved 2026-10-21; frozen at checkpoint (a)
+  load_cycle_minutes: 6
+  discharge_pressure_noise_bar: 0.05
+  discharge_temp_noise_c: 0.5
+  dryer_dew_point_c: {nominal: 3.0, sd: 0.5, ambient_threshold_c: 25.0, per_c_ambient_above_threshold: 0.10}
+
+cmms:                                     # [plant] CMMS rendering; approved 2026-10-21; frozen at checkpoint (a)
+  technicians: [T01, T02]
+  labor_frac_of_repair_time: [0.6, 1.0]
+  labor_h_max_per_day: 16.0
+  inspection_labor_h: [0.5, 2.0]
+  pm_labor_h: [0.25, 2.0]
+  failure_codes:
+    SPINDLE: [BRG-WEAR, BRG-SPALL, BRG-LUBE, CRASH-DMG]
+    TSC_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP]
+    COOLANT_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP]
+    COMPRESSOR: [CMP-BRG-MOTOR, CMP-BRG-AIREND, CMP-TRIP, CMP-VALVE]
+    ATC: [ATC-ARM, ATC-SENSOR]
+    HYDRAULIC: [HYD-LEAK, HYD-PUMP]
+    SERVO: [SRV-DRIVE, SRV-ENCODER]
+    ELECTRICAL: [ELEC-PSU, ELEC-CABLE]
+    LUBE: [LUB-PUMP, LUB-LINE]
+    WAY_COVER: [WAY-COVER]
+    CHIP_CONVEYOR: [CHIP-JAM]
+    AXIS: [AX-SCREW, AX-GUIDE]
+
+erp:                                      # [plant] ERP rendering; approved 2026-10-21; frozen at checkpoint (a)
+  cycle_time_min_by_material: {aluminum: [4, 20], steel: [8, 35], stainless: [10, 40], cast_iron: [8, 30], titanium: [20, 60]}
+
+# =====================================================================
+# Fixed definitions
+# =====================================================================
+
+measurement:                              # [fixed] 5.1
+  fs_hz: 25600
+  burst_s: 1.0
+  band_hz: [10, 10000]
+  state_rule:
+    spindle_min_rpm: 3000
+    steady_s: 10
+    steady_tolerance_frac: 0.02
+    pumps: running
+    compressors: running
+  row_schedule: scheduled_hours           # a row per hour in the platform schedule: shift hours, worked Saturdays
+  baselining_days: 21
+  baseline_statistic: median
+  retention: {weekly_reference: true, weekly_reference_weekday: wed, on_alarm: true}
+
+indicators:                               # [fixed] 7.3
+  velocity_band_hz: [10, 1000]
+  hf_band_hz: [2000, 10000]
+  spectrum: {window: hann, segment_s: 0.25, averages: 4}
+  order_bands: {orders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], half_width_frac: 0.03}
+  envelope:
+    sk_band_hz: [2000, 10000]
+    sk_method: fast_kurtogram
+    sk_levels: 4
+    band_selection: per_point_baseline_window   # after run-01: one band per point, selected on the healthy baseline window, reselected after remount or repair; original per burst
+    band_selection_criterion: energy_concentration_sk_tiebreak   # after run-02: highest mean power density relative to 2-10 kHz, SK breaks ties; original SK only
+    band_selection_tie_tolerance: 0.01          # relative concentration difference treated as a tie
+    band_min_coverage: {bpfi_harmonics: 3, shaft_sidebands: 1}   # bandwidth >= 3 x BPFI + 1 x shaft speed at rated speed; replaces sk_min_width_fault_multiple 2.0
+    outside_bandwidth: nan                     # fault, harmonic or sideband bands beyond the bandwidth are stored as missing
+    fault_bands: [bpfo, bpfi, bsf, ftf]
+    harmonics: 3
+    band_half_width_frac: 0.03
+    sidebands: {bpfi: shaft, bsf: ftf}
+    noise_floor: median_envelope_spectrum   # global floor, kept for reference
+    local_floor: {half_width_frac: 0.25, min_half_width_hz: 20.0}   # fault-band ratios use the local floor; added after pilot-02
+  third_octave: {bands: 32, range_hz: [10, 10000]}
+  top_peaks: 10
+  resultant:
+    rms_family: root_sum_square
+    spectral: power_sum
+    crest_factor: max_across_axes
+    kurtosis: max_across_axes
+    top_peaks: from_power_sum_envelope
+  axes_reported: {spindle: [resultant, radial], pump: [x, y, z, resultant], compressor: [x, y, z, resultant]}
+
+controller_stream:                        # [fixed] 5.2
+  aggregates: [mean, max, p95]
+  hz1_retention: shadow
+  hz1_rows: powered_seconds
+  khz_window_s: 30
+  load_resolution_pct: 0.1
+
+regime:                                   # [fixed] 10.3
+  speed_bands_frac_rated: [0.25, 0.50, 0.75, 1.00]   # low, mid, high
+  load_bands_pct: {light: [0, 30], medium: [30, 50], heavy: [50, 200]}
+  materials: [aluminum, steel, stainless, cast_iron, titanium]
+
+rolling:                                  # [fixed] 10.3
+  windows: [24h, 7d, 30d]
+  statistics: [median, slope, ratio_to_baseline]
+  core_indicators: [accel_rms_g, vel_rms_mm_s, hf_rms_g, crest_factor, kurtosis, temp_c, order_1x, order_2x, env_bpfo_1, env_bpfi_1, env_bsf_1, env_ftf_1]
+
+baselines:                                # [fixed] 10.3, 11
+  healthy_after_install_days: 21
+  healthy_after_repair_days: 21
+  exclude_before_unplanned_failure_days: 30
+  statistics: [median, mad, p05, p95]
+
+rules:                                    # [fixed] 10.4; zone boundaries are constants in code
+  iso_class_by_point_class:
+    spindle: {group: 2, foundation: rigid}
+    tsc_pump: {group: 2, foundation: rigid}
+    flood_pump: {group: 2, foundation: rigid}
+    compressor: {group: 2, foundation: flexible}
+  iso_measure: max_directional_axis
+  iso_alert_zone: C
+  iso_alarm_zone: D
+  vendor:
+    alert_frac_zone_b_width: 0.25
+    alarm_frac_zone_b_width: 0.50
+    hf_reference_width_g: {spindle: 0.20, tsc_pump: 0.40, flood_pump: 0.40, compressor: 0.50}
+    measure_axis: res
+  envelope: {db_over_baseline: 6.0, consecutive: 3}
+  persistence_consecutive: 2
+  suppression_days: 7
+
+quality:                                  # [fixed] 10.2 implausible-row rules; approved 2026-10-21; frozen at checkpoint (a)
+  temp_jump_c: 15.0
+  spike_ratio: 8.0
+  spike_reference_window_h: 24
+  stuck_rule: identical_indicator_row
+
+splits:                                   # [fixed] 11
+  train: [2023-07-01, 2025-06-30]
+  validation: [2025-07-01, 2026-03-31]
+  shadow: [2026-04-01, 2026-06-30]
+  gap_days: 14
+  entity: leave_one_asset_out
+  leakage_audit: random_window
+
+models:                                   # [fixed]
+  seed: 7
+  nbm:
+    candidates: [pca_t2_spe, mahalanobis, isolation_forest, autoencoder_third_octave]
+    min_regime_healthy_hours: 200
+    threshold_percentile: 99.5
+    top_contributors: 3
+    pca_variance_kept: 0.95
+    isolation_forest: {n_estimators: 200}
+    autoencoder: {hidden: [16, 6, 16], epochs: 200}
+  controller_health:
+    baseline: program_first_month
+    drift_alert_frac: 0.15
+    thermistor_residual_alert_c: 4.0
+  fusion:
+    status_map: {ok: below_threshold, watch: single_layer_or_unpersisted, alarm: persisted_threshold_or_two_layers}
+    rate_of_change_window_h: 72
+  supervised:
+    asset_class: rotating_auxiliaries
+    horizon_days: 14
+    min_train_events: 8
+    candidates: [logistic_l2, gradient_boosting]
+    calibration: isotonic
+  survival:
+    models: [weibull_aft, cox]
+    covariates: [component_class, machine_age_class, crash_count, lube_pm_compliance]
+  prognosis:
+    failure_mode: auxiliary_bearing_stage2_onward
+    indicator: envelope_fault_band_energy
+    threshold: stage4
+    alpha: 0.2
+
+evaluation:                               # [fixed] 12, chance levels
+  alert_precision_window_days: 30
+  benign_followup_window_days: 30
+  fisher_alpha: 0.05
+
+monitoring:                               # [fixed] 10.10
+  tolerance: {recall_drop: 0.25, alerts_per_asset_month_ratio: [0.5, 2.0]}
+  consecutive_months: 2
+  drift: {method: evidently, score_test: wasserstein, feature_share_drifted: 0.30}
+
+checks:                                   # [fixed] sections 9 and 16
+  healthy_band_rule: p05_p95_within_range           # check 2: 5th to 95th percentile inside the stated range
+  four_stage_first_event: two_consecutive           # check 4
+  four_stage_peak_statistic: rolling_24h_median
+  mtbf_basis: powered_hours_minus_downtime          # approved 2026-10-20; basis stated 2026-10-21
+  count_rule: poisson_90_interval                   # approved 2026-10-20, CLAUDE.md section 18
+  count_expectations:                               # config review 2026-10-20, section 1.1; used by the count rule
+    unplanned_stoppages_machines: 24.3
+    hmc_spindle_bearing_failures: 2.4
+    hmc_spindle_preventive_rebuilds: 1.3
+    crash_spindle_failures_no_precursor: 2.1                 # after run-01 holds: base rate 1.5 (was 2.0 at base 2.5)
+    hmc_pump_unplanned_failures: 6.5
+    compressor_unplanned_events: 3.65
+    axis_ball_screw_replacements: 4.0
+    shadow_failures_instrumented: 1.2
+    shadow_failures_uninstrumented: 1.3
+  envelope_detection_ratio: 3.0                     # fault-band RMS amplitude over envelope noise floor
+  hf_detection_sigma: 2.0
+  stage34_fall_frac_min: 0.30
+  healthy_exceed_share_max: 0.05
+  healthy_env_fault_keys: [bpfo, bpfi, bsf]         # FTF reported, not tested; after pilot-01; also used by check 4 after pilot-02
+  rolling_window_h: 24
+  rolling_min_readings: 6                           # minimum readings in the rolling window for peak statistics; after pilot-03
+  lube_recovery_tolerance_frac: 0.10                # approved 2026-10-21: recovered when 24 h median HF is within 10% of the pre-episode median
+  label_noise_ranges: {wrong_code: [0.10, 0.15], missing_code: [0.05, 0.15], close_lag_days: [0, 2]}   # approved 2026-10-21
+  label_noise_binomial_alpha: 0.05                  # after run-01: wrong and missing code shares tested against configured rates
+  four_stage_tie_h: 24                              # after run-01: detections within 24 h are tied; tied counts as ordered
+  band_contains_resonance_min_points: 18            # after run-02: check 18, points whose every selected band contains the configured resonance
+  lube_recovery_window_h: 72                        # after run-03: check 7 pre and post windows, same load band (was 24)
+  lube_recovery_min_measurable_episodes: 10         # after run-03: fewer measurable episodes makes the recovery test report-only
+  lube_recovery_min_matched_hours: 12               # after run-02: fewer matched hours in either window is not measurable
+  four_stage_exclude_pump_wear_above: 0.5           # after run-01
+  inner_race_exclude_shaft_orders: [1, 2, 3, 4]     # after run-01: check 3 inner-race top peak excludes shaft-rate harmonics
+  sideband_line_min_ratio: 12                       # after run-03: check 3 sidebands tested on stage-2 hours with the BPFI line >= 12x the local floor
+  sideband_tested_kinds: [deep_groove_ball, cylindrical_roller]   # after run-03: angular-contact sidebands report-only
+  crash_binomial_alpha: 0.05                        # approved 2026-10-21: outcome shares tested against configured proportions
+  regime_comparison: fixed_offset_report_only       # after run-03: same vendor offset rule, one baseline per point against one per point and load band; percentile comparison removed
+  downtime_reconcile_basis: scheduled_overlap_times_utilization   # approved 2026-10-21, check 15
+  instrumented_assets: [HMC-01-SP, HMC-02-SP, HMC-03-SP, HMC-04-SP, HMC-01-TSC, HMC-02-TSC, HMC-03-TSC, HMC-04-TSC, HMC-01-CP, HMC-02-CP, HMC-03-CP, HMC-04-CP, CMP-01, CMP-02]
+  expected_ranges:
+    unplanned_stoppages_machines: [20, 32]
+    fleet_mtbf_running_h: [9000, 15000]
+    hmc_spindle_bearing_failures: [2, 4]
+    hmc_spindle_preventive_rebuilds: [1, 2]
+    crash_spindle_failures_no_precursor: [1, 3]
+    hmc_pump_unplanned_failures: [5, 9]
+    compressor_unplanned_events: [3, 5]
+    axis_ball_screw_replacements: [3, 5]
+    hmc_lube_episodes_per_year: [4, 10]
+    benign_episodes_per_year: [10, 20]
+    alert_inspections_nff_share: [0.20, 0.40]
+    rule_alerts_per_instrumented_asset_month: [0.3, 1.0]
+    shadow_failures_instrumented: [1, 4]           # amended 2026-10-21 under rule 8 (run-02 value 1); original [2, 4]
+    shadow_failures_uninstrumented: [1, 3]
+    no_measurement_share: [0.10, 0.25]
+    disk_gb_bronze_silver_gold: [0, 6]
+    run_minutes: [0, 120]
+    lead_weeks_median: {spindle: [4, 12], compressor: [4, 12], pump: [2, 6]}
+    regime_velocity_diff_frac: [0.20, 0.60]
+    hmc_utilization: [0.65, 0.80]
+    collisions_per_machine_year_effective: [2, 5]     # section 8.4, including multipliers
+    lube_recovery_share_min: 0.80
+    censoring_share_before_stage3_min: 0.70
+    implausible_recall_min: 0.95
+    downtime_reconcile_tolerance: 0.15
+    healthy_kurtosis: [2.7, 3.5]
+    healthy_crest_factor: [2.5, 5.0]               # amended 2026-10-21: expected max of a 25,600-sample near-Gaussian burst is about 4.5 RMS, its 95th percentile near 5.0; was [2.5, 4.8] (after pilot-01), original [2.5, 4.5]
+    stage2_envelope_peak_share_min: 0.90
+    kinematics_tolerance_frac: 0.01
+
+storage:                                  # [fixed] 17
+  partition: month
+  compression: zstd
+  burst_dtype: float32
+  khz_dtype: float32

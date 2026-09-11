@@ -1,0 +1,15 @@
+# Pilot overlay (CLAUDE.md section 14.3). Loaded only with --pilot; a full run refuses this file.
+# The override block is removed before the full run.
+
+window: {start: 2023-07-01, end: 2023-12-31}
+points: [HMC-01-SP-F, HMC-01-SP-R, HMC-01-TSC, CMP-01-MDE]
+simulated_assets: [HMC-01, CMP-01, CMP-02]
+
+override:
+  forced_instances:
+    - point_id: HMC-01-SP-F
+      component: spindle_front
+      defect: outer_race
+      onset_date: 2023-08-15
+      beta_quantile: 0.75                 # about 10 weeks onset to failure at 62 running h per week
+      inspection_detection: none          # inspections on this instance close no_fault_found
