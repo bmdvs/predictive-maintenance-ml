@@ -11,6 +11,7 @@ import copy
 import json
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,35 @@ def next_label(prefix: str) -> str:
     return f"{prefix}{(max(nums) + 1 if nums else 1):02d}"
 
 
+def generator_commit() -> tuple[str, list[str]]:
+    """HEAD commit and the tracked generator, package and config files that differ from it."""
+    root = paths.REPO_ROOT
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        dirty = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+                "--",
+                "generate",
+                "src",
+                "config",
+                "pyproject.toml",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        return "unavailable", []
+    return head, [line[3:] for line in dirty]
+
+
 def local_ts(d: Any) -> pd.Timestamp:
     return pd.Timestamp(str(d), tz=shop_schedule.LOCAL_TZ).tz_convert("UTC")
 
@@ -56,8 +86,16 @@ def run(pilot: bool, window_days: int | None = None, workers: int | None = None)
         with open(paths.CONFIG_DIR / "pilot.yaml", encoding="utf-8") as fh:
             pilot_cfg = yaml.safe_load(fh)
     resolved = {"config": copy.deepcopy(cfg), "register": reg.raw, "pilot": pilot_cfg}
+    head, dirty = generator_commit()
+    if not pilot and window_days is None and dirty:
+        raise SystemExit(
+            f"uncommitted generator, package or config changes: {dirty}; commit before a numbered run"
+        )
     ctx = new_run(resolved, next_label("pilot" if pilot else "run"))
     ctx.run_dir.mkdir(parents=True, exist_ok=False)
+    (ctx.run_dir / "generator_commit.txt").write_text(
+        head + (f" (uncommitted: {', '.join(dirty)})" if dirty else "") + "\n", encoding="utf-8"
+    )
     LOG.info("run_start run_id=%s config_hash=%s", ctx.run_id, ctx.config_hash)
     t_start = time.perf_counter()
 
@@ -185,6 +223,7 @@ def run_full(
                 "khz_windows",
                 "compressor_minutes",
                 "room_minutes",
+                "compressor_events",
             )
         },
     }
@@ -221,8 +260,20 @@ def recheck(run_id: str) -> None:
     with open(run_dir / "truth" / "seeds.json", encoding="utf-8") as fh:
         seeds = json.load(fh)
     cfg = load_config()
-    if config_hash_of(resolved) != seeds["config_hash"]:
-        raise SystemExit("config on disk differs from the run's resolved config; recheck refused")
+    current = {"config": copy.deepcopy(cfg), "register": load_register().raw, "pilot": resolved.get("pilot")}
+    diff_file = run_dir / "recheck_checks_diff.txt"
+    if config_hash_of(current) != seeds["config_hash"]:
+        before = run_report._flatten(json.loads(json.dumps(resolved, default=str)))
+        after = run_report._flatten(json.loads(json.dumps(current, default=str)))
+        changed = sorted(k for k in set(before) | set(after) if str(before.get(k)) != str(after.get(k)))
+        outside = [k for k in changed if not k.startswith("config.checks.")]
+        if outside:
+            raise SystemExit(f"recheck refused: changes outside the checks block: {outside}")
+        diff_file.write_text(
+            "\n".join(f"{k}: {before.get(k)} -> {after.get(k)}" for k in changed) + "\n", encoding="utf-8"
+        )
+    elif diff_file.exists():
+        diff_file.unlink()
     ctx = RunContext(
         run_id, seeds["config_hash"], seeds["generator_version"], seeds["run_seed"], run_id.split("_")[0]
     )

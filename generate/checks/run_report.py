@@ -173,8 +173,11 @@ def write(
             if tf:
                 fig_files.append(tf)
     passed = sum(1 for r in results if r.passed)
+    commit_file = ctx.run_dir / "generator_commit.txt"
+    commit = commit_file.read_text(encoding="utf-8").strip() if commit_file.exists() else "not recorded"
     lines = [
         f"Run: {ctx.run_id}   Config hash: {ctx.config_hash}   Generator version: {ctx.generator_version}",
+        f"Generator commit: {commit}",
         f"Checks: {passed}/{len(results)}",
         "",
         "| # | Check | Expected | Measured | Result |",
@@ -191,6 +194,15 @@ def write(
         "```",
         "",
     ]
+    recheck_file = ctx.run_dir / "recheck_checks_diff.txt"
+    if recheck_file.exists():
+        lines += [
+            "Rechecked with a checks-block change (nothing regenerated):",
+            "```",
+            recheck_file.read_text(encoding="utf-8").strip(),
+            "```",
+            "",
+        ]
     if pilot:
         lines += [
             "Headline counts (pilot scope):",
@@ -211,6 +223,22 @@ def write(
                 columns={"measured": f"previous ({prior.name[:5]})"}
             )
             head = head.merge(prev, on="quantity", how="left")
+        if "confirmed" in chk:
+            conf = chk["confirmed"]
+            lines += [
+                "Confirmed conditions for evaluation, from bronze CMMS records only, by type and period:",
+                "",
+                _md_table(conf["table"]),
+                "",
+                "Open at record end (truth): " + ("; ".join(conf["open_truth"]) or "none"),
+                "",
+                "Work orders open at record end (bronze): "
+                + (
+                    "; ".join(f"{r.wo_id} {r.asset_id} {r.wo_type}" for r in conf["open_bronze"].itertuples())
+                    or "none"
+                ),
+                "",
+            ]
         if "episodes" in chk:
             lines += [
                 "Degradation episodes reaching stage 2, by asset class and outcome:",

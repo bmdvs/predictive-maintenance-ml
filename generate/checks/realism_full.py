@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import binomtest, fisher_exact, poisson
 
+from generate.checks import realism_conditions as rc
 from generate.checks.realism import _ISO_KEY, CheckResult, _first_consecutive
 from pdm.config import Register
 from pdm.constants import DAYS_PER_YEAR, SECONDS_PER_MINUTE
@@ -208,7 +209,8 @@ def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> Ch
     min_h = c["lube_recovery_min_matched_hours"]
     min_eps = c["lube_recovery_min_measurable_episodes"]
     bands = cfg["regime"]["load_bands_pct"]
-    recovery_day = pd.Timedelta(days=cfg["lubrication"]["recovery_days"][1])
+    post_start = pd.Timedelta(days=c["lube_recovery_post_start_days"])
+    stage_min = c["lube_recovery_exclude_bearing_stage_min"]
     starts = events[events["event"] == "lube_episode_start"].sort_values("ts")
     clears = events[events["event"] == "lube_cleared"].sort_values("ts")
     onsets = events[(events["event"] == "bearing_onset") & (events["cause"] == "lubrication")]
@@ -249,13 +251,19 @@ def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> Ch
             onsets["component_id"].astype(str).str.startswith(asset)
             & onsets["ts"].between(window_end - DAY, window_end + DAY)
         ].empty
-        rec, matched, rec_alt, matched_alt = None, 0, None, 0
+        rec, matched, bearing = None, 0, None
         if not cl.empty and pts:
             t_clear = cl["ts"].iat[0]
             g = res[res["point_id"].isin(pts)]
             pre_w = (s["ts"] - win, s["ts"])
-            rec, matched = compare(g, pre_w, (t_clear + recovery_day - win, t_clear + recovery_day))
-            rec_alt, matched_alt = compare(g, pre_w, (t_clear + recovery_day, t_clear + recovery_day + win))
+            post_w = (t_clear + post_start, t_clear + post_start + win)
+            in_w = g[g["hour_utc"].between(*pre_w) | g["hour_utc"].between(*post_w)]
+            hit = in_w[in_w["stage"] >= stage_min]
+            if not hit.empty:
+                top = hit.sort_values("stage").iloc[-1]
+                bearing = f"stage {int(top['stage'])} bearing on {top['point_id']}"
+            else:
+                rec, matched = compare(g, pre_w, post_w)
         rows.append(
             {
                 "asset_id": asset,
@@ -264,33 +272,35 @@ def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> Ch
                 "cleared_by": cl["by"].iat[0] if not cl.empty else None,
                 "cleared_in_window": cleared_in_window,
                 "converted": converted,
+                "excluded_bearing": bearing,
                 "matched_hours": matched,
-                "recovered_3d": rec,
-                "diag_after_day3_matched_hours": matched_alt,
-                "diag_after_day3_recovered": rec_alt,
+                "recovered": rec,
             }
         )
     df = pd.DataFrame(rows)
     if df.empty:
         return CheckResult("7", "Lubrication episodes", "recovery and conversion", "no episodes", None, df)
-    measured_rec = df["recovered_3d"].dropna()
+    measured_rec = df["recovered"].dropna()
     share = measured_rec.mean() if len(measured_rec) else np.nan
     unclr = df[~df["cleared_in_window"]]
     conv_ok = bool(unclr["converted"].all()) if len(unclr) else True
     report_only = len(measured_rec) < min_eps
     rec_ok = True if report_only else bool(share >= need)
-    alt = df["diag_after_day3_recovered"].dropna()
+    excl = df[df["excluded_bearing"].notna()]
     return CheckResult(
         "7",
         "Lubrication episodes",
-        f"conversion of uncleared episodes (pass/fail); recovery by day 3 in >= {need:.0%} of measurable episodes "
-        f"(72 h windows, same load band, >= {min_h} matched hours; report-only below {min_eps} measurable)",
+        f"conversion of uncleared episodes (pass/fail); recovery in >= {need:.0%} of measurable episodes "
+        f"(pre window 72 h before the start, post window 72 h from clear + {post_start.days} d, same load band, "
+        f">= {min_h} matched hours; report-only below {min_eps} measurable; episodes with a bearing at stage "
+        f">= {stage_min} on the point in either window reported separately)",
         f"{len(df)} episodes; uncleared {len(unclr)}, converted {int(unclr['converted'].sum())}; recovery measurable "
         f"{len(measured_rec)}, recovered {share:.0%}"
         + (" (report-only)" if report_only else "")
         + (
-            f"; diagnostic window after day 3: measurable {len(alt)}, recovered {alt.mean():.0%}"
-            if len(alt)
+            "; excluded for a bearing: "
+            + "; ".join(f"{r.asset_id} {r.start:%Y-%m} ({r.excluded_bearing})" for r in excl.itertuples())
+            if len(excl)
             else ""
         ),
         bool(conv_ok and rec_ok),
@@ -402,17 +412,19 @@ def benign_episodes(events: pd.DataFrame, benign: pd.DataFrame, heat: list[dict[
     return pd.DataFrame(rows)
 
 
-def check_benign(
-    cfg: dict[str, Any], events: pd.DataFrame, episodes: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
-) -> CheckResult:
-    window = pd.Timedelta(days=cfg["evaluation"]["benign_followup_window_days"])
-    alpha = cfg["evaluation"]["fisher_alpha"]
-    fails = failures(events)
-    fails = fails.assign(scope=fails["asset_id"].str.split("-").str[:2].str.join("-"))
+def _fisher_after(
+    episodes: pd.DataFrame,
+    fails: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    window: pd.Timedelta,
+    own_scopes: bool = False,
+) -> tuple[int, int, int, int, float]:
+    """Failures within the window after episodes against tiled base windows with no episode nearby.
+    With own_scopes, base windows come only from the assets that carry episodes."""
     ep = episodes.assign(scope=episodes["asset_id"].str.split("-").str[:2].str.join("-"))
     ep.loc[ep["scope"] == "CMP", "scope"] = "CMP"
-    fails.loc[fails["scope"].str.startswith("CMP"), "scope"] = "CMP"
-    scopes = sorted(set(fails["scope"]) | set(ep["scope"]))
+    scopes = sorted(set(ep["scope"]) if own_scopes else set(fails["scope"]) | set(ep["scope"]))
     after_fail = sum(
         1
         for _, e in ep.iterrows()
@@ -429,14 +441,52 @@ def check_benign(
             t += window
     table = [[after_fail, len(ep) - after_fail], [base_fail, base_n - base_fail]]
     p = fisher_exact(table)[1] if len(ep) and base_n else np.nan
+    return after_fail, len(ep), base_fail, base_n, float(p)
+
+
+def check_benign(
+    cfg: dict[str, Any],
+    events: pd.DataFrame,
+    episodes: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> CheckResult:
+    window = pd.Timedelta(days=cfg["evaluation"]["benign_followup_window_days"])
+    alpha = cfg["evaluation"]["fisher_alpha"]
+    fails = failures(events)
+    fails = fails.assign(scope=fails["asset_id"].str.split("-").str[:2].str.join("-"))
+    fails.loc[fails["scope"].str.startswith("CMP"), "scope"] = "CMP"
+    a, n, bf, bn, p = _fisher_after(episodes, fails, start, end, window)
+    tool = events[events["event"] == "tool_assembly_high_first_use"]
+    if "created_in_record" in tool:
+        tool = tool[tool["created_in_record"].fillna(False).astype(bool)]
+    tool_ep = pd.DataFrame(
+        {"kind": "tool_assembly_high_program", "asset_id": tool["asset_id"], "ts": tool["ts"]}
+    )
+    ta, tn, tbf, tbn, tp = (
+        _fisher_after(tool_ep, fails, start, end, window, own_scopes=True)
+        if len(tool_ep)
+        else (0, 0, 0, 0, np.nan)
+    )
     years = (end - start) / pd.Timedelta(days=DAYS_PER_YEAR)
+    ok = (p > alpha if pd.notna(p) else True) and (tp > alpha if pd.notna(tp) else True)
+    detail = pd.concat(
+        [
+            episodes.groupby("kind").size().rename("n").reset_index(),
+            pd.DataFrame([{"kind": "tool_assembly_high_program (separate test)", "n": tn}]),
+        ],
+        ignore_index=True,
+    )
     return CheckResult(
         "11",
         "Benign anomalies",
-        f"failure rate after benign within chance (Fisher p > {alpha})",
-        f"{len(ep)} episodes ({len(ep) / years:.1f}/yr); failures within 30 d after {after_fail}/{len(ep)}; base windows {base_fail}/{base_n}; p = {p:.3f}",
-        bool(p > alpha) if pd.notna(p) else None,
-        episodes.groupby("kind").size().rename("n").reset_index(),
+        f"failure rate after benign within chance (Fisher p > {alpha}); high tool-assembly programs created in "
+        "the record tested the same way from their first use, against base windows on the same machines",
+        f"{n} episodes ({n / years:.1f}/yr); failures within 30 d after {a}/{n}; base windows {bf}/{bn}; "
+        f"p = {p:.3f}; high tool-assembly programs: failures within 30 d after {ta}/{tn}; base windows "
+        f"{tbf}/{tbn}; p = {tp:.3f}",
+        bool(ok) if pd.notna(p) else None,
+        detail,
     )
 
 
@@ -631,6 +681,7 @@ def headline_counts(
     start: pd.Timestamp,
     end: pd.Timestamp,
     shadow: tuple[pd.Timestamp, pd.Timestamp],
+    confirmed_total: int | None = None,
 ) -> pd.DataFrame:
     er = cfg["checks"]["expected_ranges"]
     exp = cfg["checks"]["count_expectations"]
@@ -676,6 +727,28 @@ def headline_counts(
             scalars.drop_duplicates(["point_id", "hour_utc"])["no_measurement"].mean()
         ),
     }
+    cs = events[events["event"] == "condition_start"]
+
+    def n_cond(kind: str, cause: str | None = None) -> int:
+        sel = cs["kind"] == kind
+        if cause is not None:
+            sel &= cs["cause"] == cause
+        return int(sel.sum())
+
+    q.update(
+        {
+            "imbalance_episodes": n_cond("imbalance"),
+            "misalignment_gradual_episodes": n_cond("misalignment", "gradual"),
+            "misalignment_post_reinstallation": n_cond("misalignment", "post_reinstallation"),
+            "looseness_episodes": n_cond("looseness"),
+            "rotary_union_leaks": n_cond("rotary_union_leak"),
+            "coolant_ingress_episodes": n_cond("coolant_ingress"),
+            "cooler_fouling_episodes": n_cond("cooler_fouling"),
+            "spindle_cooling_episodes": n_cond("spindle_cooling"),
+        }
+    )
+    if confirmed_total is not None:
+        q["confirmed_conditions_jul2025_jun2026"] = confirmed_total
     rows = []
     sc = scalars.drop_duplicates(["point_id", "hour_utc"])
     duty = next(c for c, v in reg.compressors.items() if v["role"] == "duty")
@@ -744,7 +817,11 @@ def headline_counts(
     )
 
 
-BASIS = {"fleet_mtbf_running_h": "powered hours minus downtime", "no_measurement_share": "scheduled hours"}
+BASIS = {
+    "fleet_mtbf_running_h": "powered hours minus downtime",
+    "no_measurement_share": "scheduled hours",
+    "confirmed_conditions_jul2025_jun2026": "bronze CMMS, all types incl. all unplanned failures",
+}
 
 
 def check_band_placement(cfg: dict[str, Any], events: pd.DataFrame, n_points: int) -> CheckResult:
@@ -866,6 +943,10 @@ def run_full_checks(
         "band_hi_hz",
         "resonance_hz",
         "housing_gain_db",
+        "level",
+        "p_drop",
+        "p_rise_c",
+        "program",
     ]
     events = events.reindex(columns=sorted(set(events.columns) | set(event_cols)))
     parts = truth_dir / "parts"
@@ -888,8 +969,21 @@ def run_full_checks(
         benign[benign["event"] != "compressor_room_heat"] if "event" in benign else benign,
         benign[benign["event"] == "compressor_room_heat"].to_dict("records") if "event" in benign else [],
     )
+    confirmed = rc.confirmed_conditions(cfg, bronze_root, events, end)
     head = headline_counts(
-        cfg, reg, events, scalars, wo, alerts, schedules, machine_hours, episodes, start, end, shadow
+        cfg,
+        reg,
+        events,
+        scalars,
+        wo,
+        alerts,
+        schedules,
+        machine_hours,
+        episodes,
+        start,
+        end,
+        shadow,
+        confirmed["jul2025_jun2026"],
     )
     rel = head[head["quantity"].isin(RELIABILITY_KEYS)]
     bad = rel["status"].str.startswith("OUT OF RANGE and")
@@ -921,5 +1015,13 @@ def run_full_checks(
     tail = [
         check_replay(cfg, reg, scalars, sensor_events, alerts),
         check_band_placement(cfg, events, len(reg.sensors)),
+        rc.check_fault_signatures(cfg, reg, m),
+        rc.check_post_reinstallation(cfg, events, sensor_events),
+        rc.check_ingress(cfg, reg, bronze_root, events, end),
+        rc.check_thermal(cfg, reg, bronze_root, events, m, end),
     ]
-    return results + tail, {"headline": head, "episodes": degradation_episodes(truth, events)}
+    return results + tail, {
+        "headline": head,
+        "episodes": degradation_episodes(truth, events),
+        "confirmed": confirmed,
+    }

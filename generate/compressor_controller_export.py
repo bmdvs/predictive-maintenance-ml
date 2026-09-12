@@ -26,6 +26,8 @@ def render_compressors(
     air: pd.DataFrame,
     running: dict[int, dict[str, bool]],
     bronze_root: Path,
+    fouling_rise: dict[str, np.ndarray] | None = None,
+    events: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     cc, comp = cfg["compressor_ctrl"], cfg["compressor"]
     lo, hi = comp["load_unload_band_bar"]
@@ -60,11 +62,13 @@ def render_compressors(
         pressure = np.where(
             run_m, pressure + cc["discharge_pressure_noise_bar"] * rng.standard_normal(pressure.size), 0.0
         )
+        rise_h = fouling_rise[cid] if fouling_rise is not None else np.zeros(len(air))
         temp = np.where(
             run_m,
             dt["base"]
             + dt["per_c_ambient"] * (room_m - amb_mean)
             + dt["per_load_frac"] * load_m
+            + np.repeat(rise_h, MINUTES_PER_HOUR)
             + cc["discharge_temp_noise_c"] * rng.standard_normal(pressure.size),
             room_m,
         )
@@ -102,6 +106,13 @@ def render_compressors(
     ).assign(**stamp)
     _write_monthly(room, root / "room", "minute_utc", "room")
     counts["room_minutes"] = len(room)
+    ev = pd.DataFrame(
+        events or [],
+        columns=["compressor_id", "ts_utc", "event_type", "discharge_temp_c", "stopped_machine"],
+    ).assign(**stamp)
+    (root / "events").mkdir(parents=True, exist_ok=True)
+    ev.to_parquet(root / "events" / "events.parquet", index=False)
+    counts["compressor_events"] = len(ev)
     return counts
 
 

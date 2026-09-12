@@ -91,18 +91,33 @@ def _merge(scalars: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
     return meas.merge(truth, on=["point_id", "hour_utc"], how="left", suffixes=("", "_truth"))
 
 
-def check_healthy(cfg: dict[str, Any], reg: Register, m: pd.DataFrame) -> CheckResult:
-    er = cfg["checks"]["expected_ranges"]
-    ratio = cfg["checks"]["envelope_detection_ratio"]
-    exceed_max = cfg["checks"]["healthy_exceed_share_max"]
-    keys = cfg["checks"]["healthy_env_fault_keys"]
-    healthy = m[
+def no_conditions(m: pd.DataFrame) -> pd.Series:
+    """Rows with no fault condition or coolant ingress on the point (all rows for older archives)."""
+    ok = pd.Series(True, index=m.index)
+    if "fault_kind" in m:
+        ok &= m["fault_kind"].isna()
+    if "ingress_level" in m:
+        ok &= m["ingress_level"].fillna(0) == 0
+    return ok
+
+
+def healthy_rows(m: pd.DataFrame) -> pd.Series:
+    return (
         (m["stage"] == 0)
         & (m["lube_severity"] == 0)
         & (~m["cavitation"].astype(bool))
         & (m["wear_frac"] == 0)
         & (m["radio_noise"].isna())
-    ]
+        & no_conditions(m)
+    )
+
+
+def check_healthy(cfg: dict[str, Any], reg: Register, m: pd.DataFrame) -> CheckResult:
+    er = cfg["checks"]["expected_ranges"]
+    ratio = cfg["checks"]["envelope_detection_ratio"]
+    exceed_max = cfg["checks"]["healthy_exceed_share_max"]
+    keys = cfg["checks"]["healthy_env_fault_keys"]
+    healthy = m[healthy_rows(m)]
     rows = []
     for pid, g in healthy.groupby("point_id"):
         pclass = reg.point_class(pid)
@@ -299,10 +314,36 @@ def _concurrent_wear(
     return f"{'/'.join(kinds) or 'pump'} wear {g['wear_frac'].max():.2f}"
 
 
+def _mechanism_hours(
+    truth: pd.DataFrame | None, pid: str, t0: pd.Timestamp, t1: pd.Timestamp, kinds: list[str]
+) -> dict[str, int]:
+    """Hours in (t0, t1] with each competing mechanism active on the point, from truth."""
+    if truth is None:
+        return {}
+    g = truth[(truth["point_id"] == pid) & (truth["hour_utc"] > t0) & (truth["hour_utc"] <= t1)]
+    out: dict[str, int] = {}
+    for k in kinds:
+        if k == "cavitation":
+            n = int(g["cavitation"].astype(bool).sum())
+        elif k == "coolant_ingress":
+            n = int((g["ingress_level"].fillna(0) > 0).sum()) if "ingress_level" in g else 0
+        else:
+            n = int(g["fault_kind"].fillna("").str.contains(k).sum()) if "fault_kind" in g else 0
+        if n:
+            out[k] = n
+    return out
+
+
 def check_four_stage(
-    cfg: dict[str, Any], reg: Register, m: pd.DataFrame, events: pd.DataFrame, sensor_events: pd.DataFrame
+    cfg: dict[str, Any],
+    reg: Register,
+    m: pd.DataFrame,
+    events: pd.DataFrame,
+    sensor_events: pd.DataFrame,
+    truth: pd.DataFrame | None = None,
 ) -> CheckResult:
     c = cfg["checks"]
+    after_peak_kinds = list(c.get("four_stage_exclude_after_kurtosis_peak", []))
     ratio = c["envelope_detection_ratio"]
     nsig = c["hf_detection_sigma"]
     fall_min = c["stage34_fall_frac_min"]
@@ -364,6 +405,17 @@ def check_four_stage(
         competing = None
         if pclass.endswith("pump"):
             competing = _concurrent_wear(m, events, pid, it["onset_ts"], it["failure_ts"], wear_limit)
+        life_cav = _mechanism_hours(truth, pid, it["onset_ts"], it["failure_ts"], ["cavitation"]).get(
+            "cavitation", 0
+        )
+        after_peak = (
+            _mechanism_hours(truth, pid, t_kurt, it["failure_ts"], after_peak_kinds)
+            if t_kurt is not None
+            else {}
+        )
+        if after_peak:
+            text = ", ".join(f"{k} {n} h" for k, n in after_peak.items()) + " after kurtosis peak"
+            competing = f"{competing}; {text}" if competing else text
         rows.append(
             {
                 "component_id": pid,
@@ -385,6 +437,8 @@ def check_four_stage(
                 "crest_fall_of_peak": cf_pk,
                 "kurt_fall_of_excess": kf_ex,
                 "kurt_fall_of_peak": kf_pk,
+                "cavitation_h_in_life": life_cav,
+                "cavitation_h_after_kurt_peak": after_peak.get("cavitation", 0),
                 "excluded_competing_mechanism": competing,
             }
         )
@@ -419,7 +473,8 @@ def check_four_stage(
         "4",
         "Four-stage ordering",
         f"HF <= envelope <= crest peak <= zone C <= failure (24 h ties); kurtosis and crest peak before zone C; "
-        f"both fall >= {fall_min:.0%} of rise",
+        f"both fall >= {fall_min:.0%} of rise; excluded: pump wear above {wear_limit}, or "
+        f"{', '.join(after_peak_kinds) or 'none'} on the point between the kurtosis peak and failure",
         measured,
         ok,
         df,
@@ -458,7 +513,7 @@ def run_checks(
         check_kinematics(cfg, reg),
         check_healthy(cfg, reg, m),
         check_defect(cfg, reg, m),
-        check_four_stage(cfg, reg, m, events, sensor_events),
+        check_four_stage(cfg, reg, m, events, sensor_events, truth),
         check_independence(),
     ]
     extra: dict[str, Any] = {}
