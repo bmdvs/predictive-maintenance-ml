@@ -1,0 +1,150 @@
+"""Component lifetimes for the fleet survival model: Weibull AFT and Cox with left truncation.
+
+Inputs: register install and replacement dates (pumps, spindles, compressor bearings), CMMS work
+orders, controller collision events and the PM schedule. Output: one row per component life with its
+start, entry into the record, end, event flag (unplanned failure) or censoring (preventive replacement
+or record end), and covariates (component class, machine age class, crash count, lube PM compliance).
+Times are calendar days.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+BEARING_CODES = {
+    "BRG-WEAR",
+    "BRG-SPALL",
+    "BRG-LUBE",
+    "PMP-BRG",
+    "CMP-BRG-MOTOR",
+    "CMP-BRG-AIREND",
+    "PMP-SEAL",
+    "PMP-IMP",
+}
+DAY = pd.Timedelta(days=1)
+
+
+def _dates(s: Any) -> list[pd.Timestamp]:
+    if s is None or (isinstance(s, float) and np.isnan(s)) or str(s).strip() == "":
+        return []
+    return [pd.Timestamp(x, tz="UTC") for x in str(s).split(";") if x]
+
+
+def lifetimes(
+    machines: pd.DataFrame,
+    pumps: pd.DataFrame,
+    spindles: pd.DataFrame,
+    compressors: pd.DataFrame,
+    work_orders: pd.DataFrame,
+    collisions: pd.DataFrame,
+    pm: pd.DataFrame,
+    record: tuple[pd.Timestamp, pd.Timestamp],
+) -> pd.DataFrame:
+    r0, r1 = record
+    age = machines.set_index("machine_id")["age_class"].to_dict()
+    comps = []
+    for p in pumps.itertuples():
+        comps.append(
+            (
+                p.asset_id,
+                "tsc_pump" if p.kind == "tsc" else "flood_pump",
+                p.machine_id,
+                _dates(p.replacement_dates),
+            )
+        )
+    for s in spindles.itertuples():
+        comps.append((f"{s.machine_id}-SP", "spindle", s.machine_id, _dates(s.rebuild_dates)))
+    for c in compressors.itertuples():
+        starts = sorted(set(_dates(c.motor_bearing_replaced) + _dates(c.airend_rebuilt)))
+        comps.append((c.asset_id, "compressor", c.asset_id, starts))
+    wo = work_orders.copy()
+    fail = wo[(wo["wo_type"] == "unplanned_repair") & wo["failure_code"].isin(BEARING_CODES)]
+    prevent = wo[wo["wo_type"].isin(["pm", "condition_based"]) & (wo["downtime_hours"] > 0)]
+    lube = pm[pm["pm_task"] == "spindle_lube_check"]
+    rows = []
+    for asset, cls, machine, starts in comps:
+        starts = sorted(starts) or [r0 - 365 * DAY]
+        ev_f = fail[fail["asset_id"] == asset].sort_values("opened")
+        ev_p = prevent[prevent["asset_id"] == asset].sort_values("opened")
+        bounds = sorted(set([s for s in starts]) | set(ev_f["closed"]) | set(ev_p["closed"]))
+        bounds = [b for b in bounds if b < r1]
+        for k, start in enumerate(bounds):
+            end_limit = bounds[k + 1] if k + 1 < len(bounds) else r1
+            f = ev_f[(ev_f["opened"] > start) & (ev_f["opened"] <= end_limit)]
+            pv = ev_p[(ev_p["opened"] > start) & (ev_p["opened"] <= end_limit)]
+            if len(f):
+                end, event = f["opened"].iat[0], 1
+            elif len(pv):
+                end, event = pv["opened"].iat[0], 0
+            else:
+                end, event = end_limit, 0
+            if end <= r0:
+                continue
+            entry = max(start, r0)
+            mid = machine
+            col = collisions[
+                (collisions["machine_id"] == mid)
+                & (collisions["ts_utc"] > entry)
+                & (collisions["ts_utc"] <= end)
+            ]
+            lp = lube[(lube["asset_id"] == f"{mid}-SP") & (lube["due"] > entry) & (lube["due"] <= end)]
+            rows.append(
+                {
+                    "asset_id": asset,
+                    "component_class": cls,
+                    "machine_age_class": age.get(mid, "older"),
+                    "start": start,
+                    "entry_days": (entry - start) / DAY,
+                    "duration_days": (end - start) / DAY,
+                    "event": event,
+                    "crash_count": len(col),
+                    "lube_pm_compliance": float((lp["outcome"] == "on_time").mean()) if len(lp) else np.nan,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def fit_models(lives: pd.DataFrame) -> dict[str, Any]:
+    from lifelines import CoxPHFitter, WeibullAFTFitter
+    from lifelines.utils import concordance_index
+
+    d = lives.copy()
+    d["lube_pm_compliance"] = d["lube_pm_compliance"].fillna(d["lube_pm_compliance"].median())
+    x = pd.get_dummies(d[["component_class", "machine_age_class"]], drop_first=True, dtype=float)
+    data = pd.concat(
+        [d[["duration_days", "event", "entry_days", "crash_count", "lube_pm_compliance"]], x], axis=1
+    )
+    data = data[data["duration_days"] > data["entry_days"]]
+    out: dict[str, Any] = {"n": len(data), "events": int(data["event"].sum())}
+    aft = WeibullAFTFitter(penalizer=0.1).fit(data, "duration_days", "event", entry_col="entry_days")
+    cox = CoxPHFitter(penalizer=0.1).fit(data, "duration_days", "event", entry_col="entry_days")
+    out["aft"], out["cox"] = aft, cox
+    out["concordance_aft"] = float(
+        concordance_index(data["duration_days"], aft.predict_median(data), data["event"])
+    )
+    out["concordance_cox"] = float(cox.concordance_index_)
+    med = aft.predict_median(data)
+    out["median_life_days_by_class"] = (
+        pd.DataFrame({"component_class": d.loc[data.index, "component_class"], "median_days": med.to_numpy()})
+        .groupby("component_class")["median_days"]
+        .median()
+        .to_dict()
+    )
+    out["ibs"] = integrated_brier(aft, data)
+    return out
+
+
+def integrated_brier(model: Any, data: pd.DataFrame, n_times: int = 20) -> float:
+    """Integrated Brier score without censoring weights (reported with that caveat)."""
+    times = np.linspace(data["duration_days"].quantile(0.1), data["duration_days"].quantile(0.9), n_times)
+    sf = model.predict_survival_function(data, times=times)
+    scores = []
+    for i, t in enumerate(times):
+        alive = (data["duration_days"] > t).astype(float).to_numpy()
+        known = ((data["duration_days"] > t) | (data["event"] == 1)).to_numpy()
+        p = sf.iloc[i].to_numpy()
+        scores.append(np.mean((alive[known] - p[known]) ** 2) if known.any() else np.nan)
+    return float(np.nanmean(scores))

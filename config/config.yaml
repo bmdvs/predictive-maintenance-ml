@@ -513,6 +513,7 @@ baselines:                                # [fixed] 10.3, 11
   healthy_after_repair_days: 21
   exclude_before_unplanned_failure_days: 30
   statistics: [median, mad, p05, p95]
+  sanity: {factor: null, spread_quantile: 0.95}   # step 5 (CLAUDE.md 10.3/10.5): factor PROPOSED from the healthy sister-to-sister spread; null until approved
 
 rules:                                    # [fixed] 10.4; zone boundaries are constants in code
   iso_class_by_point_class:
@@ -581,12 +582,13 @@ models:                                   # [fixed]
 evaluation:                               # [fixed] 12, chance levels
   alert_precision_window_days: 30
   benign_followup_window_days: 30
+  detection_lookback_days: 90                 # step 5: a condition is caught when the method alerted on the asset within this many days before it was confirmed; PROPOSED
   fisher_alpha: 0.05
 
 monitoring:                               # [fixed] 10.10
   tolerance: {recall_drop: 0.25, alerts_per_asset_month_ratio: [0.5, 2.0]}
   consecutive_months: 2
-  drift: {method: databricks_data_profiling, score_test: wasserstein, feature_share_drifted: 0.30}   # platform tooling after the Azure Databricks merge (was evidently); tests and thresholds unchanged
+  drift: {method: databricks_data_profiling, score_test: wasserstein, feature_share_drifted: 0.30, feature_threshold: 0.5}   # platform tooling after the Azure Databricks merge (was evidently); tests and thresholds unchanged; feature_threshold (Wasserstein over the baseline spread) PROPOSED at step 5
 
 checks:                                   # [fixed] sections 9 and 16
   healthy_band_rule: p05_p95_within_range           # check 2: 5th to 95th percentile inside the stated range

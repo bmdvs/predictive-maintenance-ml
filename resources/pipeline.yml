@@ -1,0 +1,26 @@
+resources:
+  pipelines:
+    pdm_pipeline:
+      name: pdm_pipeline
+      catalog: ${var.catalog}
+      schema: bronze
+      continuous: false
+      serverless: ${var.serverless_pipeline}
+      channel: CURRENT
+      libraries:
+        - file:
+            path: ../pipelines/bronze.py
+        - file:
+            path: ../pipelines/silver.py
+        - file:
+            path: ../pipelines/gold.py
+      environment:
+        dependencies:
+          - ../dist/*.whl
+      configuration:
+        pdm.catalog: ${var.catalog}
+        pdm.landing_root: ${var.landing_root}
+        pdm.schema_root: ${var.schema_root}
+        pdm.config_path: ${workspace.file_path}/config/config.yaml
+        spark.sql.legacy.parquet.nanosAsLong: "true"
+        spark.sql.session.timeZone: UTC

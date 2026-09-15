@@ -1,0 +1,49 @@
+bundle:
+  name: pdm
+
+include:
+  - resources/*.yml
+
+artifacts:
+  pdm_wheel:
+    type: whl
+    build: python -m pip wheel --no-deps -w dist .
+    path: .
+
+sync:
+  include:
+    - config/*.yaml
+
+variables:
+  workspace_host:
+    description: Azure Databricks workspace URL (set per target; never committed)
+  catalog:
+    description: Unity Catalog catalog for all schemas
+    default: pdm
+  landing_root:
+    description: Landing volume path holding the source exports
+    default: /Volumes/pdm/landing/exports
+  schema_root:
+    description: Auto Loader schema tracking location
+    default: /Volumes/pdm/landing/exports/_schemas
+  node_type:
+    description: Single-node job cluster type (rule 15)
+    default: Standard_D4ds_v5
+  spark_version:
+    description: Databricks Runtime for job clusters
+    default: 15.4.x-scala2.12
+  serverless_pipeline:
+    description: Run the pipeline on serverless compute when the workspace offers it
+    default: true
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: ${var.workspace_host}
+  prod:
+    mode: production
+    workspace:
+      host: ${var.workspace_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
