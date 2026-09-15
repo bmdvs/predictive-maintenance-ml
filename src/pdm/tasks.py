@@ -393,6 +393,7 @@ def prognosis_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     fails = conds[
         conds["unplanned"]
         & conds["condition_type"].str.startswith("bearing")
+        & conds["instrumented"]
         & ~conds["asset_id"].str.contains("-SP")
         & (conds["credit_ts"] < horizon(cfg))
     ]
