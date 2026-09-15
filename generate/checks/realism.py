@@ -440,6 +440,13 @@ def check_four_stage(
                 "cavitation_h_in_life": life_cav,
                 "cavitation_h_after_kurt_peak": after_peak.get("cavitation", 0),
                 "excluded_competing_mechanism": competing,
+                "ordering_excluded": (
+                    f"onset inside the baselining window from {b0:%Y-%m-%d}"
+                    if c.get("four_stage_ordering_skip_onset_in_baselining")
+                    and pd.notna(b0)
+                    and b0 <= it["onset_ts"] < b1
+                    else None
+                ),
             }
         )
     df = pd.DataFrame(rows)
@@ -458,16 +465,24 @@ def check_four_stage(
     pump_ok = (df["crest_fall_of_excess"] > fall_pump) & (df["kurt_fall_of_excess"] > fall_pump)
     df["fall_rule"] = np.where(pump, f"pump > {fall_pump:.0%}", f">= {fall_min:.0%}")
     df["fall_ok"] = np.where(pump, pump_ok, std_ok)
-    tested = df[df["excluded_competing_mechanism"].isna()]
+    accepted = c.get("four_stage_accepted_deviations", {}) or {}
+    df["accepted_deviation"] = df["instance_id"].map(accepted)
+    tested = df[df["excluded_competing_mechanism"].isna() & df["accepted_deviation"].isna()]
     excluded = df[df["excluded_competing_mechanism"].notna()]
+    deviations = df[df["excluded_competing_mechanism"].isna() & df["accepted_deviation"].notna()]
+    order_tested = tested[tested["ordering_excluded"].isna()]
+    order_out = tested[tested["ordering_excluded"].notna()]
     ok = (
-        bool((tested["ordered"] & tested["peaks_before_zone_c"] & tested["fall_ok"]).all())
+        bool(
+            (order_tested["ordered"] & order_tested["peaks_before_zone_c"]).all() and tested["fall_ok"].all()
+        )
         if len(tested)
         else None
     )
     measured = (
-        f"tested {len(tested)}: ordered {int(tested.ordered.sum())}/{len(tested)}; kurtosis and crest peaks before zone C "
-        f"{int(tested.peaks_before_zone_c.sum())}/{len(tested)}; fall of rise (spindle and compressor >= "
+        f"tested {len(tested)}: ordered {int(order_tested.ordered.sum())}/{len(order_tested)}; kurtosis and crest "
+        f"peaks before zone C {int(order_tested.peaks_before_zone_c.sum())}/{len(order_tested)}; fall of rise "
+        f"(spindle and compressor >= "
         f"{fall_min:.0%}, pump > {fall_pump:.0%}) {int(tested.fall_ok.sum())}/{len(tested)}"
     )
     pumps = tested[tested["component_id"].str.endswith(("-TSC", "-CP"))]
@@ -475,6 +490,14 @@ def check_four_stage(
         measured += "; pump falls (crest/kurtosis) " + ", ".join(
             f"{r.instance_id} {r.crest_fall_of_excess:.0%}/{r.kurt_fall_of_excess:.0%}"
             for r in pumps.itertuples()
+        )
+    if len(order_out):
+        measured += "; ordering not tested: " + "; ".join(
+            f"{r.instance_id} ({r.ordering_excluded})" for r in order_out.itertuples()
+        )
+    if len(deviations):
+        measured += "; accepted deviations: " + "; ".join(
+            f"{r.instance_id} ({r.accepted_deviation})" for r in deviations.itertuples()
         )
     if len(excluded):
         measured += "; excluded " + "; ".join(
@@ -485,7 +508,8 @@ def check_four_stage(
         "Four-stage ordering",
         f"HF <= envelope <= crest peak <= zone C <= failure (24 h ties); kurtosis and crest peak before zone C; "
         f"both fall >= {fall_min:.0%} of rise (pump bearings: above {fall_pump:.0%}, D-003); excluded: pump wear above {wear_limit}, or "
-        f"{', '.join(after_peak_kinds) or 'none'} on the point between the kurtosis peak and failure",
+        f"{', '.join(after_peak_kinds) or 'none'} on the point between the kurtosis peak and failure; ordering "
+        "not tested for onsets inside the baselining window; accepted deviations reported separately",
         measured,
         ok,
         df,

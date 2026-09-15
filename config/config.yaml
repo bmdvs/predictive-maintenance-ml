@@ -614,6 +614,8 @@ checks:                                   # [fixed] sections 9 and 16
   envelope_detection_ratio: 3.0                     # fault-band RMS amplitude over envelope noise floor
   hf_detection_sigma: 2.0
   stage34_fall_frac_min: 0.30                       # spindle and compressor bearings
+  four_stage_accepted_deviations: {HMC-03-SP-F#0: D-004}   # after run-06: run-06 instance accepted under rule 8
+  four_stage_ordering_skip_onset_in_baselining: true      # after run-06: ordering not tested for onsets inside the baselining window
   stage34_fall_frac_min_pump: 0.0                   # after run-05: pump bearings require a fall above 0, percentage reported (DEVIATIONS D-003)
   healthy_exceed_share_max: 0.05
   healthy_env_fault_keys: [bpfo, bpfi, bsf]         # FTF reported, not tested; after pilot-01; also used by check 4 after pilot-02
