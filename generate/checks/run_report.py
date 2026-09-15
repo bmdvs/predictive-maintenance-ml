@@ -223,6 +223,20 @@ def write(
                 columns={"measured": f"previous ({prior.name[:5]})"}
             )
             head = head.merge(prev, on="quantity", how="left")
+        if "spindle_cooling" in chk:
+            spc = chk["spindle_cooling"]
+            lines += [
+                "Spindle cooling episodes and outcomes:",
+                "",
+                _md_table(spc["episodes"]) if len(spc["episodes"]) else "none",
+                "",
+                f"Overheat alarms from lubrication or stage-4 heat: {spc['alarms']}; "
+                "inspections opened after "
+                f"two or more in a shift: {len(spc['alarm_inspections'])}",
+                "",
+            ]
+            if len(spc["alarm_inspections"]):
+                lines += [_md_table(spc["alarm_inspections"]), ""]
         if "confirmed" in chk:
             conf = chk["confirmed"]
             lines += [

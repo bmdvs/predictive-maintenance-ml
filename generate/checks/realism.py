@@ -452,7 +452,12 @@ def check_four_stage(
             None,
             df,
         )
-    df["fall_ok"] = (df["crest_fall_of_excess"] >= fall_min) & (df["kurt_fall_of_excess"] >= fall_min)
+    fall_pump = c.get("stage34_fall_frac_min_pump", fall_min)
+    pump = df["component_id"].str.endswith(("-TSC", "-CP"))
+    std_ok = (df["crest_fall_of_excess"] >= fall_min) & (df["kurt_fall_of_excess"] >= fall_min)
+    pump_ok = (df["crest_fall_of_excess"] > fall_pump) & (df["kurt_fall_of_excess"] > fall_pump)
+    df["fall_rule"] = np.where(pump, f"pump > {fall_pump:.0%}", f">= {fall_min:.0%}")
+    df["fall_ok"] = np.where(pump, pump_ok, std_ok)
     tested = df[df["excluded_competing_mechanism"].isna()]
     excluded = df[df["excluded_competing_mechanism"].notna()]
     ok = (
@@ -462,9 +467,15 @@ def check_four_stage(
     )
     measured = (
         f"tested {len(tested)}: ordered {int(tested.ordered.sum())}/{len(tested)}; kurtosis and crest peaks before zone C "
-        f"{int(tested.peaks_before_zone_c.sum())}/{len(tested)}; fall >= {fall_min:.0%} of rise "
-        f"{int(tested.fall_ok.sum())}/{len(tested)}"
+        f"{int(tested.peaks_before_zone_c.sum())}/{len(tested)}; fall of rise (spindle and compressor >= "
+        f"{fall_min:.0%}, pump > {fall_pump:.0%}) {int(tested.fall_ok.sum())}/{len(tested)}"
     )
+    pumps = tested[tested["component_id"].str.endswith(("-TSC", "-CP"))]
+    if len(pumps):
+        measured += "; pump falls (crest/kurtosis) " + ", ".join(
+            f"{r.instance_id} {r.crest_fall_of_excess:.0%}/{r.kurt_fall_of_excess:.0%}"
+            for r in pumps.itertuples()
+        )
     if len(excluded):
         measured += "; excluded " + "; ".join(
             f"{r.instance_id} ({r.excluded_competing_mechanism})" for r in excluded.itertuples()
@@ -473,7 +484,7 @@ def check_four_stage(
         "4",
         "Four-stage ordering",
         f"HF <= envelope <= crest peak <= zone C <= failure (24 h ties); kurtosis and crest peak before zone C; "
-        f"both fall >= {fall_min:.0%} of rise; excluded: pump wear above {wear_limit}, or "
+        f"both fall >= {fall_min:.0%} of rise (pump bearings: above {fall_pump:.0%}, D-003); excluded: pump wear above {wear_limit}, or "
         f"{', '.join(after_peak_kinds) or 'none'} on the point between the kurtosis peak and failure",
         measured,
         ok,

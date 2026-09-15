@@ -13,6 +13,7 @@ import pandas as pd
 
 from generate import crash
 from generate.degradation import BearingInstance
+from generate.provenance import rng_for
 from pdm.constants import DAYS_PER_YEAR, SECONDS_PER_MINUTE
 
 AXES_BY_CLASS = {
@@ -88,14 +89,21 @@ class MachineMixin:
         self.axes = AXES_BY_CLASS[self.machine["class"]]
         self.machine_hours: list[dict[str, Any]] = []
         self.machine_asset = machine_id
+        self.active_rng = rng_for(self.ctx.run_seed, "active_start", machine_id)
 
     def operating(self, i: int, ts: pd.Timestamp) -> dict[str, Any]:
         row = self.sched.iloc[i]
         down = ts < self.down_until
         cut = 0.0 if down else float(row["cutting_min"])
+        sched_min = int(round(float(row["scheduled_min"])))
+        active_min = 0 if down else min(sched_min, int(round(cut)))
+        start_min = int(self.active_rng.integers(0, sched_min - active_min + 1)) if sched_min > 0 else 0
         return {
             "cut": cut,
             "down": down,
+            "sched_min": sched_min,
+            "active_min": active_min,
+            "active_start_min": start_min,
             "speed": float(row["speed_rpm"]),
             "load": float(row["load_pct"]),
             "flutes": int(row["flutes"]),
@@ -210,6 +218,7 @@ class MachineMixin:
                 "hour_utc": ts,
                 "down": op["down"],
                 "cut_min": op["cut"],
+                "active_start_min": op["active_start_min"],
                 **{f"axis_mult_{a}": mult.get(a, np.nan) for a in ("x", "y", "z", "b")},
                 **extra,
             }

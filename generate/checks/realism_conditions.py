@@ -356,6 +356,7 @@ def check_thermal(
     events: pd.DataFrame,
     m: pd.DataFrame,
     end: pd.Timestamp,
+    machine_hours: pd.DataFrame | None = None,
 ) -> CheckResult:
     c = cfg["checks"]
     tol = c["thermal_residual_tolerance_c"]
@@ -514,20 +515,153 @@ def check_thermal(
     by = df.groupby("mechanism")["rise_within_range"].apply(
         lambda s: f"{int(s.dropna().sum())}/{s.notna().sum()}"
     )
+    sp_ok, sp_text = True, ""
+    if machine_hours is not None:
+        sp_ok, sp_text = spindle_overheat_consistency(cfg, reg, bronze_root, events, machine_hours, end)
     return CheckResult(
         "22",
         "Thermal mechanisms",
         f"measured residual rise within the configured range +/- {tol} C (lower bound only for episodes "
         f"that reached full rise); compressor residual back within {tol} C of its pre-episode level on "
         f"day {ret_days} after cleaning in >= {need:.0%}; velocity median during episodes of at least "
-        f"{vel_days} days within the point's healthy p05-p95",
+        f"{vel_days} days within the point's healthy p05-p95; every cooler overheat stop has a rendered "
+        "thermistor reading at the limit in the stop hour; no healthy cutting hour reaches the limit; "
+        "operator notice share consistent with configured; no episode open longer than one PM interval "
+        "after 2 C without a recorded PM check or a skipped or late PM explaining it",
         f"rise within range: {', '.join(f'{k} {v}' for k, v in by.items())}; compressor return by day "
         f"{ret_days}: "
         + (f"{int(ret.sum())}/{len(ret)} ({ret_share:.0%})" if len(ret) else "no measurable cleaned episodes")
-        + f"; velocity in healthy range {int(vel.sum())}/{len(vel)}",
-        bool(rise_ok and ret_ok and vel_ok),
+        + f"; velocity in healthy range {int(vel.sum())}/{len(vel)}"
+        + sp_text,
+        bool(rise_ok and ret_ok and vel_ok and sp_ok),
         df,
     )
+
+
+def _hmc_minutes(bronze_root: Path, mid: str) -> pd.DataFrame:
+    df = _read_parts(
+        bronze_root / "controller" / "minute_agg",
+        f"month=*/{mid}.parquet",
+        ["minute_utc", "execution", "seconds_in_state", "spindle_temp_c_mean"],
+    )
+    return df[df["seconds_in_state"] == SECONDS_PER_MINUTE].assign(
+        hour_utc=lambda d: d["minute_utc"].dt.floor("h")
+    )
+
+
+def spindle_overheat_consistency(
+    cfg: dict[str, Any],
+    reg: Register,
+    bronze_root: Path,
+    events: pd.DataFrame,
+    machine_hours: pd.DataFrame,
+    end: pd.Timestamp,
+) -> tuple[bool, str]:
+    """Check 22 additions for the spindle thermistor limit, the operator notice and the PM path."""
+    c, sc = cfg["checks"], cfg["spindle_cooling"]
+    lim, tol = sc["overheat_limit_c"], c["overheat_reading_tolerance_c"]
+    hmcs = [mid for mid, v in reg.machines.items() if v["class"] == "hmc"]
+    fails = events[(events["event"] == "unplanned_failure") & (events["mode"] == "spindle_cooler")]
+    stop_ok, stop_n, healthy_max = 0, 0, -np.inf
+    for mid in hmcs:
+        mins = _hmc_minutes(bronze_root, mid)
+        hourly_max = mins.groupby("hour_utc")["spindle_temp_c_mean"].max()
+        for _, f in fails[fails["asset_id"].str.startswith(mid)].iterrows():
+            stop_n += 1
+            stop_ok += int(hourly_max.get(f["ts"].floor("h"), -np.inf) >= lim - tol)
+        mh = machine_hours[machine_hours["machine_id"] == mid]
+        healthy = mh[
+            (mh["cut_min"] > 0)
+            & (mh["cooler_residual_c"].fillna(0) == 0)
+            & (mh["lube_temp_c"].fillna(0) == 0)
+            & (mh["spindle_s4"].fillna(0) == 0)
+        ]["hour_utc"]
+        hm = hourly_max.reindex(pd.DatetimeIndex(healthy)).dropna()
+        if len(hm):
+            healthy_max = max(healthy_max, float(hm.max()))
+    starts = events[(events["event"] == "condition_start") & (events["kind"] == "spindle_cooling")]
+    notice = starts["p_notice"].astype(bool) if "p_notice" in starts else pd.Series(dtype=bool)
+    p_notice = (
+        binomtest(int(notice.sum()), len(notice), sc["operator_notice_prob"]).pvalue
+        if len(notice)
+        else np.nan
+    )
+    clears = events[(events["event"] == "condition_cleared") & (events["kind"] == "spindle_cooling")]
+    pmc = sc["pm_check"]
+    pm = pd.read_parquet(bronze_root / "cmms" / "pm_schedule.parquet")
+    pm = pm[pm["pm_task"] == pmc["task"]]
+    interval = pd.Timedelta(days=cfg["maintenance"]["pm_program"]["hmc"][pmc["task"]]["interval"])
+    gaps, unexplained = 0, 0
+    for _, st in starts.iterrows():
+        t2 = st["ts"] + pd.Timedelta(
+            hours=float(st["ramp_h"]) * pmc["min_residual_c"] / float(st["p_rise_c"])
+        )
+        cl = clears[(clears["asset_id"] == st["asset_id"]) & (clears["ts"] >= st["ts"])]
+        t_end = cl["ts"].iat[0] if not cl.empty else end
+        if t_end - t2 <= interval:
+            continue
+        rows = pm[pm["asset_id"] == st["asset_id"]]
+        done = rows[rows["completed"].between(t2, t_end)]
+        if not done.empty:
+            continue
+        gaps += 1
+        due = rows[rows["due"].between(t2, t_end)]
+        if not (due["outcome"].isin(["skipped", "late"])).any():
+            unexplained += 1
+    ok = (
+        stop_ok == stop_n
+        and healthy_max < lim
+        and (p_notice > c["operator_notice_binomial_alpha"] if pd.notna(p_notice) else True)
+        and unexplained == 0
+    )
+    text = (
+        f"; overheat stops with reading >= {lim - tol:g} C in the stop hour {stop_ok}/{stop_n}; "
+        f"healthy cutting hours max {healthy_max:.1f} C (limit {lim:g}); "
+        f"operator notice drawn {int(notice.sum())}/{len(notice)} "
+        f"(p = {p_notice:.2f}); PM path gaps {gaps}, unexplained {unexplained}"
+    )
+    return bool(ok), text
+
+
+def spindle_cooling_outcomes(events: pd.DataFrame, wo_truth: pd.DataFrame) -> dict[str, Any]:
+    """Episode outcomes (noticed, found at PM, stopped, open at record end) and alarm-driven inspections."""
+    starts = events[(events["event"] == "condition_start") & (events["kind"] == "spindle_cooling")]
+    found = events[(events["event"] == "condition_found") & (events["kind"] == "spindle_cooling")]
+    clears = events[(events["event"] == "condition_cleared") & (events["kind"] == "spindle_cooling")]
+    stops = events[(events["event"] == "unplanned_failure") & (events["mode"] == "spindle_cooler")]
+    rows = []
+    for _, st in starts.iterrows():
+        cl = clears[(clears["asset_id"] == st["asset_id"]) & (clears["ts"] >= st["ts"])].head(1)
+        fd = found[(found["asset_id"] == st["asset_id"]) & (found["ts"] >= st["ts"])]
+        if cl.empty:
+            outcome = "open at record end"
+        elif cl["wo_id"].iat[0] in set(stops["wo_id"]):
+            outcome = "overheat stop"
+        elif not fd.empty and fd["ts"].iat[0] <= cl["ts"].iat[0]:
+            outcome = "noticed by operator" if fd["by"].iat[0] == "operator" else "found at PM"
+        else:
+            outcome = "other"
+        rows.append(
+            {
+                "asset_id": st["asset_id"],
+                "start": st["ts"],
+                "rise_c": st.get("p_rise_c", np.nan),
+                "notice_drawn": bool(st.get("p_notice", False)),
+                "outcome": outcome,
+                "ended": cl["ts"].iat[0] if not cl.empty else pd.NaT,
+                "residual_at_end_c": float(cl["level"].iat[0]) * float(st.get("p_rise_c", np.nan))
+                if not cl.empty
+                else np.nan,
+            }
+        )
+    alarms = events[events["event"] == "overheat_alarm"]
+    opened = events[events["event"] == "alarm_inspection_opened"]
+    insp = wo_truth[wo_truth["wo_id"].isin(set(opened["wo_id"]))] if len(opened) else wo_truth.iloc[0:0]
+    return {
+        "episodes": pd.DataFrame(rows),
+        "alarms": len(alarms),
+        "alarm_inspections": insp[["wo_id", "asset_id", "opened", "notes"]] if len(insp) else insp,
+    }
 
 
 _BEARING_CODES = {"BRG-WEAR", "BRG-SPALL", "BRG-LUBE", "PMP-BRG", "CMP-BRG-MOTOR", "CMP-BRG-AIREND"}

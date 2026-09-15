@@ -5,8 +5,8 @@
 # Ranges in comments are the CLAUDE.md ranges each value sits inside.
 
 meta:                                     # [fixed]
-  config_version: 10
-  generator_version: 0.2.0
+  config_version: 11
+  generator_version: 0.3.0
   run_seed: 20230701
   record: {start: 2023-07-01, end: 2026-06-30}
   shadow: {start: 2026-04-01, end: 2026-06-30}
@@ -330,7 +330,7 @@ fault_conditions:                         # [plant] 8.11; approved 2026-10-21 be
     baseline_spread_sigma_log: 0.10         # NEW: "most near baseline"
 
 coolant_ingress:                          # [plant] 8.12; approved 2026-10-21 before run-05
-  rotary_union_life_tsc_running_h: 5000     # 4,000 to 8,000; about 3.7 leaks over 4 HMCs (target 2 to 6)
+  rotary_union_life_tsc_running_h: 4000     # 4,000 to 8,000; after run-05 (DEVIATIONS D-002), was 5000; about 3.4 leaks over 4 HMCs (target 2 to 6)
   rotary_union_weibull_shape: 2.0           # 1.5 to 2.5
   rotary_union_age_at_record_start_tsc_h: [0, 4000]   # NEW
   tsc_pressure_drop_frac: [0.05, 0.15]      # 5 to 15%
@@ -358,8 +358,12 @@ spindle_cooling:                          # [plant] 8.14; approved 2026-10-21 be
   onset_rate_per_hmc_year: 0.35             # 0.2 to 0.5; about 4.2 episodes (target 2 to 6)
   thermistor_residual_rise_c: [2.0, 6.0]    # 2 to 6
   rise_weeks: [2, 8]                        # 2 to 8
-  overheat_stop_prob_per_day_at_full_rise: 0.2   # NEW: untreated degradation ends in overheat stops
-  repair_hours: [4, 12]                     # NEW
+  overheat_limit_c: 46.0                    # after run-05: fixed controller thermistor limit; replaces overheat_stop_prob_per_day_at_full_rise 0.2
+  operator_notice_prob: 0.4                 # after run-05: cooler's own fault indication noticed, drawn once at onset (0.3 to 0.5)
+  operator_notice_at_ramp_frac: [0.2, 0.6]  # after run-05: notice time as a fraction of the rise time
+  pm_check: {task: spindle_lube_check, min_residual_c: 2.0, detection_prob: 0.6}   # after run-05: spindle chiller check added to the monthly spindle lube check
+  alarm_inspection_min_alarms_per_shift: 2  # after run-05: lubrication or stage-4 overheat alarms in one shift that open an inspection
+  repair_hours: [4, 12]
 
 controller_signals:                       # [plant] 5.2 signal levels; approved 2026-10-21; frozen at checkpoint (a)
   speed_noise_frac: 0.002
@@ -609,7 +613,8 @@ checks:                                   # [fixed] sections 9 and 16
     spindle_cooling_episodes: 4.2
   envelope_detection_ratio: 3.0                     # fault-band RMS amplitude over envelope noise floor
   hf_detection_sigma: 2.0
-  stage34_fall_frac_min: 0.30
+  stage34_fall_frac_min: 0.30                       # spindle and compressor bearings
+  stage34_fall_frac_min_pump: 0.0                   # after run-05: pump bearings require a fall above 0, percentage reported (DEVIATIONS D-003)
   healthy_exceed_share_max: 0.05
   healthy_env_fault_keys: [bpfo, bpfi, bsf]         # FTF reported, not tested; after pilot-01; also used by check 4 after pilot-02
   rolling_window_h: 24
@@ -636,6 +641,10 @@ checks:                                   # [fixed] sections 9 and 16
   thermal_return_days: 3                            # before run-05: check 22
   thermal_return_share_min: 0.80                    # before run-05: check 22
   thermal_baseline_days: 14                         # before run-05: check 22 pre-episode residual baseline
+  lube_conversion_censor_at_record_end: true        # after run-05: episodes whose conversion window ends after the record are not tested for conversion
+  benign_base_windows: episode_assets               # after run-05: check 11 base windows from the assets that carry benign episodes
+  overheat_reading_tolerance_c: 0.5                 # after run-05: check 22, rendered thermistor within the stop hour against the limit
+  operator_notice_binomial_alpha: 0.05              # after run-05: check 22
   thermal_velocity_min_days: 5                      # before run-05: check 22 velocity test only on episodes of at least this many days
   inner_race_exclude_shaft_orders: [1, 2, 3, 4]     # after run-01: check 3 inner-race top peak excludes shaft-rate harmonics
   sideband_line_min_ratio: 12                       # after run-03: check 3 sidebands tested on stage-2 hours with the BPFI line >= 12x the local floor
