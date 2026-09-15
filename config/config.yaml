@@ -586,7 +586,7 @@ evaluation:                               # [fixed] 12, chance levels
 monitoring:                               # [fixed] 10.10
   tolerance: {recall_drop: 0.25, alerts_per_asset_month_ratio: [0.5, 2.0]}
   consecutive_months: 2
-  drift: {method: evidently, score_test: wasserstein, feature_share_drifted: 0.30}
+  drift: {method: databricks_data_profiling, score_test: wasserstein, feature_share_drifted: 0.30}   # platform tooling after the Azure Databricks merge (was evidently); tests and thresholds unchanged
 
 checks:                                   # [fixed] sections 9 and 16
   healthy_band_rule: p05_p95_within_range           # check 2: 5th to 95th percentile inside the stated range
