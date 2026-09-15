@@ -1,9 +1,10 @@
 """Work requests on ALARM with a suspected condition from the indicator pattern (rule-based diagnosis).
 
-Inputs: cases, the rolling features of the triggering points at the case time, hourly indicators and
-baseline rows, controller daily scores and coolant pressure. Output: one work request per case with
-the suspected condition and component, triggering indicators against baseline, the recommended
-inspection and the shadow-mode flag.
+Rule thresholds are z-scores against the point's healthy spread per indicator and regime (median and
+robust scale of the point's model-training hours, log scale for energies). Inputs: cases, the 24-hour
+median indicators of the triggering point at case opening, the point's healthy statistics and
+controller signals. Output: one work request per case with the suspected condition and component,
+the triggering indicators against baseline, the recommended inspection and the shadow-mode flag.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-DB6 = 10 ** (6 / 10)
 INSPECTION = {
     "bearing": "listen, envelope check, temperature check",
     "lubrication": "temperature check, spindle lube check",
@@ -27,40 +27,89 @@ INSPECTION = {
     "unclassified": "listen, temperature check",
 }
 FAULT_LOCATION = {"bpfo": "outer race", "bpfi": "inner race", "bsf": "ball"}
+Z_INDICATORS = {
+    "env_bpfo": "env_bpfo_1_g2",
+    "env_bpfi": "env_bpfi_1_g2",
+    "env_bsf": "env_bsf_1_g2",
+    "ord_01": "ord_01_g2",
+    "ord_02": "ord_02_g2",
+    "ord_3_10": "ord_3_10_g2",
+    "hf": "hf_rms_g",
+    "vel": "vel_rms_mm_s",
+}
+
+
+def log_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    d["ord_3_10_g2"] = d[[f"ord_{o:02d}_g2" for o in range(3, 11)]].sum(axis=1)
+    out = pd.DataFrame(index=d.index)
+    for k, c in Z_INDICATORS.items():
+        out[k] = np.log10(d[c].astype(float) + 1e-12)
+    return out
+
+
+def healthy_stats(train_rows: pd.DataFrame) -> pd.DataFrame:
+    """Median and robust scale (MAD x 1.4826) per point, regime and indicator from training hours."""
+    li = log_indicators(train_rows).assign(
+        point_id=train_rows["point_id"].to_numpy(), regime=train_rows["regime"].to_numpy()
+    )
+    rows = []
+    for (pid, reg), g in li.groupby(["point_id", "regime"]):
+        for k in Z_INDICATORS:
+            v = g[k].dropna().to_numpy()
+            if v.size < 20:
+                continue
+            med = float(np.median(v))
+            sc = float(1.4826 * np.median(np.abs(v - med))) or float(np.std(v)) or 1.0
+            rows.append(
+                {"point_id": pid, "regime": reg, "indicator": k, "median": med, "scale": sc, "n": int(v.size)}
+            )
+    return pd.DataFrame(rows)
+
+
+def zscores(recent: pd.DataFrame, stats: pd.DataFrame, point_id: str) -> dict[str, float]:
+    """z per indicator for the 24-hour window before a case opened, in its dominant regime."""
+    if recent.empty:
+        return {}
+    reg = recent["regime"].mode().iat[0]
+    li = log_indicators(recent).median()
+    st = stats[(stats["point_id"] == point_id) & (stats["regime"] == reg)].set_index("indicator")
+    if st.empty:
+        st = stats[stats["point_id"] == point_id].groupby("indicator")[["median", "scale"]].median()
+    return {
+        k: float((li[k] - st.loc[k, "median"]) / st.loc[k, "scale"])
+        for k in Z_INDICATORS
+        if k in st.index and pd.notna(li[k])
+    }
 
 
 def suspected(
-    feat: dict[str, float], point_class: str | None, controller: dict[str, Any], cfg: dict[str, Any]
+    z: dict[str, float], point_class: str | None, controller: dict[str, Any], zthr: float
 ) -> tuple[str, str]:
-    """Condition and detail from 24-hour ratios to baseline and controller signals."""
-    env = {k: feat.get(f"env_{k}_1_ratio_24h", np.nan) for k in FAULT_LOCATION}
-    env_hit = {k: v for k, v in env.items() if pd.notna(v) and v >= DB6}
-    o1, o2 = feat.get("order_1x_ratio_24h", np.nan), feat.get("order_2x_ratio_24h", np.nan)
-    hf, harm = feat.get("hf_rms_g_ratio_24h", np.nan), feat.get("ord_3_10_ratio", np.nan)
+    """Condition and detail from z-scores against the point's healthy spread and controller signals."""
+    aux = bool(point_class and not point_class.startswith("spindle"))
     pump = bool(point_class and point_class.endswith("pump"))
-    rotating_aux = bool(point_class and not point_class.startswith("spindle"))
-    if controller.get("thermistor_residual_alert") and not rotating_aux:
+    if controller.get("thermistor_residual_alert") and not aux:
         return "cooler", f"thermistor residual {controller.get('thermistor_residual_c', np.nan):.1f} C"
+    env = {k: z.get(f"env_{k}", np.nan) for k in FAULT_LOCATION}
+    env_hit = {k: v for k, v in env.items() if pd.notna(v) and v >= zthr}
     if env_hit:
         k = max(env_hit, key=env_hit.get)
-        return "bearing", f"{FAULT_LOCATION[k]} ({k.upper()} {env_hit[k]:.1f}x baseline)"
-    if rotating_aux and pd.notna(o2) and o2 >= DB6 and (pd.isna(o1) or o2 >= o1):
-        return "misalignment", f"2x {o2:.1f}x baseline"
-    if rotating_aux and pd.notna(o1) and o1 >= DB6:
-        return "imbalance", f"1x {o1:.1f}x baseline"
-    if rotating_aux and pd.notna(harm) and harm >= DB6:
-        return "looseness", f"3x-10x {harm:.1f}x baseline"
-    if pd.notna(hf) and hf >= 1.0 + cfg["rules"]["vendor"]["alert_frac_zone_b_width"]:
-        if pump and controller.get("coolant_drop", 0) >= 0.05:
-            return "cavitation or wear", f"HF {hf:.2f}x baseline with pressure loss"
-        if controller.get("coolant_drop", 0) >= 0.05 and point_class == "spindle_front":
-            return (
-                "contamination",
-                f"HF {hf:.2f}x baseline with TSC pressure drop {controller['coolant_drop']:.0%}",
-            )
-        return "lubrication", f"HF {hf:.2f}x baseline, no fault frequency"
-    if controller.get("thermistor_residual_alert"):
-        return "cooler", f"thermistor residual {controller.get('thermistor_residual_c', np.nan):.1f} C"
+        return "bearing", f"{FAULT_LOCATION[k]} ({k.upper()} z {env_hit[k]:.1f})"
+    o1, o2, harm, hf = (z.get(k, np.nan) for k in ("ord_01", "ord_02", "ord_3_10", "hf"))
+    if aux and pd.notna(o2) and o2 >= zthr and (pd.isna(o1) or o2 >= o1):
+        return "misalignment", f"2x z {o2:.1f}"
+    if aux and pd.notna(o1) and o1 >= zthr:
+        return "imbalance", f"1x z {o1:.1f}"
+    if aux and pd.notna(harm) and harm >= zthr:
+        return "looseness", f"3x-10x z {harm:.1f}"
+    if pd.notna(hf) and hf >= zthr:
+        drop = controller.get("coolant_drop", 0.0)
+        if pump and drop >= 0.05:
+            return "cavitation or wear", f"HF z {hf:.1f} with pressure loss {drop:.0%}"
+        if drop >= 0.05 and point_class == "spindle_front":
+            return "contamination", f"HF z {hf:.1f} with TSC pressure drop {drop:.0%}"
+        return "lubrication", f"HF z {hf:.1f}, no fault frequency"
     if controller.get("axis_drift_alert"):
         return "axis wear", f"axis load drift {controller.get('axis_drift_max', np.nan):.0%}"
     return "unclassified", ""
@@ -68,19 +117,21 @@ def suspected(
 
 def work_requests(
     cases: pd.DataFrame,
-    features_at: dict[str, dict[str, float]],
+    z_at: dict[str, dict[str, float]],
     point_class: dict[str, str],
     controller_at: dict[str, dict[str, Any]],
     shadow: tuple[pd.Timestamp, pd.Timestamp],
-    cfg: dict[str, Any],
+    zthr: float,
 ) -> pd.DataFrame:
     rows = []
     for c in cases.itertuples():
         pts = [p for p in str(c.trigger_points or "").split(",") if p]
         pid = pts[0] if pts else None
-        feat = features_at.get(c.case_id, {})
         cond, detail = suspected(
-            feat, point_class.get(pid) if pid else None, controller_at.get(c.case_id, {}), cfg
+            z_at.get(c.case_id, {}),
+            point_class.get(pid) if pid else None,
+            controller_at.get(c.case_id, {}),
+            zthr,
         )
         rows.append(
             {
@@ -111,3 +162,45 @@ CONDITION_FAMILY = {
     "cooler (compressor)": "cooler",
     "pump seal or impeller": "cavitation or wear",
 }
+
+
+def agreement(
+    requests: pd.DataFrame, cases: pd.DataFrame, conds: pd.DataFrame, wo: pd.DataFrame
+) -> pd.DataFrame:
+    """Per work request, how its case ended: a confirmed condition on the asset while the case was open
+    (agreement scored against its finding family), no fault found (the closing inspection), or other."""
+    cs = cases.set_index("case_id")
+    nff = set(wo.loc[(wo["wo_type"] == "inspection") & wo["no_fault_found"].astype(bool), "wo_id"])
+    rows = []
+    for r in requests.itertuples():
+        c = cs.loc[r.case_id]
+        closed = c["closed"] if pd.notna(c["closed"]) else pd.Timestamp.max.tz_localize("UTC")
+        hit = conds[
+            (conds["asset_key"] == r.asset_id)
+            & (conds["credit_ts"] >= r.created)
+            & (conds["credit_ts"] <= closed)
+        ]
+        if len(hit):
+            first = hit.sort_values("credit_ts").iloc[0]
+            fam = CONDITION_FAMILY.get(first["condition_type"])
+            rows.append(
+                {
+                    "request_id": r.request_id,
+                    "outcome": "confirmed",
+                    "confirmed": first["condition_type"],
+                    "suspected": r.suspected_condition,
+                    "agree": fam == r.suspected_condition,
+                }
+            )
+        else:
+            outcome = "no fault found" if c.get("closing_wo") in nff else "other"
+            rows.append(
+                {
+                    "request_id": r.request_id,
+                    "outcome": outcome,
+                    "confirmed": None,
+                    "suspected": r.suspected_condition,
+                    "agree": None,
+                }
+            )
+    return pd.DataFrame(rows)

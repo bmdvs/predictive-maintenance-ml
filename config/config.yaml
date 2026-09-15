@@ -513,7 +513,12 @@ baselines:                                # [fixed] 10.3, 11
   healthy_after_repair_days: 21
   exclude_before_unplanned_failure_days: 30
   statistics: [median, mad, p05, p95]
-  sanity: {factor: null, spread_quantile: 0.95}   # step 5 (CLAUDE.md 10.3/10.5): factor PROPOSED from the healthy sister-to-sister spread; null until approved
+  sanity:                                    # 10.3/10.5, amended at the step 5 review: one-sided, sister groups of 3+, trend test
+    sister_min_group: 3
+    sister_quantile: 0.95                    # sister factor from the healthy sister spread (high side)
+    trend_quantile: 0.95                     # trend factor from the healthy baselines' implied rises
+    sister_factor: null                      # PROPOSED at the next report; null until approved
+    trend_factor: null                       # PROPOSED at the next report; null until approved
 
 rules:                                    # [fixed] 10.4; zone boundaries are constants in code
   iso_class_by_point_class:
@@ -553,6 +558,11 @@ models:                                   # [fixed]
     candidates: [pca_t2_spe, mahalanobis, isolation_forest, autoencoder_third_octave]
     min_regime_healthy_hours: 200
     threshold_percentile: 99.5
+    persistence_hours: 6                    # step 5 review: model-layer persistence (rule floor keeps 2)
+    exclude_before_condition_days: 30       # step 5 review: training excludes the 30 days before any confirmed condition
+    rebaseline_days: 21                     # step 5 review: excluded after repairs and remounts; model re-centered on it
+    coverage_months: {summer: [6, 8], winter: [12, 2]}   # step 5 review: both seasons required before a point's model is used
+    sweep_percentiles: [99.0, 99.5, 99.8, 99.9, 99.95, 99.99]   # operating curve
     top_contributors: 3
     pca_variance_kept: 0.95
     isolation_forest: {n_estimators: 200}
@@ -561,6 +571,7 @@ models:                                   # [fixed]
     baseline: program_first_month
     drift_alert_frac: 0.15
     thermistor_residual_alert_c: 4.0
+    sweep_scale: [0.5, 0.75, 1.0, 1.5, 2.0, 3.0]   # operating curve: thresholds scaled
   fusion:
     status_map: {ok: below_threshold, watch: single_layer_or_unpersisted, alarm: persisted_threshold_or_two_layers}
     rate_of_change_window_h: 72
@@ -575,20 +586,24 @@ models:                                   # [fixed]
     covariates: [component_class, machine_age_class, crash_count, lube_pm_compliance]
   prognosis:
     failure_mode: auxiliary_bearing_stage2_onward
-    indicator: envelope_fault_band_energy
-    threshold: stage4
+    indicator: velocity_rms                 # step 5 review (was envelope_fault_band_energy)
+    threshold: iso_zone_d                   # step 5 review: ISO 20816-3 zone D boundary per machine group (was stage4)
+    interval: 0.90
     alpha: 0.2
 
 evaluation:                               # [fixed] 12, chance levels
   alert_precision_window_days: 30
   benign_followup_window_days: 30
-  detection_lookback_days: 90                 # step 5: a condition is caught when the method alerted on the asset within this many days before it was confirmed; PROPOSED
+  catch: {opened_within_days: 60, episode_gap_days: 7}   # step 5 review: replaces detection_lookback_days 90
+  vendor_sweep_alert_frac: [0.10, 0.15, 0.25, 0.40, 0.60, 1.00]   # operating curve; 0.25 is the vendor's actual setting
+  advisory_z: 3.0                          # PROPOSED: suspected-condition rules fire at this z-score against the point's healthy spread
+  holdout_shadow: true                     # step 5 review: nothing computed on the shadow quarter until design freeze
   fisher_alpha: 0.05
 
 monitoring:                               # [fixed] 10.10
   tolerance: {recall_drop: 0.25, alerts_per_asset_month_ratio: [0.5, 2.0]}
   consecutive_months: 2
-  drift: {method: databricks_data_profiling, score_test: wasserstein, feature_share_drifted: 0.30, feature_threshold: 0.5}   # platform tooling after the Azure Databricks merge (was evidently); tests and thresholds unchanged; feature_threshold (Wasserstein over the baseline spread) PROPOSED at step 5
+  drift: {method: databricks_data_profiling, score_test: wasserstein, feature_share_drifted: 0.30, feature_threshold: 0.5}   # platform tooling after the Azure Databricks merge (was evidently); tests and thresholds unchanged; feature_threshold 0.5 approved at the step 5 review
 
 checks:                                   # [fixed] sections 9 and 16
   healthy_band_rule: p05_p95_within_range           # check 2: 5th to 95th percentile inside the stated range

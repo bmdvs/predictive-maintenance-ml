@@ -16,13 +16,13 @@ from typing import Any
 
 import pandas as pd
 
-from pdm import log, paths, splits, tasks
+from pdm import log, paths, tasks
 from pdm.config import load_config
 from pdm.features import baselines, controller, indicators, points, rolling, windows
 from pdm.ingest.bronze import BRONZE_TABLES, read_batch
 from pdm.labels import confirmed_conditions
 from pdm.quality import expectations, views
-from pdm.rules.floor import rule_floor_alerts
+from pdm.rules.floor import rule_floor_alerts, rule_floor_exceedances
 from pdm.spark import local_session
 from pdm.store import Store
 
@@ -128,9 +128,12 @@ def run(stages: tuple[str, ...] = STAGES) -> dict[str, Any]:
         summary["rows"]["gold.baseline_stats"] = store.write(
             baselines.window_stats(iw), "gold", "baseline_stats"
         )
-        flags, factor = baselines.sanity_table(spark, iw, pts, win, cfg)
+        end = tasks.horizon(cfg).tz_convert("UTC").tz_localize(None)
+        flags, factors = baselines.sanity_table(
+            spark, iw.where(iw.hour_utc < end), pts, win.where(win.start < end), cfg
+        )
         summary["rows"]["gold.baseline_sanity"] = store.write(flags, "gold", "baseline_sanity")
-        summary["tasks"]["sanity_factor"] = factor
+        summary["tasks"]["sanity_factors"] = factors
         base = rolling.baseline_with_ends(store.read("gold", "baseline_stats"), win)
         summary["rows"]["silver.rolling_features"] = store.write(
             rolling.rolling_features(ind, base, cfg), "silver", "rolling_features"
@@ -140,6 +143,19 @@ def run(stages: tuple[str, ...] = STAGES) -> dict[str, Any]:
             rule_floor_alerts(store.read("bronze", "cm_scalars"), ind, pts, se, cfg),
             "gold",
             "rule_floor_alerts",
+        )
+        summary["rows"]["gold.rule_floor_exceedances"] = store.write(
+            rule_floor_exceedances(
+                store.read("bronze", "cm_scalars"),
+                ind,
+                pts,
+                se,
+                cfg,
+                cfg["evaluation"]["vendor_sweep_alert_frac"],
+                tasks.horizon(cfg),
+            ),
+            "gold",
+            "rule_floor_exceedances",
         )
         done("gold", t0)
 
@@ -163,16 +179,10 @@ def run(stages: tuple[str, ...] = STAGES) -> dict[str, Any]:
 
     if "evaluation" in stages:
         t0 = stage("evaluation")
-        b = splits.boundaries(cfg)
-        for name, bounds in (
-            ("validation", b["validation"]),
-            ("shadow", b["shadow"]),
-            ("jul2025_jun2026", (b["validation"][0], b["shadow"][1])),
-        ):
-            r = tasks.evaluation_task(store, cfg, name, bounds, name)
-            summary["tasks"][f"evaluation_{name}"] = _jsonable(
-                {"summary": r["summary"], "inspection_hours_each": r["inspection_hours_each"]}
-            )
+        r = tasks.evaluation_task(store, cfg)
+        summary["tasks"]["evaluation_validation"] = _jsonable(
+            {k: r[k] for k in ("matched", "headline", "conditions", "sensor_conditions")}
+        )
         done("evaluation", t0)
 
     if "monitoring" in stages:
