@@ -517,8 +517,8 @@ baselines:                                # [fixed] 10.3, 11
     sister_min_group: 3
     sister_quantile: 0.95                    # sister factor from the healthy sister spread (high side)
     trend_quantile: 0.95                     # trend factor from the healthy baselines' implied rises
-    sister_factor: null                      # PROPOSED at the next report; null until approved
-    trend_factor: null                       # PROPOSED at the next report; null until approved
+    sister_factor: 3.04                      # approved 2026-10-22 (proposed from healthy install-window sister spread)
+    trend_factor: 1.45                       # approved 2026-10-22 (proposed from healthy within-window rises)
 
 rules:                                    # [fixed] 10.4; zone boundaries are constants in code
   iso_class_by_point_class:
@@ -567,14 +567,18 @@ models:                                   # [fixed]
     pca_variance_kept: 0.95
     isolation_forest: {n_estimators: 200}
     autoencoder: {hidden: [16, 6, 16], epochs: 200}
+    min_train_hours: 50                     # minimum measured hours for a base fit or a post-repair refit
+    champion_margin_conditions: 2           # step 5 review 2: within this many conditions of the best skill, the simpler candidate wins
   controller_health:
     baseline: program_first_month
     drift_alert_frac: 0.15
     thermistor_residual_alert_c: 4.0
+    discharge_min_load_minutes: 30          # compressor discharge residual uses hours loaded at least this long
     sweep_scale: [0.5, 0.75, 1.0, 1.5, 2.0, 3.0]   # operating curve: thresholds scaled
   fusion:
     status_map: {ok: below_threshold, watch: single_layer_or_unpersisted, alarm: persisted_threshold_or_two_layers}
     rate_of_change_window_h: 72
+    case_quiet_close_days: 7                # step 5 review 2: a case closes 7 days after its last contributing signal, or earlier at a work order close
   supervised:
     asset_class: rotating_auxiliaries
     horizon_days: 14
@@ -583,7 +587,9 @@ models:                                   # [fixed]
     calibration: isotonic
   survival:
     models: [weibull_aft, cox]
-    covariates: [component_class, machine_age_class, crash_count, lube_pm_compliance]
+    covariates: [component_class, machine_age_class, crash_count, lube_pm_compliance]   # reported; not supported by this record (step 5 review 2)
+    pm_review: per_class_weibull            # step 5 review 2: per-class Weibull lifetimes, no other covariates
+    interval: 0.90
   prognosis:
     failure_mode: auxiliary_bearing_stage2_onward
     indicator: velocity_rms                 # step 5 review (was envelope_fault_band_energy)
@@ -591,12 +597,15 @@ models:                                   # [fixed]
     interval: 0.90
     alpha: 0.2
 
+advisory:                                 # 10.9 controller signals for diagnosis
+  tsc_pressure_reference_days: [14, 44]    # TSC pressure drop: daily median against the median 14 to 44 days earlier
+
 evaluation:                               # [fixed] 12, chance levels
   alert_precision_window_days: 30
   benign_followup_window_days: 30
   catch: {opened_within_days: 60, episode_gap_days: 7}   # step 5 review: replaces detection_lookback_days 90
   vendor_sweep_alert_frac: [0.10, 0.15, 0.25, 0.40, 0.60, 1.00]   # operating curve; 0.25 is the vendor's actual setting
-  advisory_z: 3.0                          # PROPOSED: suspected-condition rules fire at this z-score against the point's healthy spread
+  advisory_z: 3.0                          # approved 2026-10-22: suspected-condition rules fire at this z-score against healthy spread
   holdout_shadow: true                     # step 5 review: nothing computed on the shadow quarter until design freeze
   fisher_alpha: 0.05
 

@@ -1,10 +1,12 @@
 """Per-point normal-behavior models.
 
-Training data: all measured hours of the point from install to the training cutoff, less the
-exclusions (the days before confirmed conditions, open cases and repair periods, re-baseline windows
-after repairs and remounts, flagged baselines). A point's model is used only when its training hours
-cover both summer and winter. Features are re-centered per segment (install, then each repair or
-remount) on the segment's first window, so a repair re-baselines the point without refitting.
+Base model: all measured hours of the point from install to the training cutoff, less the exclusions
+(the days before confirmed conditions, open cases and repair periods, re-baseline windows after repairs
+and remounts, flagged baselines), features re-centered per segment; used only when its training hours
+cover both summer and winter, and it scores the install segment. Re-baselining: after each repair or
+remount the point's model is refit on the 21-day post-repair window when that window is usable and
+passes the sanity check, with thresholds from that window's scores; until the window completes, and
+while the latest window is flagged, the point is scored by the rule floor only.
 
 Candidates: PCA with T-squared and SPE, Mahalanobis distance, isolation forest, and an autoencoder on
 the one-third-octave summary. A separate model per regime with at least the configured training
@@ -249,19 +251,22 @@ def fit_point(
     check_training_rows(train_hours, cutoff, excluded)
     cov = seasonal_coverage(train_hours, cfg)
     info = {"n_train": int(keep.sum()), **{f"covers_{k}": v for k, v in cov.items()}}
-    if not all(cov.values()) or keep.sum() < 50:
+    if not all(cov.values()) or keep.sum() < nb["min_train_hours"]:
         return {}, info
     reg = clean["regime"].to_numpy()
-    counts = pd.Series(reg[keep]).value_counts()
-    big = [r for r, n in counts.items() if n >= nb["min_regime_healthy_hours"]]
+    return fit_models(xc[keep], reg[keep], cols, candidate, cfg), info
+
+
+def fit_models(
+    x: np.ndarray, reg: np.ndarray, cols: list[str], candidate: str, cfg: dict[str, Any]
+) -> dict[str, FittedModel]:
+    """One model per regime when every regime has the configured hours, otherwise one model with the
+    regime as a feature."""
+    counts = pd.Series(reg).value_counts()
+    big = [r for r, n in counts.items() if n >= cfg["models"]["nbm"]["min_regime_healthy_hours"]]
     if len(big) == len(counts):
-        models = {
-            r: fit_candidate(xc[keep & (reg == r)], reg[keep & (reg == r)], cols, candidate, cfg, r, False)
-            for r in big
-        }
-    else:
-        models = {"all": fit_candidate(xc[keep], reg[keep], cols, candidate, cfg, None, len(counts) > 1)}
-    return models, info
+        return {r: fit_candidate(x[reg == r], reg[reg == r], cols, candidate, cfg, r, False) for r in big}
+    return {"all": fit_candidate(x, reg, cols, candidate, cfg, None, len(counts) > 1)}
 
 
 def score_point(
@@ -312,6 +317,131 @@ def score_point(
     )
 
 
+def _clean(rows: pd.DataFrame) -> pd.DataFrame:
+    return (
+        rows[~rows["implausible"].fillna(False).astype(bool)]
+        .dropna(subset=["vel_rms_mm_s"])
+        .reset_index(drop=True)
+    )
+
+
+def _score(
+    clean: pd.DataFrame,
+    x: np.ndarray,
+    sel: np.ndarray,
+    models: dict[str, FittedModel],
+    top_k: int,
+    label: str,
+) -> list[pd.DataFrame]:
+    reg = clean["regime"].to_numpy()
+    out = []
+    for key, fm in models.items():
+        m = sel & np.isfinite(x).all(axis=1) & ((reg == key) if key != "all" else True)
+        if not m.any():
+            continue
+        s, contrib = fm.raw_scores(x[m], reg[m])
+        d = pd.DataFrame(
+            {
+                "point_id": clean.loc[m, "point_id"].to_numpy(),
+                "hour_utc": clean.loc[m, "hour_utc"].to_numpy(),
+                "regime": reg[m],
+                "model_regime": key,
+                "model_segment": label,
+                "score": s,
+                "top_contributors": fm.top_contributors(contrib, top_k),
+            }
+        )
+        for p, thr in fm.thresholds.items():
+            d[f"thr_{p:g}"] = thr
+        out.append(d)
+    return out
+
+
+def segment_plan(
+    windows: pd.DataFrame, flagged_ids: set[str], end: pd.Timestamp, rebaseline: pd.Timedelta
+) -> pd.DataFrame:
+    """Per segment of a point (install, then each repair or remount): whether its re-baseline window is
+    usable for a refit. A window is usable when it completed before end, is not excluded for a nearby
+    failure and is not flagged by the sanity check."""
+    w = windows.sort_values("start").reset_index(drop=True)
+    w["window_end"] = w["start"] + rebaseline
+    w["complete"] = w["window_end"] <= end
+    w["flagged"] = w["window_id"].isin(flagged_ids)
+    w["refit"] = w["complete"] & w["usable"].astype(bool) & ~w["flagged"]
+    return w
+
+
+def fit_score_rebaselined(
+    rows: pd.DataFrame,
+    candidate: str,
+    cfg: dict[str, Any],
+    cutoff: pd.Timestamp,
+    excluded: list[tuple[pd.Timestamp, pd.Timestamp]],
+    plan: pd.DataFrame,
+    end: pd.Timestamp,
+    top_k: int,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Scores before end with the base model on the install segment and a refit model on each later
+    segment after its re-baseline window; segments without a usable window are not scored."""
+    nb = cfg["models"]["nbm"]
+    rb = pd.Timedelta(days=nb["rebaseline_days"])
+    starts = list(plan["start"])
+    base, info = fit_point(rows, candidate, cfg, cutoff, excluded, starts)
+    clean = _clean(rows)
+    clean = clean[pd.to_datetime(clean["hour_utc"], utc=True) < end].reset_index(drop=True)
+    if clean.empty:
+        return pd.DataFrame(), []
+    t = pd.to_datetime(clean["hour_utc"], utc=True)
+    seg = segment_ids(clean["hour_utc"], starts)
+    reg = clean["regime"].to_numpy()
+    x, cols = features(clean, candidate)
+    xc, in_first = centered(clean, x, starts, rb)
+    out: list[pd.DataFrame] = []
+    infos = []
+    for k, w in plan.iterrows():
+        rows_k = seg == k
+        row_info = {
+            "point_id": w["point_id"],
+            "segment": int(k),
+            "segment_start": w["start"],
+            "reason": w["reason"],
+        }
+        if k == 0:
+            out += _score(clean, xc, rows_k, base, top_k, "base")
+            infos.append({**row_info, "model": "base" if base else "rule floor only", **info})
+            continue
+        if not w["refit"]:
+            why = (
+                "flagged"
+                if w["flagged"]
+                else ("window incomplete" if not w["complete"] else "window not usable")
+            )
+            infos.append({**row_info, "model": f"rule floor only ({why})", "n_train": 0})
+            continue
+        win = (
+            rows_k
+            & (t >= w["start"]).to_numpy()
+            & (t < w["window_end"]).to_numpy()
+            & np.isfinite(x).all(axis=1)
+        )
+        if win.sum() < nb["min_train_hours"]:
+            infos.append(
+                {**row_info, "model": "rule floor only (too few window hours)", "n_train": int(win.sum())}
+            )
+            continue
+        models = fit_models(x[win], reg[win], cols, candidate, cfg)
+        after = rows_k & (t >= w["window_end"]).to_numpy()
+        out += _score(clean, x, after, models, top_k, f"refit {k}")
+        infos.append({**row_info, "model": "refit", "n_train": int(win.sum()), "models": ",".join(models)})
+    del in_first
+    scores = (
+        pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
+        if out
+        else pd.DataFrame()
+    )
+    return scores, infos
+
+
 def exceedance_hours(scores: pd.DataFrame, percentile: float, persistence: int) -> pd.DataFrame:
     """Hours at which the score has exceeded the percentile threshold on persistence consecutive
     measured hours (the persisted exceedances that alert episodes are built from)."""
@@ -341,3 +471,46 @@ def exceedance_hours(scores: pd.DataFrame, percentile: float, persistence: int) 
         if rows
         else pd.DataFrame(columns=["point_id", "ts", "ratio", "top_contributors"])
     )
+
+
+def season_of(hours: pd.Series, cfg: dict[str, Any]) -> pd.Series:
+    m = pd.to_datetime(hours, utc=True).dt.tz_convert("America/Chicago").dt.month
+    out = pd.Series("shoulder", index=hours.index, dtype=object)
+    for season, (a, b) in cfg["models"]["nbm"]["coverage_months"].items():
+        months = list(range(a, b + 1)) if a <= b else list(range(a, 13)) + list(range(1, b + 1))
+        out[m.isin(months).to_numpy()] = season
+    return out
+
+
+def exceedance_diagnosis(
+    scores: pd.DataFrame,
+    segments: pd.DataFrame,
+    percentile: float,
+    periods: dict[str, tuple[pd.Timestamp, pd.Timestamp]],
+    cfg: dict[str, Any],
+) -> pd.DataFrame:
+    """Share of scored hours above the percentile threshold per point, segment (install, then each
+    repair or remount), period, regime and season."""
+    col = f"thr_{percentile:g}"
+    s = scores.copy()
+    s["hour_utc"] = pd.to_datetime(s["hour_utc"], utc=True)
+    s["over"] = s["score"] > s[col]
+    s["season"] = season_of(s["hour_utc"], cfg).to_numpy()
+    s["period"] = "other"
+    for name, (a, b) in periods.items():
+        s.loc[(s["hour_utc"] >= a) & (s["hour_utc"] < b), "period"] = name
+    parts = []
+    for pid, g in s.groupby("point_id"):
+        seg = segments[segments["point_id"] == pid].sort_values("start").reset_index(drop=True)
+        idx = segment_ids(g["hour_utc"], list(seg["start"]))
+        g = g.assign(segment=idx)
+        g["segment_start"] = [seg["start"].iat[i] if i >= 0 else pd.NaT for i in idx]
+        g["segment_reason"] = [seg["reason"].iat[i] if i >= 0 else "" for i in idx]
+        parts.append(
+            g.groupby(
+                ["point_id", "segment", "segment_start", "segment_reason", "period", "regime", "season"]
+            )
+            .agg(hours=("over", "size"), exceed_share=("over", "mean"))
+            .reset_index()
+        )
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()

@@ -18,6 +18,7 @@ import pandas as pd
 from pdm import log, splits
 from pdm.advisory import requests as adv
 from pdm.evaluation import events as ev
+from pdm.features.controller import compressor_hourly
 from pdm.fusion.status import cases as make_cases
 from pdm.fusion.status import status_changes
 from pdm.models import controller_health as ch
@@ -99,11 +100,6 @@ def _conditions(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- per-point models
-def _segment_starts(win: pd.DataFrame, pid: str) -> tuple[list[pd.Timestamp], list[pd.Timestamp]]:
-    w = win[win["point_id"] == pid].sort_values("start")
-    starts = list(w["start"])
-    rebase = list(w.loc[w["reason"] != "install", "start"])
-    return starts, rebase
 
 
 def _excluded(
@@ -125,14 +121,47 @@ def _excluded(
     return out
 
 
+SIMPLICITY = ("pca_t2_spe", "mahalanobis", "isolation_forest", "autoencoder_third_octave")
+
+
+def select_champion(sel: pd.DataFrame, n_conditions: int, margin_conditions: int) -> str:
+    """Highest skill (catch share minus chance); among candidates within margin_conditions of it, the
+    simplest."""
+    best = sel["skill"].max()
+    close = sel[(best - sel["skill"]) * n_conditions <= margin_conditions + 1e-9]
+    return min(close["candidate"], key=SIMPLICITY.index)
+
+
+def _segment_stats(clean: pd.DataFrame, plan: pd.DataFrame, keep: np.ndarray, min_rows: int) -> pd.DataFrame:
+    """Healthy spread per segment: the base model's training hours in the install segment, and each
+    refit segment's re-baseline window."""
+    t = clean["hour_utc"]
+    parts = []
+    for k, w in plan.iterrows():
+        if k == 0:
+            seg_end = plan["start"].iat[1] if len(plan) > 1 else t.max() + DAY
+            rows = clean[keep & (t < seg_end).to_numpy()]
+            rows = rows if len(rows) >= min_rows else clean[keep]
+        elif w["refit"]:
+            rows = clean[((t >= w["start"]) & (t < w["window_end"])).to_numpy()]
+        else:
+            continue
+        st = adv.healthy_stats(rows)
+        if len(st):
+            parts.append(st.assign(segment=int(k), segment_start=w["start"]))
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
 def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -> dict[str, Any]:
     nb = cfg["models"]["nbm"]
     end = horizon(cfg)
     cutoff = splits.training_cutoff(cfg)
+    rb = pd.Timedelta(days=nb["rebaseline_days"])
     ind = store.read_pd("silver", "hourly_indicators")
     ind["hour_utc"] = _utc(ind["hour_utc"])
     ind = ind[ind["hour_utc"] < end]
     win = _utc_cols(store.read_pd("silver", "healthy_windows"), ["start", "end"])
+    win = win[win["start"] < end]
     sanity = store.read_pd("gold", "baseline_sanity")
     flagged_ids = set(sanity.loc[sanity["flagged"].astype(bool), "window_id"])
     conds = _conditions(store, cfg)
@@ -140,43 +169,34 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
     rf = _episodes_from(store.read_pd("gold", "rule_floor_exceedances"), _points(store), cfg)
     candidates = list(nb["candidates"])
     scores: dict[str, list[pd.DataFrame]] = {c: [] for c in candidates}
-    info_rows, healthy = [], []
+    seg_rows, healthy = [], []
     for pid, rows in ind.groupby("point_id"):
         rows = rows.sort_values("hour_utc").reset_index(drop=True)
         asset = rows["asset_id"].iat[0]
-        starts, rebase = _segment_starts(win, pid)
-        flagged = win[(win["point_id"] == pid) & win["window_id"].isin(flagged_ids)]
-        excl = _excluded(asset, conds, wo, rebase, flagged, cfg)
+        plan = nbm.segment_plan(win[win["point_id"] == pid], flagged_ids, end, rb)
+        rebase = list(plan.loc[plan["reason"] != "install", "start"])
+        excl = _excluded(asset, conds, wo, rebase, plan[plan["flagged"]], cfg)
         for cand in candidates:
-            models, info = nbm.fit_point(rows, cand, cfg, cutoff, excl, starts)
-            if cand == candidates[0]:
-                info_rows.append(
-                    {
-                        "point_id": pid,
-                        "asset_id": asset,
-                        **info,
-                        "used": bool(models),
-                        "models": ",".join(models),
-                        "segments": len(starts),
-                        "excluded_intervals": len(excl),
-                        **{f"n_{k}": v.n_train for k, v in models.items()},
-                    }
-                )
-                clean = rows[~rows["implausible"].fillna(False).astype(bool)].dropna(subset=["vel_rms_mm_s"])
-                keep = nbm.training_mask(clean["hour_utc"], cutoff, excl)
-                healthy.append(adv.healthy_stats(clean[keep]))
-            s = nbm.score_point(rows, models, cfg, starts, nb["top_contributors"])
+            s, infos = nbm.fit_score_rebaselined(
+                rows, cand, cfg, cutoff, excl, plan, end, nb["top_contributors"]
+            )
             if len(s):
                 scores[cand].append(s.assign(asset_id=asset))
+            if cand == candidates[0]:
+                seg_rows += [{**i, "asset_id": asset, "excluded_intervals": len(excl)} for i in infos]
+                clean = rows[~rows["implausible"].fillna(False).astype(bool)].dropna(subset=["vel_rms_mm_s"])
+                clean = clean.reset_index(drop=True)
+                keep = nbm.training_mask(clean["hour_utc"], cutoff, excl)
+                healthy.append(_segment_stats(clean, plan, keep, nb["min_train_hours"]))
     pts = _points(store)
     train_conds = conds[(conds["credit_ts"] < cutoff) & conds["instrumented"]]
     period = (splits.boundaries(cfg)["train"][0], cutoff)
     n_assets = pts["asset_id"].nunique()
-    vend = rf[
-        (rf["method"] == "rule_floor") & (rf["sweep"] == cfg["rules"]["vendor"]["alert_frac_zone_b_width"])
-    ]
+    vend_op = cfg["rules"]["vendor"]["alert_frac_zone_b_width"]
+    vend = rf[(rf["method"] == "rule_floor") & (rf["sweep"] == vend_op)]
     budget, _ = _summary("rule_floor", vend, train_conds, conds, period, n_assets, cfg, store)
     sel_rows, exceed = [], {}
+    gap = cfg["evaluation"]["catch"]["episode_gap_days"]
     for cand in candidates:
         s = pd.concat(scores[cand], ignore_index=True) if scores[cand] else pd.DataFrame()
         curve = []
@@ -185,9 +205,7 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
             ex = ex.merge(pts[["point_id", "asset_id"]], on="point_id") if len(ex) else ex
             exceed[(cand, p)] = ex
             ep = (
-                ev.episodes(
-                    ex[["asset_id", "point_id", "ts"]], cfg["evaluation"]["catch"]["episode_gap_days"]
-                )
+                ev.episodes(ex[["asset_id", "point_id", "ts"]], gap)
                 if len(ex)
                 else ev.episodes(pd.DataFrame(), 0)
             )
@@ -195,20 +213,27 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
             curve.append({**row, "level": p})
         c = pd.DataFrame(curve)
         at = ev.at_budget(c, budget["false_per_asset_month"])
+        op = c[c["level"] == nb["threshold_percentile"]].iloc[0]
+        inside = bool(at["within_curve"])
+        caught = at["caught_share"] if inside else float(op["caught_share"])
+        chance = at["chance_share"] if inside else float(op["chance_share"])
         sel_rows.append(
             {
                 "candidate": cand,
-                "training_caught_at_vendor_budget": at["caught_share"],
-                "training_chance_at_vendor_budget": at["chance_share"],
-                "within_curve": at["within_curve"],
+                "basis": "vendor training budget" if inside else "operating point",
+                "training_caught": caught,
+                "training_chance": chance,
+                "skill": caught - chance,
+                "operating_false_per_asset_month": float(op["false_per_asset_month"]),
+                "curve_false_min": float(c["false_per_asset_month"].min()),
+                "curve_false_max": float(c["false_per_asset_month"].max()),
                 "vendor_training_false_per_asset_month": budget["false_per_asset_month"],
+                "training_conditions": len(train_conds),
             }
         )
-    sel = pd.DataFrame(sel_rows)
-    sel["skill"] = sel["training_caught_at_vendor_budget"] - sel["training_chance_at_vendor_budget"]
-    sel = sel.sort_values("skill", ascending=False, kind="stable").reset_index(drop=True)
-    champion = sel["candidate"].iat[0]
-    info = pd.DataFrame(info_rows)
+    sel = pd.DataFrame(sel_rows).sort_values("skill", ascending=False, kind="stable").reset_index(drop=True)
+    champion = select_champion(sel, len(train_conds), nb["champion_margin_conditions"])
+    info = pd.DataFrame(seg_rows)
     version = model_version("nbm", {"champion": champion, "info": info.to_dict("records")})
     sc = pd.concat(scores[champion], ignore_index=True)
     ex_all = pd.concat(
@@ -221,10 +246,11 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
     )
     run = _mlflow_log(
         experiment,
-        {"champion": champion, "points_used": int(info["used"].sum())},
+        {"champion": champion, "segments_refit": int((info["model"] == "refit").sum())},
         {f"training_skill_{r.candidate}": r.skill for r in sel.itertuples()},
         {"name": "nbm", "model_version": version},
     )
+    hs = pd.concat(healthy, ignore_index=True)
     store.write_pd(sc.assign(model_version=version, candidate=champion), "gold", "nbm_scores")
     store.write_pd(
         ex_all.assign(method="nbm", level="alarm", model_version=version), "gold", "nbm_exceedances"
@@ -232,17 +258,18 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
     store.write_pd(
         sel.assign(champion=sel["candidate"] == champion, model_version=version), "gold", "nbm_candidates"
     )
-    store.write_pd(info.assign(model_version=version), "gold", "nbm_models")
-    store.write_pd(
-        pd.concat(healthy, ignore_index=True).assign(model_version=version), "gold", "point_healthy_stats"
-    )
+    store.write_pd(info.astype({"models": str}).assign(model_version=version), "gold", "nbm_models")
+    store.write_pd(hs.assign(model_version=version), "gold", "point_healthy_stats")
+    b = splits.boundaries(cfg)
+    periods = {"training": (b["train"][0], cutoff), "validation": (b["validation"][0], end)}
+    diag = nbm.exceedance_diagnosis(sc, win, nb["threshold_percentile"], periods, cfg)
+    store.write_pd(diag.assign(model_version=version), "gold", "nbm_exceedance_diagnosis")
     return {
         "champion": champion,
         "selection": sel,
         "version": version,
         "mlflow_run": run,
-        "points_used": int(info["used"].sum()),
-        "points": len(info),
+        "segments": info["model"].value_counts().to_dict(),
     }
 
 
@@ -276,6 +303,14 @@ def controller_health_task(
     )
     store.write_pd(sc.assign(model_version=version), "gold", "controller_health_daily")
     store.write_pd(ex.assign(model_version=version), "gold", "controller_health_exceedances")
+    end_naive = horizon(cfg).tz_convert("UTC").tz_localize(None)
+    cmp_h = compressor_hourly(store.read("bronze", "cmp_minute"), store.read("bronze", "cmp_room"))
+    cmp_h = cmp_h.where(cmp_h.hour_utc < end_naive).toPandas()
+    cmp_h["hour_utc"] = _utc(cmp_h["hour_utc"])
+    dd = ch.discharge_daily(
+        cmp_h, splits.training_cutoff(cfg), cfg["models"]["controller_health"]["discharge_min_load_minutes"]
+    )
+    store.write_pd(dd.assign(model_version=version), "gold", "compressor_discharge_daily")
     return {
         "exceedance_days": ex.groupby("sweep").size().to_dict(),
         "version": version,
@@ -357,8 +392,15 @@ def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = No
         "gold",
         "survival_aft_coefficients",
     )
+    classes = survival.per_class_weibull(lives, cfg["models"]["survival"]["interval"])
+    store.write_pd(classes.assign(model_version=version), "gold", "survival_class_weibull")
     return {
-        k: res[k] for k in ("n", "events", "concordance_aft", "concordance_cox", "ibs_ipcw", "ibs_ipcw_km")
+        "class_weibull": classes,
+        "covariate_models_supported": bool(res["ibs_ipcw"] < res["ibs_ipcw_km"]),
+        **{
+            k: res[k]
+            for k in ("n", "events", "concordance_aft", "concordance_cox", "ibs_ipcw", "ibs_ipcw_km")
+        },
     }
 
 
@@ -543,7 +585,7 @@ def _fused_cases(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     end = horizon(cfg)
     changes = status_changes(sig, cfg)
-    cs = make_cases(changes, sig, wo[wo["closed"] < end])
+    cs = make_cases(changes, sig, wo[wo["closed"] < end], cfg["models"]["fusion"]["case_quiet_close_days"])
     if len(cs):
         cs["opened"] = _utc(cs["opened"])
         cs["closed"] = _utc(cs["closed"])
@@ -572,58 +614,53 @@ def fusion_advisory_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _work_requests(store: Store, cs: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
-    stats = store.read_pd("gold", "point_healthy_stats")
-    cols = [
-        "point_id",
-        "hour_utc",
-        "regime",
-        "implausible",
-        *adv.Z_INDICATORS.values(),
-        *[f"ord_{o:02d}_g2" for o in range(3, 11)],
+def _controller_daily_z(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
+    end = horizon(cfg)
+    train_end = splits.training_cutoff(cfg).tz_convert(LOCAL_TZ).tz_localize(None).normalize()
+    d = store.read_pd("gold", "controller_health_daily")
+    parts = [
+        pd.DataFrame(
+            {"entity": d["machine_id"], "local_date": d["local_date"], "indicator": k, "value": d[c]}
+        )
+        for k, c in (("thermistor", "thermistor_residual_c"), ("axis_drift", "axis_drift_max"))
+        if c in d
     ]
-    ind = store.read_pd("silver", "hourly_indicators", sorted(set(cols) - {"ord_3_10_g2"}))
-    ind["hour_utc"] = _utc(ind["hour_utc"])
-    ind = ind[~ind["implausible"].fillna(False).astype(bool)]
-    daily = store.read_pd("gold", "controller_health_daily")
-    ce = store.read_pd("gold", "controller_health_exceedances")
-    ce = ce[ce["sweep"] == 1.0]
     chh = store.read_pd("silver", "controller_hourly", ["machine_id", "hour_utc", "coolant_pressure_bar"])
     chh["hour_utc"] = _utc(chh["hour_utc"])
-    z_at, ctrl = {}, {}
-    for c in cs.itertuples():
-        t = pd.Timestamp(c.opened)
-        pts = [p for p in str(c.trigger_points or "").split(",") if p]
-        if pts:
-            g = ind[(ind["point_id"] == pts[0]) & (ind["hour_utc"] <= t) & (ind["hour_utc"] > t - DAY)]
-            z_at[c.case_id] = adv.zscores(g, stats, pts[0])
-        mid = "-".join(str(c.asset_id).split("-")[:2])
-        tl = t.tz_convert(LOCAL_TZ).tz_localize(None)
-        d = daily[(daily["machine_id"] == mid) & (pd.to_datetime(daily["local_date"]) <= tl)].tail(1)
-        a = ce[
-            (ce["machine_id"] == mid)
-            & (pd.to_datetime(ce["alert_date"]) <= tl)
-            & (pd.to_datetime(ce["alert_date"]) > tl - pd.Timedelta(days=7))
-        ]
-        cp = chh[chh["machine_id"] == mid]
-        now_p = cp[(cp["hour_utc"] <= t) & (cp["hour_utc"] > t - pd.Timedelta(days=3))][
-            "coolant_pressure_bar"
-        ].median()
-        ref_p = cp[
-            (cp["hour_utc"] <= t - pd.Timedelta(days=14)) & (cp["hour_utc"] > t - pd.Timedelta(days=44))
-        ]["coolant_pressure_bar"].median()
-        ctrl[c.case_id] = {
-            "coolant_drop": float(1 - now_p / ref_p) if ref_p and ref_p > 0 and pd.notna(now_p) else 0.0,
-            "thermistor_residual_alert": bool((a["rule"] == "thermistor_residual").any()),
-            "axis_drift_alert": bool((a["rule"] == "axis_drift").any()),
-            "thermistor_residual_c": float(d["thermistor_residual_c"].iat[0]) if len(d) else np.nan,
-            "axis_drift_max": float(d["axis_drift_max"].iat[0]) if len(d) else np.nan,
-        }
-    pc = _points(store).set_index("point_id")["point_class"].to_dict()
+    chh = chh[chh["hour_utc"] < end]
+    a = cfg["advisory"]["tsc_pressure_reference_days"]
+    parts.append(adv.tsc_drop_daily(chh, (a[0], a[1])))
+    cd = store.read_pd("gold", "compressor_discharge_daily")
+    parts.append(
+        pd.DataFrame(
+            {
+                "entity": cd["compressor_id"],
+                "local_date": cd["local_date"],
+                "indicator": "discharge",
+                "value": cd["discharge_residual_c"],
+            }
+        )
+    )
+    return adv.controller_z(pd.concat(parts, ignore_index=True), train_end)
+
+
+def _work_requests(store: Store, cs: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
+    end = horizon(cfg)
+    stats = _utc_cols(store.read_pd("gold", "point_healthy_stats"), ["segment_start"])
+    cols = ["point_id", "hour_utc", "regime", "implausible", *adv.Z_INDICATORS.values()]
+    cols += [f"ord_{o:02d}_g2" for o in range(3, 11)]
+    ind = store.read_pd("silver", "hourly_indicators", sorted(set(cols) - {"ord_3_10_g2"}))
+    ind["hour_utc"] = _utc(ind["hour_utc"])
+    ind = ind[~ind["implausible"].fillna(False).astype(bool) & (ind["hour_utc"] < end)]
+    vib = adv.daily_point_z(adv.hourly_z(ind, stats))
+    ctrl = _controller_daily_z(store, cfg)
+    pts_by_asset = _points_by_asset(_points(store))
+    zs = {
+        c["case_id"]: adv.case_z(c, vib, pts_by_asset.get(c["asset_id"], []), ctrl, end)
+        for c in cs.to_dict("records")
+    }
     b = splits.boundaries(cfg)
-    wr = adv.work_requests(cs, z_at, pc, ctrl, b["shadow"], cfg["evaluation"]["advisory_z"])
-    z = pd.DataFrame([{"case_id": k, **{f"z_{i}": v for i, v in d.items()}} for k, d in z_at.items()])
-    return wr.merge(z, on="case_id", how="left") if len(z) else wr
+    return adv.work_requests(cs, zs, b["shadow"], cfg["evaluation"]["advisory_z"])
 
 
 # ---------------------------------------------------------------- evaluation
@@ -677,6 +714,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     conds = _conditions(store, cfg)
     conds_p = conds[(conds["credit_ts"] >= period[0]) & (conds["credit_ts"] < period[1])]
     sensor = conds_p[conds_p["instrumented"]]
+    no_sensor = conds_p[~conds_p["instrumented"]]
     n_instr = pts["asset_id"].nunique()
     n_mach = store.read_pd("bronze", "reg_machines")["machine_id"].nunique()
     vend_op = cfg["rules"]["vendor"]["alert_frac_zone_b_width"]
@@ -722,9 +760,15 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         specs.append(("nbm", s, g, sensor, n_instr))
     for s, g in ctrl_ep.groupby("sweep"):
         specs.append(("controller", s, g, conds_p, n_mach))
+        specs.append(
+            ("controller_uninstrumented", s, g[~g["asset_id"].isin(instr_assets)], no_sensor, n_mach)
+        )
     for s, g in case_ep.groupby("sweep"):
         specs.append(("model_layer", s, g, conds_p, n_instr + n_mach))
         specs.append(("model_layer_instrumented", s, g[g["asset_id"].isin(instr_assets)], sensor, n_instr))
+        specs.append(
+            ("model_layer_uninstrumented", s, g[~g["asset_id"].isin(instr_assets)], no_sensor, n_mach)
+        )
     rows, caught = [], []
     for method, s, ep, cnd, n in specs:
         r, c = _summary(method, ep, cnd, conds, period, n, cfg, store, s)
@@ -738,8 +782,10 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         "iso": 0.0,
         "nbm": nb["threshold_percentile"],
         "controller": 1.0,
+        "controller_uninstrumented": 1.0,
         "model_layer": nb["threshold_percentile"],
         "model_layer_instrumented": nb["threshold_percentile"],
+        "model_layer_uninstrumented": nb["threshold_percentile"],
     }
     curves["operating_point"] = [
         operating[m] == s for m, s in zip(curves["method"], curves["sweep"], strict=True)
@@ -766,9 +812,13 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
             }
         )
     matched = pd.DataFrame(matched)
-    head_rows = [("rule_floor", vend_op)] + [
-        ("model_layer", float(matched.loc[matched["method"] == "model_layer", "nearest_sweep"].iat[0])),
-        ("model_layer", nb["threshold_percentile"]),
+    near_instr = float(matched.loc[matched["method"] == "model_layer_instrumented", "nearest_sweep"].iat[0])
+    head_rows = [
+        ("rule_floor", vend_op),
+        ("model_layer_instrumented", nb["threshold_percentile"]),
+        ("model_layer_instrumented", near_instr),
+        ("controller_uninstrumented", 1.0),
+        ("model_layer_uninstrumented", nb["threshold_percentile"]),
     ]
     headline = curves[
         [any((m == r.method) and (s == r.sweep) for m, s in head_rows) for r in curves.itertuples()]

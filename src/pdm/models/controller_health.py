@@ -157,3 +157,43 @@ def alerts(scores: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
                         }
                     )
     return pd.DataFrame(rows, columns=["machine_id", "alert_date", "rule", "value", "threshold"])
+
+
+@dataclass
+class DischargeModel:
+    """Compressor discharge temperature against room ambient and load fraction while loaded."""
+
+    coef: np.ndarray
+
+    @staticmethod
+    def features(h: pd.DataFrame) -> np.ndarray:
+        return np.column_stack(
+            [np.ones(len(h)), h["ambient_c"].to_numpy(float), h["load_min"].to_numpy(float) / 60.0]
+        )
+
+    @classmethod
+    def fit(cls, h: pd.DataFrame) -> DischargeModel:
+        x = cls.features(h)
+        y = h["discharge_temp_c"].to_numpy(float)
+        ok = np.isfinite(y) & np.isfinite(x).all(axis=1)
+        coef = np.linalg.lstsq(x[ok], y[ok], rcond=None)[0]
+        resid = y[ok] - x[ok] @ coef
+        mad = np.median(np.abs(resid - np.median(resid)))
+        keep = np.abs(resid - np.median(resid)) < 3 * 1.4826 * mad
+        return cls(np.linalg.lstsq(x[ok][keep], y[ok][keep], rcond=None)[0])
+
+    def residual(self, h: pd.DataFrame) -> np.ndarray:
+        return h["discharge_temp_c"].to_numpy(float) - self.features(h) @ self.coef
+
+
+def discharge_daily(h: pd.DataFrame, train_end: pd.Timestamp, min_load_min: float) -> pd.DataFrame:
+    """Daily median discharge residual per compressor (hours loaded at least min_load_min minutes); the
+    model per compressor is fitted on training hours only."""
+    h = h[h["load_min"] >= min_load_min].copy()
+    h["local_date"] = pd.to_datetime(h["hour_utc"], utc=True).dt.tz_convert("America/Chicago").dt.date
+    out = []
+    for _cid, g in h.groupby("compressor_id"):
+        m = DischargeModel.fit(g[pd.to_datetime(g["hour_utc"], utc=True) < train_end])
+        d = g[["compressor_id", "local_date"]].assign(discharge_residual_c=m.residual(g))
+        out.append(d.groupby(["compressor_id", "local_date"])["discharge_residual_c"].median().reset_index())
+    return pd.concat(out, ignore_index=True)

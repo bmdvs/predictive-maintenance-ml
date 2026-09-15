@@ -158,3 +158,41 @@ def integrated_brier_ipcw(model: Any, data: pd.DataFrame, n_times: int = 20) -> 
         "kaplan_meier": float(integrated_brier_score(y, y, np.tile(km, (len(data), 1)), times)),
         "times": (float(times[0]), float(times[-1])),
     }
+
+
+def _log_ci(summary: pd.DataFrame, name: str, z: float) -> tuple[float, float]:
+    v, se = float(summary.at[name, "coef"]), float(summary.at[name, "se(coef)"])
+    return v * float(np.exp(-z * se / v)), v * float(np.exp(z * se / v))
+
+
+def per_class_weibull(lives: pd.DataFrame, interval: float) -> pd.DataFrame:
+    """Weibull lifetime per component class with no other covariates, with left truncation at entry
+    into the record and parameter intervals on the log scale; a class with no event gets no fit."""
+    from lifelines import WeibullFitter
+    from scipy.stats import norm
+
+    rows = []
+    for cls, g in lives.groupby("component_class"):
+        d = g[g["duration_days"] > g["entry_days"]]
+        row = {"component_class": cls, "lives": len(d), "events": int(d["event"].sum())}
+        if row["events"] == 0:
+            rows.append({**row, "note": "no events in the record"})
+            continue
+        f = WeibullFitter(alpha=1 - interval).fit(d["duration_days"], d["event"], entry=d["entry_days"])
+        sm = f.summary
+        z = float(norm.ppf(0.5 + interval / 2))
+        (l_lo, l_hi), (r_lo, r_hi) = _log_ci(sm, "lambda_", z), _log_ci(sm, "rho_", z)
+        rows.append(
+            {
+                **row,
+                "shape_rho": float(f.rho_),
+                "scale_lambda_days": float(f.lambda_),
+                "median_life_days": float(f.median_survival_time_),
+                "lambda_low": l_lo,
+                "lambda_high": l_hi,
+                "rho_low": r_lo,
+                "rho_high": r_hi,
+                "note": "",
+            }
+        )
+    return pd.DataFrame(rows)
