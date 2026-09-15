@@ -132,26 +132,6 @@ def select_champion(sel: pd.DataFrame, n_conditions: int, margin_conditions: int
     return min(close["candidate"], key=SIMPLICITY.index)
 
 
-def _segment_stats(clean: pd.DataFrame, plan: pd.DataFrame, keep: np.ndarray, min_rows: int) -> pd.DataFrame:
-    """Healthy spread per segment: the base model's training hours in the install segment, and each
-    refit segment's re-baseline window."""
-    t = clean["hour_utc"]
-    parts = []
-    for k, w in plan.iterrows():
-        if k == 0:
-            seg_end = plan["start"].iat[1] if len(plan) > 1 else t.max() + DAY
-            rows = clean[keep & (t < seg_end).to_numpy()]
-            rows = rows if len(rows) >= min_rows else clean[keep]
-        elif w["refit"]:
-            rows = clean[((t >= w["start"]) & (t < w["window_end"])).to_numpy()]
-        else:
-            continue
-        st = adv.healthy_stats(rows)
-        if len(st):
-            parts.append(st.assign(segment=int(k), segment_start=w["start"]))
-    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-
-
 def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -> dict[str, Any]:
     nb = cfg["models"]["nbm"]
     end = horizon(cfg)
@@ -170,24 +150,37 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
     candidates = list(nb["candidates"])
     scores: dict[str, list[pd.DataFrame]] = {c: [] for c in candidates}
     seg_rows, healthy = [], []
+    rfx = store.read_pd("gold", "rule_floor_exceedances")
+    rfx = rfx[(rfx["method"] == "iso") | (rfx["sweep"] == cfg["rules"]["vendor"]["alert_frac_zone_b_width"])]
+    rfx = rfx.merge(_points(store)[["point_id", "asset_id"]], on="point_id")
+    rfx["ts"] = _utc(rfx["ts"])
     for pid, rows in ind.groupby("point_id"):
         rows = rows.sort_values("hour_utc").reset_index(drop=True)
         asset = rows["asset_id"].iat[0]
         plan = nbm.segment_plan(win[win["point_id"] == pid], flagged_ids, end, rb)
         rebase = list(plan.loc[plan["reason"] != "install", "start"])
         excl = _excluded(asset, conds, wo, rebase, plan[plan["flagged"]], cfg)
+        w = wo[wo["asset_id"].str.startswith(asset) & wo["wo_type"].isin(INSPECTION_OR_REPAIR)]
+        open_work = [(a, b if pd.notna(b) else end) for a, b in zip(w["opened"], w["closed"], strict=True)]
+        alerts = list(rfx.loc[rfx["asset_id"] == asset, "ts"])
         for cand in candidates:
-            s, infos = nbm.fit_score_rebaselined(
-                rows, cand, cfg, cutoff, excl, plan, end, nb["top_contributors"]
+            s, infos, tr = nbm.fit_score_segments(
+                rows, cand, cfg, cutoff, excl, plan, end, nb["top_contributors"], open_work, alerts
             )
             if len(s):
                 scores[cand].append(s.assign(asset_id=asset))
             if cand == candidates[0]:
                 seg_rows += [{**i, "asset_id": asset, "excluded_intervals": len(excl)} for i in infos]
-                clean = rows[~rows["implausible"].fillna(False).astype(bool)].dropna(subset=["vel_rms_mm_s"])
-                clean = clean.reset_index(drop=True)
-                keep = nbm.training_mask(clean["hour_utc"], cutoff, excl)
-                healthy.append(_segment_stats(clean, plan, keep, nb["min_train_hours"]))
+            if cand == candidates[0] and len(tr):
+                healthy.append(
+                    pd.concat(
+                        [
+                            adv.healthy_stats(g).assign(segment=k, segment_start=g["segment_start"].iat[0])
+                            for k, g in tr.groupby("segment")
+                        ],
+                        ignore_index=True,
+                    )
+                )
     pts = _points(store)
     train_conds = conds[(conds["credit_ts"] < cutoff) & conds["instrumented"]]
     period = (splits.boundaries(cfg)["train"][0], cutoff)
@@ -246,7 +239,7 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
     )
     run = _mlflow_log(
         experiment,
-        {"champion": champion, "segments_refit": int((info["model"] == "refit").sum())},
+        {"champion": champion, "segments": len(info)},
         {f"training_skill_{r.candidate}": r.skill for r in sel.itertuples()},
         {"name": "nbm", "model_version": version},
     )
@@ -392,10 +385,15 @@ def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = No
         "gold",
         "survival_aft_coefficients",
     )
-    classes = survival.per_class_weibull(lives, cfg["models"]["survival"]["interval"])
+    iv = cfg["models"]["survival"]["interval"]
+    classes = survival.per_class_weibull(lives, iv)
+    classes["stable"] = classes["events"] > cfg["models"]["survival"]["unstable_max_events"]
     store.write_pd(classes.assign(model_version=version), "gold", "survival_class_weibull")
+    shared, shape = survival.shared_shape_weibull(lives, iv)
+    store.write_pd(shared.assign(model_version=version), "gold", "survival_shared_shape_weibull")
     return {
         "class_weibull": classes,
+        "shared_shape_weibull": shared,
         "covariate_models_supported": bool(res["ibs_ipcw"] < res["ibs_ipcw_km"]),
         **{
             k: res[k]
@@ -746,7 +744,10 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     cs = store.read_pd("gold", "cases_sweep")
     cs = _utc_cols(cs, ["opened", "closed"])
     cs["closed"] = cs["closed"].fillna(horizon(cfg))
-    case_ep = cs.assign(point_id=cs["trigger_points"].fillna(""), last=cs["opened"])
+    cs["chain_opened"] = _utc(cs["chain_opened"])
+    case_ep = cs.assign(
+        point_id=cs["trigger_points"].fillna(""), last=cs["opened"], warning_from=cs["chain_opened"]
+    )
     instr_assets = set(pts["asset_id"])
 
     specs = []
@@ -869,7 +870,19 @@ def _agreement(
     wr = wr[(wr["created"] >= period[0]) & (wr["created"] < period[1])]
     cs = _utc_cols(store.read_pd("gold", "cases"), ["opened", "closed"])
     wo = _wo(store)
-    a = adv.agreement(wr, cs, conds, wo)
+    ev_c = _utc_cols(store.read_pd("bronze", "cmp_events"), ["ts_utc"])
+    trips = ev_c[ev_c["event_type"].str.contains("trip")]
+    lag = pd.Timedelta(days=cfg["advisory"]["trip_match_days"])
+    trip_wos = {
+        r.wo_id
+        for r in conds[conds["condition_type"] == "compressor trip"].itertuples()
+        if (
+            (trips["compressor_id"] == r.asset_id)
+            & (trips["ts_utc"] <= r.confirmed_ts)
+            & (trips["ts_utc"] >= r.confirmed_ts - lag)
+        ).any()
+    }
+    a = adv.agreement(wr, cs, conds, wo, trip_wos)
     return a.merge(wr[["request_id", "asset_id", "point_id", "created", "suspected_detail"]], on="request_id")
 
 

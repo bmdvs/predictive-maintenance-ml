@@ -6,7 +6,9 @@ per-point models and controller health, and CMMS work orders. Outputs: per-asset
 or two layers within the rate-of-change window; any other signal in the window is WATCH. One case per
 asset at a time: it opens at ALARM (a change to ALARM, or the next signal while the asset stays in
 ALARM with no case open) and closes the configured quiet days after its last contributing signal on the
-asset, or earlier when a work order on the asset closes.
+asset, or earlier when a work order recording a repair or corrective action on the asset closes (an
+inspection does not close a case). Cases on an asset with no quiet gap between them form a chain; warning
+is measured from the chain's first opening.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import pandas as pd
 
 LAYER = {"vendor": "rule_floor", "iso": "rule_floor", "nbm": "nbm", "controller": "controller"}
 STRONG = {"nbm", "controller"}
+REPAIR_TYPES = ("unplanned_repair", "condition_based", "corrective")
 
 
 def status_changes(signals: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
@@ -68,7 +71,11 @@ def _alarm_openings(changes: pd.DataFrame, sig: pd.DataFrame) -> pd.DataFrame:
 def cases(
     changes: pd.DataFrame, signals: pd.DataFrame, work_orders: pd.DataFrame, quiet_days: float
 ) -> pd.DataFrame:
-    wo = work_orders[~work_orders["wo_type"].isin(["project"])][["asset_id", "wo_id", "wo_type", "closed"]]
+    repair = work_orders["wo_type"].isin(REPAIR_TYPES) | (
+        (work_orders["wo_type"] == "pm")
+        & work_orders.get("failure_code", pd.Series(index=work_orders.index)).notna()
+    )
+    wo = work_orders[repair][["asset_id", "wo_id", "wo_type", "closed"]]
     quiet = pd.Timedelta(days=quiet_days)
     rows = []
     for asset, g in changes.sort_values("ts").groupby("asset_id"):
@@ -110,4 +117,21 @@ def cases(
                 }
             )
             open_until = closed
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    return chain_openings(out, quiet) if len(out) else out
+
+
+def chain_openings(cases: pd.DataFrame, quiet: pd.Timedelta) -> pd.DataFrame:
+    """First opening of each case's chain: consecutive cases on an asset with less than the quiet gap
+    between one's close and the next's opening."""
+    c = cases.sort_values(["asset_id", "opened"]).copy()
+    first = []
+    for _asset, g in c.groupby("asset_id", sort=False):
+        start, prev_close = None, None
+        for r in g.itertuples():
+            if start is None or r.opened - prev_close >= quiet:
+                start = r.opened
+            first.append(start)
+            prev_close = r.closed
+    c["chain_opened"] = first
+    return c.sort_index()
