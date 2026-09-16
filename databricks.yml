@@ -1,6 +1,9 @@
 bundle:
   name: pdm
 
+# The workspace host is not set here: it comes from the CLI profile (DATABRICKS_CONFIG_PROFILE) or
+# DATABRICKS_HOST, so no workspace identifier is committed.
+
 include:
   - resources/*.yml
 
@@ -15,14 +18,14 @@ sync:
     - config/*.yaml
 
 variables:
-  workspace_host:
-    description: Azure Databricks workspace URL (set per target; never committed)
   catalog:
     description: Unity Catalog catalog for all schemas
     default: pdm
   landing_root:
     description: Landing volume path holding the source exports
     default: /Volumes/pdm/landing/exports
+  landing_volume_location:
+    description: Storage location of the external volume pdm.landing.exports (abfss URL of the landing container's exports folder; set per target, never committed)
   schema_root:
     description: Auto Loader schema tracking location
     default: /Volumes/pdm/landing/exports/_schemas
@@ -40,10 +43,7 @@ targets:
   dev:
     mode: development
     default: true
-    workspace:
-      host: ${var.workspace_host}
   prod:
     mode: production
     workspace:
-      host: ${var.workspace_host}
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}

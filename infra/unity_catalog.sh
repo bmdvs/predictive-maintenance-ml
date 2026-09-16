@@ -1,30 +1,50 @@
 #!/usr/bin/env bash
-# Unity Catalog objects for the landing storage, catalog, schemas and landing volume (environment setup).
-# They are created by hand first; this script records the same objects as CLI commands so the
-# setup can be reproduced and checked. Identifiers come from environment variables, never the repo.
+# Unity Catalog objects for the landing and managed storage, catalog, schemas and landing volume
+# (environment setup). They are created by hand first; this script records the same objects as Databricks CLI
+# commands so the setup can be reproduced and checked. Identifiers come from environment variables,
+# never from the repository.
 #
-# Required: PDM_STORAGE_ACCOUNT, PDM_ACCESS_CONNECTOR_ID (resource id of ac-pdm)
+# Required: PDM_STORAGE_ACCOUNT, and for create only PDM_ACCESS_CONNECTOR_ID (resource id of ac-pdm)
 # Usage: infra/unity_catalog.sh [PROFILE]          creates the objects
-#        infra/unity_catalog.sh [PROFILE] --check  read-only verification
+#        infra/unity_catalog.sh [PROFILE] --check  read-only verification against the expected settings
+#
+# The external locations are created with validation skipped (force-created): file events are not
+# configured on the storage account, and Auto Loader reads by directory listing.
 set -euo pipefail
 
 PROFILE="${1:-${DATABRICKS_CONFIG_PROFILE:-DEFAULT}}"
 MODE="${2:-}"
 CATALOG="${PDM_CATALOG:-pdm}"
-URL="abfss://landing@${PDM_STORAGE_ACCOUNT:?set PDM_STORAGE_ACCOUNT}.dfs.core.windows.net/"
+ACCOUNT="${PDM_STORAGE_ACCOUNT:?set PDM_STORAGE_ACCOUNT}"
+LANDING="abfss://landing@${ACCOUNT}.dfs.core.windows.net/"
+MANAGED="abfss://managed@${ACCOUNT}.dfs.core.windows.net/"
+SCHEMAS=(landing bronze silver gold ml monitoring)
 db() { databricks --profile "${PROFILE}" "$@"; }
 
 if [[ "${MODE}" == "--check" ]]; then
-  db storage-credentials get cred_pdm
-  db external-locations get loc_pdm_landing
-  db catalogs get "${CATALOG}"
-  for s in landing bronze silver gold ml monitoring; do db schemas get "${CATALOG}.${s}"; done
-  db volumes read "${CATALOG}.landing.exports"
-  exit 0
+  fail=0
+  expect() {
+    local what="$1" got="$2" want="$3"
+    if [[ "${got%/}" == "${want%/}" ]]; then echo "ok    ${what}: ${got}"; else echo "DIFF  ${what}: got '${got}', expected '${want}'"; fail=1; fi
+  }
+  field() { python -c "import json,sys; d=json.load(sys.stdin); print(d.get('$1') or '')"; }
+  expect "credential cred_pdm" "$(db storage-credentials get cred_pdm -o json | field name)" "cred_pdm"
+  expect "loc_pdm_landing url" "$(db external-locations get loc_pdm_landing -o json | field url)" "${LANDING}"
+  expect "loc_pdm_landing credential" "$(db external-locations get loc_pdm_landing -o json | field credential_name)" "cred_pdm"
+  expect "loc_pdm_managed url" "$(db external-locations get loc_pdm_managed -o json | field url)" "${MANAGED}"
+  expect "loc_pdm_managed credential" "$(db external-locations get loc_pdm_managed -o json | field credential_name)" "cred_pdm"
+  expect "catalog ${CATALOG} storage root" "$(db catalogs get "${CATALOG}" -o json | field storage_root)" "${MANAGED}"
+  for s in "${SCHEMAS[@]}"; do
+    expect "schema ${CATALOG}.${s} storage root" "$(db schemas get "${CATALOG}.${s}" -o json | field storage_root)" ""
+  done
+  expect "volume ${CATALOG}.landing.exports type" "$(db volumes read "${CATALOG}.landing.exports" -o json | field volume_type)" "EXTERNAL"
+  expect "volume ${CATALOG}.landing.exports location" "$(db volumes read "${CATALOG}.landing.exports" -o json | field storage_location)" "${LANDING}exports"
+  exit "${fail}"
 fi
 
 db storage-credentials create --json "{\"name\": \"cred_pdm\", \"azure_managed_identity\": {\"access_connector_id\": \"${PDM_ACCESS_CONNECTOR_ID:?set PDM_ACCESS_CONNECTOR_ID}\"}}"
-db external-locations create loc_pdm_landing "${URL}" cred_pdm
-db catalogs create "${CATALOG}"
-for s in landing bronze silver gold ml monitoring; do db schemas create "${s}" "${CATALOG}"; done
-db volumes create "${CATALOG}" landing exports EXTERNAL --storage-location "${URL}exports"
+db external-locations create loc_pdm_landing "${LANDING}" cred_pdm --skip-validation
+db external-locations create loc_pdm_managed "${MANAGED}" cred_pdm --skip-validation
+db catalogs create "${CATALOG}" --storage-root "${MANAGED}"
+for s in "${SCHEMAS[@]}"; do db schemas create "${s}" "${CATALOG}"; done
+db volumes create "${CATALOG}" landing exports EXTERNAL --storage-location "${LANDING}exports"
