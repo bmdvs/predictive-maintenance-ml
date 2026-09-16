@@ -30,22 +30,31 @@ ISO_KEY = {
 ALERT_SCHEMA = "method string, point_id string, alert_ts timestamp, level string, rules string, value double"
 
 
+def _events_utc(ev: pd.DataFrame) -> pd.DataFrame:
+    ev = ev.copy()
+    ev["ts"] = pd.to_datetime(ev["ts"])
+    if ev["ts"].dt.tz is None:
+        ev["ts"] = ev["ts"].dt.tz_localize("UTC")
+    return ev
+
+
 def vendor_alerts(
-    scalars: DataFrame, pts: DataFrame, sensor_events: pd.DataFrame, cfg: dict[str, Any]
+    scalars: DataFrame, pts: DataFrame, sensor_events: DataFrame, cfg: dict[str, Any]
 ) -> DataFrame:
+    """Vendor rule replay per point; each point's rows are paired with its own sensor events."""
     res = scalars.where(F.col("axis") == "res").join(pts.select("point_id", "point_class"), "point_id")
     cols = [c for c in res.columns if not c.startswith("_")]
-    se = sensor_events.copy()
-    se["ts"] = pd.to_datetime(se["ts"])
+    se = sensor_events.select("point_id", "ts", "event")
 
-    def fn(pdf: pd.DataFrame) -> pd.DataFrame:
+    def fn(pdf: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+        if pdf.empty:
+            return pd.DataFrame(columns=["method", "point_id", "alert_ts", "level", "rules", "value"])
         pid = pdf["point_id"].iat[0]
         key = ISO_KEY[pdf["point_class"].iat[0]]
         settings = VendorRuleSettings.for_point_class(cfg, key, "compressor" if key == "compressor" else key)
         pdf = pdf.copy()
         pdf["hour_utc"] = pd.to_datetime(pdf["hour_utc"]).dt.tz_localize("UTC")
-        ev = se.assign(ts=se["ts"].dt.tz_localize("UTC") if se["ts"].dt.tz is None else se["ts"])
-        out = replay_point(pid, pdf, ev, settings, cfg)
+        out = replay_point(pid, pdf, _events_utc(events), settings, cfg)
         if not out:
             return pd.DataFrame(columns=["method", "point_id", "alert_ts", "level", "rules", "value"])
         a = pd.DataFrame(out)
@@ -60,7 +69,9 @@ def vendor_alerts(
             }
         )
 
-    return res.select(*cols).groupBy("point_id").applyInPandas(fn, ALERT_SCHEMA)
+    return (
+        res.select(*cols).groupBy("point_id").cogroup(se.groupBy("point_id")).applyInPandas(fn, ALERT_SCHEMA)
+    )
 
 
 def iso_alerts(indicators: DataFrame, cfg: dict[str, Any]) -> DataFrame:
@@ -106,7 +117,7 @@ def rule_floor_alerts(
     scalars: DataFrame,
     indicators: DataFrame,
     pts: DataFrame,
-    sensor_events: pd.DataFrame,
+    sensor_events: DataFrame,
     cfg: dict[str, Any],
 ) -> DataFrame:
     return vendor_alerts(scalars, pts, sensor_events, cfg).unionByName(iso_alerts(indicators, cfg))
@@ -119,7 +130,7 @@ def rule_floor_exceedances(
     scalars: DataFrame,
     indicators: DataFrame,
     pts: DataFrame,
-    sensor_events: pd.DataFrame,
+    sensor_events: DataFrame,
     cfg: dict[str, Any],
     alert_fracs: list[float],
     until: pd.Timestamp | None = None,
@@ -128,19 +139,20 @@ def rule_floor_exceedances(
     alert offset (alarm offset at twice it, as configured) and the ISO zone rule, before until (UTC)."""
     res = scalars.where(F.col("axis") == "res").join(pts.select("point_id", "point_class"), "point_id")
     cols = [c for c in res.columns if not c.startswith("_")]
-    se = sensor_events.copy()
-    se["ts"] = pd.to_datetime(se["ts"])
+    se = sensor_events.select("point_id", "ts", "event")
     ratio = (
         cfg["rules"]["vendor"]["alarm_frac_zone_b_width"] / cfg["rules"]["vendor"]["alert_frac_zone_b_width"]
     )
 
-    def vendor_fn(pdf: pd.DataFrame) -> pd.DataFrame:
+    def vendor_fn(pdf: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+        if pdf.empty:
+            return pd.DataFrame(columns=["method", "sweep", "point_id", "ts", "level"])
         pid = pdf["point_id"].iat[0]
         key = ISO_KEY[pdf["point_class"].iat[0]]
         base = VendorRuleSettings.for_point_class(cfg, key, "compressor" if key == "compressor" else key)
         pdf = pdf.copy()
         pdf["hour_utc"] = pd.to_datetime(pdf["hour_utc"]).dt.tz_localize("UTC")
-        ev = se.assign(ts=se["ts"].dt.tz_localize("UTC") if se["ts"].dt.tz is None else se["ts"])
+        ev = _events_utc(events)
         parts = []
         for f in alert_fracs:
             s = replace(base, alert_frac=f, alarm_frac=f * ratio, suppression_days=0.0)
@@ -168,7 +180,13 @@ def rule_floor_exceedances(
     iso = iso_alerts(indicators, iso_cfg).select(
         "method", F.lit(0.0).alias("sweep"), "point_id", F.col("alert_ts").alias("ts"), "level"
     )
-    out = res.select(*cols).groupBy("point_id").applyInPandas(vendor_fn, EXCEED_SCHEMA).unionByName(iso)
+    out = (
+        res.select(*cols)
+        .groupBy("point_id")
+        .cogroup(se.groupBy("point_id"))
+        .applyInPandas(vendor_fn, EXCEED_SCHEMA)
+        .unionByName(iso)
+    )
     if until is not None:
         out = out.where(F.col("ts") < F.lit(until.tz_convert("UTC").tz_localize(None)))
     return out

@@ -129,16 +129,19 @@ def run(stages: tuple[str, ...] = STAGES) -> dict[str, Any]:
             baselines.window_stats(iw), "gold", "baseline_stats"
         )
         end = tasks.horizon(cfg).tz_convert("UTC").tz_localize(None)
-        flags, factors = baselines.sanity_table(
-            spark, iw.where(iw.hour_utc < end), pts, win.where(win.start < end), cfg
-        )
+        flags = baselines.sanity_table(iw.where(iw.hour_utc < end), pts, win.where(win.start < end), cfg)
         summary["rows"]["gold.baseline_sanity"] = store.write(flags, "gold", "baseline_sanity")
-        summary["tasks"]["sanity_factors"] = factors
+        f0 = store.read("gold", "baseline_sanity").limit(1).toPandas()
+        summary["tasks"]["sanity_factors"] = (
+            f0[["sister_factor", "trend_factor", "proposed_sister", "proposed_trend"]].iloc[0].to_dict()
+            if len(f0)
+            else {}
+        )
         base = rolling.baseline_with_ends(store.read("gold", "baseline_stats"), win)
         summary["rows"]["silver.rolling_features"] = store.write(
             rolling.rolling_features(ind, base, cfg), "silver", "rolling_features"
         )
-        se = store.read_pd("bronze", "cm_sensor_events", ["point_id", "ts", "event"])
+        se = store.read("bronze", "cm_sensor_events")
         summary["rows"]["gold.rule_floor_alerts"] = store.write(
             rule_floor_alerts(store.read("bronze", "cm_scalars"), ind, pts, se, cfg),
             "gold",

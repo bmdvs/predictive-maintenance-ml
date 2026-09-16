@@ -58,14 +58,12 @@ def baseline_stats():
 
 @dp.materialized_view(name=_name("baseline_sanity"))
 def baseline_sanity():
-    session = spark  # noqa: F821
     end = tasks.horizon(CFG).tz_convert("UTC").tz_localize(None)
     iw = _rows_in_windows()
     win = _read("healthy_windows")
-    flags, _ = baselines.sanity_table(
-        session, iw.where(iw.hour_utc < end), _read("points"), win.where(win.start < end), CFG
+    return baselines.sanity_table(
+        iw.where(iw.hour_utc < end), _read("points"), win.where(win.start < end), CFG
     )
-    return flags
 
 
 @dp.materialized_view(name=_name("rolling_features"))
@@ -76,13 +74,13 @@ def rolling_features():
 
 @dp.materialized_view(name=_name("rule_floor_alerts"))
 def rule_floor_alerts():
-    se = _read("cm_sensor_events").select("point_id", "ts", "event").toPandas()
+    se = _read("cm_sensor_events")
     return _rule_floor_alerts(_read("cm_scalars"), _read("hourly_indicators"), _read("points"), se, CFG)
 
 
 @dp.materialized_view(name=_name("rule_floor_exceedances"))
 def rule_floor_exceedances():
-    se = _read("cm_sensor_events").select("point_id", "ts", "event").toPandas()
+    se = _read("cm_sensor_events")
     return _rule_floor_exceedances(
         _read("cm_scalars"),
         _read("hourly_indicators"),
