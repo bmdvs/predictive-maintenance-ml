@@ -250,18 +250,18 @@ def test_nbm_segments_rebaseline_and_causal_updates():
     )
     end = pd.Timestamp("2024-09-01", tz=UTC)
     plan = nbm.segment_plan(win, set(), end, rb)
-    s, info, tr = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], plan, end, 3, [], [])
+    s, info, tr, _fitted = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], plan, end, 3, [], [])
     assert [i["model"] for i in info] == ["segment fit", "window refit"]
     assert info[1]["monthly_updates"] == 2 and info[1]["n_train_final"] > info[1]["n_train"]
     assert set(tr["segment"]) == {0, 1}
     july = [(pd.Timestamp("2024-07-01", tz=UTC), pd.Timestamp("2024-08-01", tz=UTC))]
-    _, info_b, _ = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], plan, end, 3, july, [])
+    _, info_b, _, _ = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], plan, end, 3, july, [])
     assert info_b[1]["n_train_final"] < info[1]["n_train_final"]
     assert not ((s["hour_utc"] >= repair) & (s["hour_utc"] < repair + rb)).any()
     after = s[s["hour_utc"] >= repair + rb]
     assert len(after) and (after["score"] > after["thr_99.5"]).mean() < 0.05
     flagged = nbm.segment_plan(win, {"P|repair"}, end, rb)
-    s2, info2, _ = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], flagged, end, 3, [], [])
+    s2, info2, _, _ = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], flagged, end, 3, [], [])
     assert info2[1]["model"].startswith("rule floor only") and not (s2["hour_utc"] >= repair).any()
 
 

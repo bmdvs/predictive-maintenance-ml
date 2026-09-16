@@ -57,6 +57,13 @@ class Store:
         assert self.local_root is not None
         return (self.local_root / schema / table).as_posix()
 
+    def version(self, schema: str, table: str) -> int | None:
+        """Current Delta version of a table, or None when it does not exist."""
+        if not self.exists(schema, table):
+            return None
+        ref = self.name(schema, table) if self.catalog else f"delta.`{self.name(schema, table)}`"
+        return int(self.spark.sql(f"DESCRIBE HISTORY {ref} LIMIT 1").collect()[0]["version"])
+
     def read(self, schema: str, table: str) -> DataFrame:
         if self.catalog:
             return self.spark.table(self.name(schema, table))
