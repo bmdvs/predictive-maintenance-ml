@@ -1,3 +1,7 @@
+# pdm_pipeline as built by hand in the pipeline editor: sources by file pattern under pipelines/, serverless with
+# Photon, triggered, the pdm wheel as the environment dependency and the six configuration keys the
+# pipeline sources read. The hand-built pipeline already exists; bind it before the first deploy of a
+# target that should own it (infra/README.md), otherwise a deploy creates a second pipeline.
 resources:
   pipelines:
     pdm_pipeline:
@@ -6,14 +10,12 @@ resources:
       schema: bronze
       continuous: false
       serverless: ${var.serverless_pipeline}
+      photon: true
       channel: CURRENT
+      root_path: ..
       libraries:
-        - file:
-            path: ../pipelines/bronze.py
-        - file:
-            path: ../pipelines/silver.py
-        - file:
-            path: ../pipelines/gold.py
+        - glob:
+            include: ../pipelines/**
       environment:
         dependencies:
           - ../dist/*.whl
