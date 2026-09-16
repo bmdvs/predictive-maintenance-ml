@@ -16,7 +16,7 @@ LOCAL_ROOT="${PDM_LOCAL_EXPORTS:-data/bronze}"
 VOLUME="/Volumes/${CATALOG}/landing/exports"
 
 if [[ "${MODE}" == "--check" ]]; then
-  python - "${PROFILE}" "${LOCAL_ROOT}" "${VOLUME}" <<'PY'
+  python - "${PROFILE}" "${LOCAL_ROOT}" "dbfs:${VOLUME}" <<'PY'
 import json
 import pathlib
 import subprocess
@@ -33,7 +33,7 @@ def remote(path: str) -> tuple[int, int]:
     while stack:
         p = stack.pop()
         out = subprocess.run(
-            ["databricks", "--profile", profile, "fs", "ls", f"dbfs:{p}", "-l", "-o", "json"],
+            ["databricks", "--profile", profile, "fs", "ls", p, "-l", "-o", "json"],
             capture_output=True, text=True, check=True,
         ).stdout
         for e in json.loads(out or "[]"):
