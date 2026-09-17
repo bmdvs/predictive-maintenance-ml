@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Unity Catalog objects for the landing and managed storage, catalog, schemas and landing volume
-# (environment setup). They are created by hand first; this script records the same objects as Databricks CLI
-# commands so the setup can be reproduced and checked. Identifiers come from environment variables,
-# never from the repository.
+# Unity Catalog objects for the landing and managed storage, catalog, schemas and landing volume, as
+# Databricks CLI commands so the setup can be reproduced, and a read-only check of an existing setup.
+# Identifiers come from environment variables, never from the repository.
 #
 # Required: PDM_STORAGE_ACCOUNT, and for create only PDM_ACCESS_CONNECTOR_ID (resource id of ac-pdm)
 # Usage: infra/unity_catalog.sh [PROFILE]          creates the objects
