@@ -1,16 +1,7 @@
-"""Job task: event-based evaluation on validation (operating curves, the comparison at the vendor
-operating point, diagnosis agreement), then monitoring, which is skipped while the shadow quarter is
-held out."""
+"""Job task: validation evaluation, then monitoring, skipped while the shadow quarter is held out
+(pdm.entrypoints.monitor)."""
 
-from jobs.common import setup
-from pdm import tasks
-
-
-def main() -> None:
-    store, cfg, _ = setup("monitor")
-    tasks.evaluation_task(store, cfg)
-    tasks.monitoring_task(store, cfg)
-
+from pdm.entrypoints import monitor
 
 if __name__ == "__main__":
-    main()
+    monitor()
