@@ -1,5 +1,6 @@
-"""Job task bodies: train and score the per-point models and controller health, survival, the
-supervised gate, prognosis, fusion, advisory, evaluation and monitoring.
+"""Job task bodies: train the per-point model challengers, controller health, survival and the supervised
+gate; score the per-point models from the registered champion; prognosis, fusion, advisory, evaluation
+and monitoring.
 
 Each task reads its inputs from the Store and writes its output tables back; job entry points under
 jobs/ and the local parity runner call these functions. MLflow logging is optional (tracking off in
@@ -34,6 +35,15 @@ LOCAL_TZ = "America/Chicago"
 DAY = pd.Timedelta(days=1)
 INSTRUMENTED = r"^(HMC-\d+-(SP|TSC|CP)|CMP-\d+)$"
 INSPECTION_OR_REPAIR = ("inspection", "unplanned_repair", "condition_based", "corrective")
+SURVIVAL_INPUTS = [
+    ("bronze", "reg_machines"),
+    ("bronze", "reg_pumps"),
+    ("bronze", "reg_hmc_spindles"),
+    ("bronze", "reg_compressors"),
+    ("bronze", "cmms_work_orders"),
+    ("bronze", "ctrl_events"),
+    ("bronze", "cmms_pm_schedule"),
+]
 
 
 def _utc(s: pd.Series) -> pd.Series:
@@ -115,9 +125,10 @@ def _mlflow_log(
     context: dict[str, Any] | None = None,
     extra: Callable[[], None] | None = None,
     nested: bool = False,
+    lineage: tuple[Store, list[tuple[str, str]]] | None = None,
 ) -> str | None:
-    """One MLflow run with parameters (plus the run context), metrics and tags; extra runs inside it
-    (artifacts, models, nested runs)."""
+    """One MLflow run with parameters (plus the run context), metrics, tags and input tables; extra runs
+    inside it (artifacts, models, nested runs)."""
     if experiment is None:
         return None
     import mlflow
@@ -132,9 +143,27 @@ def _mlflow_log(
             {k: float(v) for k, v in metrics.items() if v is not None and np.isfinite(float(v))}
         )
         mlflow.set_tags(tags)
+        if lineage is not None:
+            log_inputs(*lineage)
         if extra is not None:
             extra()
         return run.info.run_id
+
+
+def log_inputs(store: Store, inputs: list[tuple[str, str]]) -> None:
+    """Input tables as MLflow datasets, so a registered model shows its lineage: the Delta table with its
+    version where its history is readable, otherwise (pipeline materialized views) the table by name."""
+    if not store.catalog:
+        return
+    import mlflow
+
+    for schema, table in inputs:
+        name = store.name(schema, table)
+        try:
+            ds = mlflow.data.load_delta(table_name=name)
+        except Exception:  # noqa: BLE001
+            ds = mlflow.data.from_spark(store.read(schema, table), table_name=name)
+        mlflow.log_input(ds, context="training")
 
 
 def _log_table(df: pd.DataFrame, name: str) -> None:
@@ -209,21 +238,23 @@ def select_champion(sel: pd.DataFrame, n_conditions: int, margin_conditions: int
 
 def _nbm_run_extra(
     candidate: str,
-    segs: dict[str, list[dict[str, Any]]],
+    model: Any,
     infos: dict[str, list[dict[str, Any]]],
     sel: pd.DataFrame,
     ind: pd.DataFrame,
-    nb: dict[str, Any],
 ) -> Callable[[], None]:
     """Inside a candidate's run: one nested run per point, the selection table, and the per-point models
-    as one pyfunc model (registered as pdm.ml.nbm_point_models)."""
+    with their version histories and healthy stats as one pyfunc model (registered by the promote task as
+    pdm.ml.nbm_point_models)."""
 
     def body() -> None:
+        import tempfile
+
         import mlflow
         from mlflow.models import infer_signature
 
         import pdm
-        from pdm.models.nbm_pyfunc import NBMPointModels
+        from pdm.models.nbm_pyfunc import HEALTHY_STATS
 
         for pid, info in sorted(infos.items()):
             fitted = [i for i in info if i.get("model") in ("segment fit", "window refit")]
@@ -241,26 +272,38 @@ def _nbm_run_extra(
                 nested=True,
             )
         _log_table(sel, "candidate_selection")
-        model = NBMPointModels(candidate, nb["threshold_percentile"], segs)
-        cols = ["point_id", "hour_utc", "regime", *nbm.VECTOR_SOURCE, *nbm.toct_columns(ind)]
+        cols = ["point_id", "hour_utc", "regime", "implausible", *nbm.VECTOR_SOURCE, *nbm.toct_columns(ind)]
         example = ind[cols].dropna(subset=["vel_rms_mm_s"]).head(20).reset_index(drop=True)
         example["hour_utc"] = example["hour_utc"].dt.tz_localize(None)
+        example["implausible"] = example["implausible"].fillna(False).astype(bool)
         signature = infer_signature(example, model.predict(None, example))
-        kwargs = {
-            "python_model": model,
-            "code_paths": [str(Path(pdm.__file__).parent)],
-            "signature": signature,
-            "pip_requirements": ["numpy", "pandas", "scipy", "scikit-learn", "pyyaml", "pyarrow"],
-        }
-        try:
-            mlflow.pyfunc.log_model(name="model", **kwargs)
-        except TypeError:
-            mlflow.pyfunc.log_model(artifact_path="model", **kwargs)
+        with tempfile.TemporaryDirectory() as d:
+            hs_path = str(Path(d) / f"{HEALTHY_STATS}.parquet")
+            model.healthy_stats.to_parquet(hs_path)
+            kwargs = {
+                "python_model": model,
+                "artifacts": {HEALTHY_STATS: hs_path},
+                "code_paths": [str(Path(pdm.__file__).parent)],
+                "signature": signature,
+                "pip_requirements": ["numpy", "pandas", "scipy", "scikit-learn", "pyyaml", "pyarrow"],
+            }
+            try:
+                mlflow.pyfunc.log_model(name="model", **kwargs)
+            except TypeError:
+                mlflow.pyfunc.log_model(artifact_path="model", **kwargs)
 
     return body
 
 
-def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -> dict[str, Any]:
+def nbm_task(
+    store: Store, cfg: dict[str, Any], experiment: str | None = None, job_run_id: str | None = None
+) -> dict[str, Any]:
+    """Per-point model challengers: every candidate fit per segment with its version history, the
+    selection rule's pick tagged challenger. Writes the challenger's own scores (gold.nbm_train_scores),
+    the selection table and the segment information; registers nothing. Scoring from the registered
+    champion is nbm_score_task."""
+    from pdm.models.nbm_pyfunc import NBMPointModels
+
     _no_autolog(experiment)
     nb = cfg["models"]["nbm"]
     end = horizon(cfg)
@@ -380,6 +423,19 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
         ("bronze", "cmms_work_orders"),
     ]
     ctx = run_context(store, cfg, inputs) if experiment else {}
+    hs = pd.concat(healthy, ignore_index=True)
+    model_objs = {
+        c: NBMPointModels(
+            c,
+            nb["threshold_percentile"],
+            seg_models[c],
+            nb["top_contributors"],
+            nb["sweep_percentiles"],
+            end,
+            hs,
+        )
+        for c in candidates
+    }
     runs = {}
     for r in sel.itertuples():
         runs[r.candidate] = _mlflow_log(
@@ -412,34 +468,86 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
                 "name": f"nbm {r.candidate}",
                 "layer": "nbm",
                 "candidate": r.candidate,
-                "champion": str(r.candidate == champion).lower(),
+                "challenger": str(r.candidate == champion).lower(),
                 "model_version": version,
+                **({"pdm.job_run_id": str(job_run_id)} if job_run_id else {}),
             },
             context=ctx,
-            extra=_nbm_run_extra(r.candidate, seg_models[r.candidate], point_info[r.candidate], sel, ind, nb),
+            extra=_nbm_run_extra(r.candidate, model_objs[r.candidate], point_info[r.candidate], sel, ind),
+            lineage=(store, inputs),
         )
     run = runs.get(champion)
-    hs = pd.concat(healthy, ignore_index=True)
-    store.write_pd(sc.assign(model_version=version, candidate=champion), "gold", "nbm_scores")
-    store.write_pd(
-        ex_all.assign(method="nbm", level="alarm", model_version=version), "gold", "nbm_exceedances"
-    )
+    store.write_pd(sc.assign(model_version=version, candidate=champion), "gold", "nbm_train_scores")
     store.write_pd(
         sel.assign(champion=sel["candidate"] == champion, model_version=version), "gold", "nbm_candidates"
     )
     store.write_pd(info.astype({"models": str}).assign(model_version=version), "gold", "nbm_models")
-    store.write_pd(hs.assign(model_version=version), "gold", "point_healthy_stats")
-    b = splits.boundaries(cfg)
-    periods = {"training": (b["train"][0], cutoff), "validation": (b["validation"][0], end)}
-    diag = nbm.exceedance_diagnosis(sc, win, nb["threshold_percentile"], periods, cfg)
-    store.write_pd(diag.assign(model_version=version), "gold", "nbm_exceedance_diagnosis")
     return {
-        "champion": champion,
+        "challenger": champion,
         "selection": sel,
         "version": version,
         "mlflow_run": run,
         "mlflow_runs": runs,
         "segments": info["model"].value_counts().to_dict(),
+        "model": model_objs[champion],
+        "train_exceedances": len(ex_all),
+    }
+
+
+def nbm_score_tables(
+    model: Any,
+    ind: pd.DataFrame,
+    pts: pd.DataFrame,
+    win: pd.DataFrame,
+    cfg: dict[str, Any],
+    model_version: str,
+) -> dict[str, pd.DataFrame]:
+    """The per-point model output tables from a registered model: scores, persisted exceedances at every
+    sweep percentile, the per-segment healthy stats and the exceedance diagnosis."""
+    nb = cfg["models"]["nbm"]
+    end = horizon(cfg)
+    cutoff = splits.training_cutoff(cfg)
+    assets = ind.drop_duplicates("point_id").set_index("point_id")["asset_id"]
+    sc = model.score_frame(ind)
+    sc["asset_id"] = sc["point_id"].map(assets)
+    parts = []
+    for p in nb["sweep_percentiles"]:
+        ex = nbm.exceedance_hours(sc, p, nb["persistence_hours"])
+        if len(ex):
+            parts.append(ex.merge(pts[["point_id", "asset_id"]], on="point_id").assign(sweep=p))
+    ex_all = (
+        pd.concat(parts, ignore_index=True)
+        if parts
+        else pd.DataFrame(columns=["point_id", "ts", "ratio", "top_contributors", "asset_id", "sweep"])
+    )
+    b = splits.boundaries(cfg)
+    periods = {"training": (b["train"][0], cutoff), "validation": (b["validation"][0], end)}
+    diag = nbm.exceedance_diagnosis(sc, win, nb["threshold_percentile"], periods, cfg)
+    return {
+        "nbm_scores": sc.assign(model_version=model_version, candidate=model.candidate),
+        "nbm_exceedances": ex_all.assign(method="nbm", level="alarm", model_version=model_version),
+        "point_healthy_stats": model.healthy_stats.assign(model_version=model_version),
+        "nbm_exceedance_diagnosis": diag.assign(model_version=model_version),
+    }
+
+
+def nbm_score_task(store: Store, cfg: dict[str, Any], model: Any, model_version: str) -> dict[str, Any]:
+    """Score every measured hour to the data horizon with the given per-point models (the registered
+    champion in the job) and write gold.nbm_scores, nbm_exceedances, point_healthy_stats and
+    nbm_exceedance_diagnosis with its version."""
+    end = horizon(cfg)
+    ind = store.read_pd("silver", "hourly_indicators")
+    ind["hour_utc"] = _utc(ind["hour_utc"])
+    ind = ind[ind["hour_utc"] < end]
+    win = _utc_cols(store.read_pd("silver", "healthy_windows"), ["start", "end"])
+    win = win[win["start"] < end]
+    out = nbm_score_tables(model, ind, _points(store), win, cfg, model_version)
+    for name, df in out.items():
+        store.write_pd(df, "gold", name)
+    return {
+        "model_version": model_version,
+        "candidate": model.candidate,
+        **{k: len(v) for k, v in out.items()},
     }
 
 
@@ -482,6 +590,7 @@ def controller_health_task(
         context=run_context(store, cfg, [("silver", "controller_hourly"), ("bronze", "reg_machines")])
         if experiment
         else None,
+        lineage=(store, [("silver", "controller_hourly"), ("bronze", "reg_machines")]),
         extra=lambda: _log_table(
             pd.DataFrame([{"machine_id": k, "thermistor_coef": v} for k, v in models.items()]),
             "thermistor_models",
@@ -522,15 +631,8 @@ def rule_floor_task(store: Store, cfg: dict[str, Any], experiment: str | None = 
         r, _ = _summary(method, ep, train_conds, conds, period, n_assets, cfg, store, s)
         rows.append({**r, "sweep": float(s), "operating_point": bool(method == "iso" or s == vend_op)})
     curve = pd.DataFrame(rows).sort_values(["method", "sweep"]).reset_index(drop=True)
-    ctx = (
-        run_context(
-            store,
-            cfg,
-            [("gold", "rule_floor_exceedances"), ("silver", "confirmed_conditions"), ("silver", "points")],
-        )
-        if experiment
-        else {}
-    )
+    rf_inputs = [("gold", "rule_floor_exceedances"), ("silver", "confirmed_conditions"), ("silver", "points")]
+    ctx = run_context(store, cfg, rf_inputs) if experiment else {}
     v = cfg["rules"]["vendor"]
     runs = {}
     for r in curve.itertuples():
@@ -561,6 +663,7 @@ def rule_floor_task(store: Store, cfg: dict[str, Any], experiment: str | None = 
                 "operating_point": str(r.operating_point).lower(),
             },
             context=ctx,
+            lineage=(store, rf_inputs),
         )
     store.write_pd(curve, "gold", "rule_floor_training_curve")
     return {"runs": len(runs), "curve": curve}
@@ -661,22 +764,9 @@ def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = No
             **{f"median_life_days_{r.component_class}": r.median_life_days for r in shared.itertuples()},
         },
         {"name": "survival", "layer": "survival", "model_version": version},
-        context=run_context(
-            store,
-            cfg,
-            [
-                ("bronze", "reg_machines"),
-                ("bronze", "reg_pumps"),
-                ("bronze", "reg_hmc_spindles"),
-                ("bronze", "reg_compressors"),
-                ("bronze", "cmms_work_orders"),
-                ("bronze", "ctrl_events"),
-                ("bronze", "cmms_pm_schedule"),
-            ],
-        )
-        if experiment
-        else None,
+        context=run_context(store, cfg, SURVIVAL_INPUTS) if experiment else None,
         extra=_survival_tables(shared, classes, summary),
+        lineage=(store, SURVIVAL_INPUTS),
     )
     return {
         "class_weibull": classes,
@@ -842,7 +932,7 @@ def _episodes_from(ex: pd.DataFrame, pts: pd.DataFrame, cfg: dict[str, Any]) -> 
 def _daily_first(sig: pd.DataFrame) -> pd.DataFrame:
     d = sig.assign(day=sig["ts"].dt.floor("D"), point_key=sig["point_id"].fillna(""))
     return (
-        d.sort_values("ts")
+        d.sort_values(["ts", "rules"], kind="stable")
         .drop_duplicates(["method", "asset_id", "point_key", "level", "day"])
         .drop(columns=["day", "point_key"])
     )
@@ -873,7 +963,12 @@ def signals(store: Store, cfg: dict[str, Any], nbm_level: float, controller_scal
         part["ts"] = _utc(part["ts"])
     out = pd.concat(parts, ignore_index=True)
     out = out[out["ts"] < horizon(cfg)]
-    return _daily_first(out).sort_values("ts").reset_index(drop=True)
+    d = _daily_first(out).assign(_pk=lambda x: x["point_id"].fillna(""))
+    return (
+        d.sort_values(["ts", "method", "asset_id", "_pk", "level", "rules"], kind="stable")
+        .drop(columns=["_pk"])
+        .reset_index(drop=True)
+    )
 
 
 def _fused_cases(

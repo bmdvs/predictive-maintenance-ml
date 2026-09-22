@@ -1,17 +1,19 @@
-"""Per-point normal-behavior models.
+"""Per-point normal-behavior models, one model per segment of a point (install, then each repair or remount).
 
-Base model: all measured hours of the point from install to the training cutoff, less the exclusions
-(the days before confirmed conditions, open cases and repair periods, re-baseline windows after repairs
-and remounts, flagged baselines), features re-centered per segment; used only when its training hours
-cover both summer and winter, and it scores the install segment. Re-baselining: after each repair or
-remount the point's model is refit on the 21-day post-repair window when that window is usable and
-passes the sanity check, with thresholds from that window's scores; until the window completes, and
-while the latest window is flagged, the point is scored by the rule floor only.
+A segment that starts before the training cutoff is fit on all its eligible hours before the cutoff (less
+the 30 days before confirmed conditions, open inspection and repair work, re-baseline windows and flagged
+baselines); a later segment starts from its 21-day post-repair re-baseline window. A segment without
+summer and winter coverage at the cutoff, or starting after it, is updated monthly on hours that were not
+inside an open work order or an alert episode at the time, using only information available then, until
+it has coverage. A segment whose re-baseline window is flagged, incomplete or not usable, and a pre-cutoff
+segment that ends without coverage, is left to the rule floor. Re-baseline windows are not scored.
 
-Candidates: PCA with T-squared and SPE, Mahalanobis distance, isolation forest, and an autoencoder on
-the one-third-octave summary. A separate model per regime with at least the configured training
-hours, otherwise one model with the regime as a feature. Thresholds are percentiles of the training
-scores; the configured percentile is the operating point and others form the operating curve.
+Candidates: PCA with T-squared and SPE, Mahalanobis distance, isolation forest, and an autoencoder on the
+one-third-octave summary; a separate model per regime with the configured hours, otherwise the regime as
+a feature. Thresholds are percentiles of each model's training scores: the configured percentile is the
+operating point and the sweep percentiles form the operating curve. Each segment keeps its version
+history (initial fit, then each monthly update with the hours it applies to), so scoring reproduces the
+causal scores.
 """
 
 from __future__ import annotations
@@ -337,6 +339,8 @@ def _score(
     models: dict[str, FittedModel],
     top_k: int,
     label: str,
+    update: int = 0,
+    carry: tuple[str, ...] = (),
 ) -> list[pd.DataFrame]:
     reg = clean["regime"].to_numpy()
     out = []
@@ -352,14 +356,60 @@ def _score(
                 "regime": reg[m],
                 "model_regime": key,
                 "model_segment": label,
+                "model_update": update,
                 "score": s,
                 "top_contributors": fm.top_contributors(contrib, top_k),
             }
         )
         for p, thr in fm.thresholds.items():
             d[f"thr_{p:g}"] = thr
+        for c in carry:
+            d[c] = clean.loc[m, c].to_numpy()
         out.append(d)
     return out
+
+
+def _utc_ts(v: Any) -> pd.Timestamp:
+    ts = pd.Timestamp(v)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
+def score_versions(
+    rows: pd.DataFrame,
+    segments: list[dict[str, Any]],
+    candidate: str,
+    top_k: int,
+    end: pd.Timestamp,
+    carry: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    """Scores for one point from its segments' version histories, each version on the hours it applied
+    to; the same rows, batches and order as fit_score_segments, so the scores are identical."""
+    rows = rows.sort_values("hour_utc", kind="stable").reset_index(drop=True)
+    clean = _clean(rows)
+    clean = clean[pd.to_datetime(clean["hour_utc"], utc=True) < end].reset_index(drop=True)
+    if clean.empty or not segments:
+        return pd.DataFrame()
+    t = _naive(clean["hour_utc"])
+    x, _ = features(clean, candidate)
+    out: list[pd.DataFrame] = []
+    for s in segments:
+        for v in s["versions"]:
+            a, b = _naive([v["effective_from"]])[0], _naive([v["effective_to"]])[0]
+            out += _score(
+                clean,
+                x,
+                (t >= a) & (t < b),
+                v["models"],
+                top_k,
+                f"segment {s['segment']}",
+                v["update"],
+                carry,
+            )
+    return (
+        pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
+        if out
+        else pd.DataFrame()
+    )
 
 
 def segment_plan(
@@ -423,7 +473,7 @@ def fit_score_segments(
     were not inside an open work order, a rule-floor alert episode or its own alert episode at the
     time, until it has coverage. A segment whose re-baseline window is flagged, incomplete or not
     usable is left to the rule floor. Returns scores, per-segment information, training rows and each
-    fitted segment's final models.
+    fitted segment's version history (models with the hours each version applied to) and final models.
     """
     nb = cfg["models"]["nbm"]
     gap = np.timedelta64(int(cfg["evaluation"]["catch"]["episode_gap_days"] * 86400), "s")
@@ -492,11 +542,23 @@ def fit_score_segments(
         updates = month_starts(max(cutoff, w["window_end"]), seg_end) if not covered else []
         bounds = [score_from, *[_naive([m])[0] for m in updates], _naive([seg_end])[0]]
         seg_scores: list[pd.DataFrame] = []
+        versions: list[dict[str, Any]] = []
         n_updates = 0
         last = max(cut, we)
         for i in range(len(bounds) - 1):
             a, b = bounds[i], bounds[i + 1]
-            part = _score(clean, x, rows_k & (t >= a) & (t < b), models, top_k, f"segment {k}")
+            if versions and versions[-1]["update"] == n_updates:
+                versions[-1]["effective_to"] = _utc_ts(b)
+            else:
+                versions.append(
+                    {
+                        "update": n_updates,
+                        "effective_from": _utc_ts(a),
+                        "effective_to": _utc_ts(b),
+                        "models": models,
+                    }
+                )
+            part = _score(clean, x, rows_k & (t >= a) & (t < b), models, top_k, f"segment {k}", n_updates)
             seg_scores += part
             if i == len(bounds) - 2 or covered:
                 continue
@@ -524,7 +586,15 @@ def fit_score_segments(
             }
         )
         train_rows.append(clean[train].assign(segment=int(k), segment_start=w["start"]))
-        seg_models.append({"segment": int(k), "start": w["start"], "reason": w["reason"], "models": models})
+        seg_models.append(
+            {
+                "segment": int(k),
+                "start": w["start"],
+                "reason": w["reason"],
+                "models": models,
+                "versions": versions,
+            }
+        )
     scores = (
         pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
         if out

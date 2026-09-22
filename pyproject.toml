@@ -1,6 +1,6 @@
 [project]
 name = "pdm"
-version = "0.1.8"
+version = "0.1.9"
 description = "Condition monitoring and predictive maintenance for a CNC machining fleet"
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "Brian Davis" }]
@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 pdm-train-models = "pdm.entrypoints:train_models"
+pdm-promote = "pdm.entrypoints:promote"
 pdm-score = "pdm.entrypoints:score"
 pdm-monitor = "pdm.entrypoints:monitor"
 

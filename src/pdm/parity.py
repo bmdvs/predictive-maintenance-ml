@@ -172,7 +172,11 @@ def run(stages: tuple[str, ...] = STAGES) -> dict[str, Any]:
     for name, fn in model_tasks.items():
         if name in stages:
             t0 = stage(name)
-            summary["tasks"][name] = _jsonable(fn(store, cfg))
+            r = fn(store, cfg)
+            if name == "nbm":
+                model = r.pop("model")
+                r["scoring"] = tasks.nbm_score_task(store, cfg, model, f"{r['challenger']}/{r['version']}")
+            summary["tasks"][name] = _jsonable(r)
             done(name, t0)
 
     if "fusion" in stages:

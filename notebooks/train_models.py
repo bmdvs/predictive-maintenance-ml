@@ -6,12 +6,13 @@
 # MAGIC notebook's folder, which holds `dist/` (the pdm wheel) and `config/config.yaml`. Each logs to MLflow under
 # MAGIC `/Shared/pdm/<layer>` with the split definition, the holdout cap, the source config hash and the
 # MAGIC input Delta table versions. Reading stops at the shadow-quarter start (`holdout_shadow: true`).
-# MAGIC Outputs go to `pdm.gold`. Nothing is registered here; the champion run's `model` artifact is
-# MAGIC registered as `pdm.ml.nbm_point_models` and given the `champion` alias.
+# MAGIC Outputs go to `pdm.gold`. Nothing is registered here: the per-point model run tagged `challenger` is
+# MAGIC registered as a version of `pdm.ml.nbm_point_models` by the job's promote task (`pdm-promote`), which
+# MAGIC moves the `champion` alias when its gates pass.
 
 # COMMAND ----------
 
-# MAGIC %pip install ./dist/pdm-0.1.7-py3-none-any.whl
+# MAGIC %pip install ./dist/pdm-0.1.9-py3-none-any.whl
 
 # COMMAND ----------
 
@@ -74,14 +75,14 @@ display(
 # MAGIC %md
 # MAGIC ## Per-point model candidates (`/Shared/pdm/nbm`)
 # MAGIC One run per candidate (PCA T-squared and SPE, Mahalanobis, isolation forest, autoencoder), each with
-# MAGIC one nested run per point and the candidate's per-point models logged as `model`. The run tagged
-# MAGIC `champion = true` is the one to register.
+# MAGIC one nested run per point and the candidate's per-point models, with their version histories and
+# MAGIC healthy stats, logged as `model`. The run tagged `challenger = true` is the selection rule's pick.
 
 # COMMAND ----------
 
 nbm = tasks.nbm_task(store, cfg, f"{ROOT}/nbm")
 display(nbm["selection"])  # noqa: F821
-print("champion:", nbm["champion"], "| run:", nbm["mlflow_run"])
+print("challenger:", nbm["challenger"], "| run:", nbm["mlflow_run"])
 print("runs:", nbm["mlflow_runs"])
 
 # COMMAND ----------
