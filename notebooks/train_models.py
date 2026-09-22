@@ -12,7 +12,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install ./dist/pdm-0.1.9-py3-none-any.whl
+# MAGIC %pip install ./dist/pdm-0.1.10-py3-none-any.whl
 
 # COMMAND ----------
 
