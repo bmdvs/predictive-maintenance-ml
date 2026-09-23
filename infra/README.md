@@ -46,7 +46,7 @@ Targets:
 | Target | Mode | Catalog | Run as | Root path |
 |---|---|---|---|---|
 | `dev` | development (prefixed names, paused schedules, development pipeline) | `pdm_dev`; landing read from `/Volumes/pdm/landing/exports`, Auto Loader schemas in `pdm_dev.landing.autoloader` | the deploying user | the user's `.bundle/pdm/dev` |
-| `prod` | production | `pdm` | the deploy service principal (`BUNDLE_VAR_deploy_sp`) | `/Workspace/Shared/.bundle/pdm/prod` |
+| `prod` | production | `pdm` | the job: the deploy service principal (`BUNDLE_VAR_deploy_sp`); the pipeline: its owner | `/Workspace/Shared/.bundle/pdm/prod` |
 
 The prod root path is under `/Workspace/Shared`, so the binding (run by a person) and the deploys (run by the
 service principal) share one deployment state. Workspace folder permissions are additive and `/Workspace/Shared`
@@ -69,8 +69,21 @@ exists. Set the `champion` alias on version 1 by hand, then repair promote, scor
 `auto_promote=false`; promote reuses version 1. Changes that touch registration, model version tags or
 aliases run on the dev target before prod.
 
-The prod pipeline and job already exist; bind them before the first prod deploy so the bundle takes
-them over with their ids and run history:
+The prod pipeline and job already exist. Before the first prod deploy, the service principal needs
+permissions on both, then both are bound so the bundle takes them over with their ids and run history:
+
+- job: the service principal is made its owner (`IS_OWNER`), so the job runs as the service principal;
+  the person who built it keeps `CAN_MANAGE`;
+- pipeline: the service principal gets `CAN_MANAGE`; the owner stays the person who built it, because
+  only a metastore admin can change a pipeline's owner or run-as identity, so the pipeline keeps running
+  as that owner.
+
+```bash
+databricks permissions update jobs <job id> --json '{"access_control_list":[{"service_principal_name":"<application id>","permission_level":"IS_OWNER"}]}'
+databricks permissions update pipelines <pipeline id> --json '{"access_control_list":[{"service_principal_name":"<application id>","permission_level":"CAN_MANAGE"}]}'
+```
+
+Then bind:
 
 ```bash
 export BUNDLE_VAR_deploy_sp=<application id>
