@@ -10,7 +10,7 @@ include:
 artifacts:
   pdm_wheel:
     type: whl
-    build: python -m pip wheel --no-deps -w dist .
+    build: python infra/build_wheel.py
     path: .
 
 sync:

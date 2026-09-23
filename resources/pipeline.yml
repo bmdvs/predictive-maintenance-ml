@@ -18,7 +18,7 @@ resources:
             include: ../pipelines/**
       environment:
         dependencies:
-          - ../dist/*.whl
+          - ../dist/bundle/*.whl
       configuration:
         pdm.catalog: ${var.catalog}
         pdm.landing_root: ${var.landing_root}
