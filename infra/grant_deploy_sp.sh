@@ -6,7 +6,8 @@
 # is never written to the repository.
 #
 # Required: PDM_DEPLOY_SP (application id of the service principal)
-# Optional: PDM_CATALOG (default pdm), PDM_MODEL_OWNER (default account users), DATABRICKS_CONFIG_PROFILE for --check
+# Optional: PDM_CATALOG (default pdm), PDM_MODEL_OWNER (default account users), PDM_READER (a user or group
+# that keeps read access to the job-written gold tables after their ownership moves), DATABRICKS_CONFIG_PROFILE
 set -euo pipefail
 
 SP="${PDM_DEPLOY_SP:?set PDM_DEPLOY_SP to the service principal application id}"
@@ -51,3 +52,7 @@ echo "-- databricks registered-models update $CATALOG.ml.nbm_point_models --owne
 for t in "${JOB_TABLES[@]}"; do
   echo "ALTER TABLE $CATALOG.gold.$t OWNER TO \`$SP\`;"
 done
+if [[ -n "${PDM_READER:-}" ]]; then
+  echo "-- Read access to the gold tables now owned by the service principal (owning the catalog does not grant it):"
+  echo "GRANT USE SCHEMA, SELECT ON SCHEMA $CATALOG.gold TO \`$PDM_READER\`;"
+fi
