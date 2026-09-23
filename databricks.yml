@@ -12,6 +12,8 @@ artifacts:
     type: whl
     build: python infra/build_wheel.py
     path: .
+    files:
+      - source: dist/bundle/*.whl
 
 sync:
   include:
