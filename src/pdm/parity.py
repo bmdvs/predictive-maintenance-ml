@@ -32,9 +32,11 @@ MODEL_STAGES = ("nbm", "controller_health", "survival", "supervised", "prognosis
 STAGES = ("bronze", "silver", "gold", *MODEL_STAGES, "fusion", "evaluation", "monitoring")
 
 
-def run(stages: tuple[str, ...] = STAGES) -> dict[str, Any]:
+def run(stages: tuple[str, ...] = STAGES, as_of: str | None = None) -> dict[str, Any]:
     log.configure()
     cfg = load_config()
+    if as_of:
+        cfg["evaluation"]["as_of"] = as_of
     spark = local_session()
     store = Store(spark, local_root=paths.LOCAL_GOLD_DIR)
     root = paths.BRONZE_DIR.as_posix()
@@ -187,9 +189,8 @@ def run(stages: tuple[str, ...] = STAGES) -> dict[str, Any]:
     if "evaluation" in stages:
         t0 = stage("evaluation")
         r = tasks.evaluation_task(store, cfg)
-        summary["tasks"]["evaluation_validation"] = _jsonable(
-            {k: r[k] for k in ("matched", "headline", "conditions", "sensor_conditions")}
-        )
+        keys = ("matched", "headline", "conditions", "sensor_conditions", "periods")
+        summary["tasks"]["evaluation"] = _jsonable({k: r[k] for k in keys if k in r})
         done("evaluation", t0)
 
     if "monitoring" in stages:
@@ -219,9 +220,10 @@ def _jsonable(x: Any) -> Any:
 def main() -> None:
     p = argparse.ArgumentParser(prog="python -m pdm.parity")
     p.add_argument("--only", nargs="*", choices=(*STAGES, "models"))
+    p.add_argument("--as-of", default=None, help="shadow-quarter month YYYY-MM for the job stages")
     a = p.parse_args()
     only = tuple(a.only) if a.only else STAGES
-    run(tuple(s for x in only for s in (MODEL_STAGES if x == "models" else (x,))))
+    run(tuple(s for x in only for s in (MODEL_STAGES if x == "models" else (x,))), as_of=a.as_of)
 
 
 if __name__ == "__main__":

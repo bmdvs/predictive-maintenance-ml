@@ -173,9 +173,23 @@ def _log_table(df: pd.DataFrame, name: str) -> None:
 
 
 def horizon(cfg: dict[str, Any]) -> pd.Timestamp:
-    """End of the data any task may use: the shadow start while the shadow quarter is held out."""
+    """End of the data any task may use: the shadow start while the shadow quarter is held out;
+    otherwise the end of the local month `evaluation.as_of` (YYYY-MM, inside the shadow quarter), or the
+    record end when as_of is not set."""
     b = splits.boundaries(cfg)
-    return b["shadow"][0] if cfg["evaluation"].get("holdout_shadow", True) else b["shadow"][1]
+    ev_cfg = cfg["evaluation"]
+    as_of = ev_cfg.get("as_of")
+    if ev_cfg.get("holdout_shadow", True):
+        if as_of:
+            raise ValueError("evaluation.as_of needs evaluation.holdout_shadow false")
+        return b["shadow"][0]
+    if not as_of:
+        return b["shadow"][1]
+    start = pd.Timestamp(f"{as_of}-01", tz=LOCAL_TZ)
+    end = (start + pd.offsets.MonthBegin(1)).tz_convert("UTC")
+    if start.tz_convert("UTC") < b["shadow"][0] or end > b["shadow"][1]:
+        raise ValueError(f"evaluation.as_of {as_of} is outside the shadow quarter")
+    return end
 
 
 def _wo(store: Store) -> pd.DataFrame:
@@ -1096,42 +1110,24 @@ def _summary(
     )
 
 
-def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
-    """Validation-period evaluation: operating curves with chance columns per method, the comparison
-    at the vendor rules' operating point, alerts per asset-month and diagnosis agreement."""
-    b = splits.boundaries(cfg)
-    period = b["validation"]
+def _evaluation_inputs(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Alert episodes per method and sweep, conditions and asset counts, read once per task."""
     pts = _points(store)
-    conds = _conditions(store, cfg)
-    conds_p = conds[(conds["credit_ts"] >= period[0]) & (conds["credit_ts"] < period[1])]
-    sensor = conds_p[conds_p["instrumented"]]
-    no_sensor = conds_p[~conds_p["instrumented"]]
-    n_instr = pts["asset_id"].nunique()
-    n_mach = store.read_pd("bronze", "reg_machines")["machine_id"].nunique()
-    vend_op = cfg["rules"]["vendor"]["alert_frac_zone_b_width"]
-    nb = cfg["models"]["nbm"]
+    gap = cfg["evaluation"]["catch"]["episode_gap_days"]
     rf = _episodes_from(store.read_pd("gold", "rule_floor_exceedances"), pts, cfg)
     nx = store.read_pd("gold", "nbm_exceedances")
     nx["ts"] = _utc(nx["ts"])
+    nx = nx[nx["ts"] < horizon(cfg)]
     nbm_ep = pd.concat(
-        [
-            ev.episodes(
-                g[["asset_id", "point_id", "ts"]], cfg["evaluation"]["catch"]["episode_gap_days"]
-            ).assign(sweep=p)
-            for p, g in nx.groupby("sweep")
-        ],
+        [ev.episodes(g[["asset_id", "point_id", "ts"]], gap).assign(sweep=p) for p, g in nx.groupby("sweep")],
         ignore_index=True,
     )
     hmc = set(store.read_pd("bronze", "reg_machines").query("`class` == 'hmc'")["machine_id"])
     cx = _controller_signals(store.read_pd("gold", "controller_health_exceedances"), hmc)
     cx["ts"] = _utc(cx["ts"])
+    cx = cx[cx["ts"] < horizon(cfg)]
     ctrl_ep = pd.concat(
-        [
-            ev.episodes(
-                g[["asset_id", "point_id", "ts"]], cfg["evaluation"]["catch"]["episode_gap_days"]
-            ).assign(sweep=s)
-            for s, g in cx.groupby("sweep")
-        ],
+        [ev.episodes(g[["asset_id", "point_id", "ts"]], gap).assign(sweep=s) for s, g in cx.groupby("sweep")],
         ignore_index=True,
     )
     cs = store.read_pd("gold", "cases_sweep")
@@ -1141,7 +1137,60 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     case_ep = cs.assign(
         point_id=cs["trigger_points"].fillna(""), last=cs["opened"], warning_from=cs["chain_opened"]
     )
-    instr_assets = set(pts["asset_id"])
+    return {
+        "pts": pts,
+        "conds": _conditions(store, cfg),
+        "rf": rf,
+        "nbm_ep": nbm_ep,
+        "ctrl_ep": ctrl_ep,
+        "case_ep": case_ep,
+        "n_instr": pts["asset_id"].nunique(),
+        "n_mach": store.read_pd("bronze", "reg_machines")["machine_id"].nunique(),
+        "instr_assets": set(pts["asset_id"]),
+    }
+
+
+BY_TYPE_COLUMNS = [
+    "method",
+    "sweep",
+    "condition_type",
+    "conditions",
+    "caught",
+    "warning_days_median",
+    "warning_days_min",
+    "warning_days_max",
+]
+
+
+def _operating(cfg: dict[str, Any]) -> dict[str, float]:
+    vend_op = cfg["rules"]["vendor"]["alert_frac_zone_b_width"]
+    op = cfg["models"]["nbm"]["threshold_percentile"]
+    return {
+        "vendor": vend_op,
+        "rule_floor": vend_op,
+        "iso": 0.0,
+        "nbm": op,
+        "controller": 1.0,
+        "controller_uninstrumented": 1.0,
+        "model_layer": op,
+        "model_layer_instrumented": op,
+        "model_layer_uninstrumented": op,
+    }
+
+
+def _evaluate(
+    store: Store, cfg: dict[str, Any], period: tuple[pd.Timestamp, pd.Timestamp], inp: dict[str, Any]
+) -> dict[str, Any]:
+    """Section 12 for one period: operating curves with chance columns per method, the comparison at
+    the vendor rules' operating point, the headline rows by condition type and diagnosis agreement."""
+    conds = inp["conds"]
+    conds_p = conds[(conds["credit_ts"] >= period[0]) & (conds["credit_ts"] < period[1])]
+    sensor = conds_p[conds_p["instrumented"]]
+    no_sensor = conds_p[~conds_p["instrumented"]]
+    n_instr, n_mach, instr_assets = inp["n_instr"], inp["n_mach"], inp["instr_assets"]
+    rf, nbm_ep, ctrl_ep, case_ep = inp["rf"], inp["nbm_ep"], inp["ctrl_ep"], inp["case_ep"]
+    vend_op = cfg["rules"]["vendor"]["alert_frac_zone_b_width"]
+    nb = cfg["models"]["nbm"]
 
     specs = []
     for s in sorted(rf.loc[rf["method"] == "vendor", "sweep"].unique()):
@@ -1170,17 +1219,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         caught.append(c.assign(sweep=float(s)))
     curves = pd.DataFrame(rows)
     caught = pd.concat(caught, ignore_index=True)
-    operating = {
-        "vendor": vend_op,
-        "rule_floor": vend_op,
-        "iso": 0.0,
-        "nbm": nb["threshold_percentile"],
-        "controller": 1.0,
-        "controller_uninstrumented": 1.0,
-        "model_layer": nb["threshold_percentile"],
-        "model_layer_instrumented": nb["threshold_percentile"],
-        "model_layer_uninstrumented": nb["threshold_percentile"],
-    }
+    operating = _operating(cfg)
     curves["operating_point"] = [
         operating[m] == s for m, s in zip(curves["method"], curves["sweep"], strict=True)
     ]
@@ -1217,39 +1256,136 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     headline = curves[
         [any((m == r.method) and (s == r.sweep) for m, s in head_rows) for r in curves.itertuples()]
     ]
-    head_types = caught[
-        [any((m == r.method) and (s == r.sweep) for m, s in head_rows) for r in caught.itertuples()]
-    ]
-    by_type = (
-        head_types.groupby(["method", "sweep", "condition_type"])
-        .agg(
-            conditions=("wo_id", "count"),
-            caught=("caught", "sum"),
-            warning_days_median=("warning_days", "median"),
-            warning_days_min=("warning_days", "min"),
-            warning_days_max=("warning_days", "max"),
+    if "condition_type" in caught and len(caught):
+        head_types = caught[
+            [any((m == r.method) and (s == r.sweep) for m, s in head_rows) for r in caught.itertuples()]
+        ]
+        by_type = (
+            head_types.groupby(["method", "sweep", "condition_type"])
+            .agg(
+                conditions=("wo_id", "count"),
+                caught=("caught", "sum"),
+                warning_days_median=("warning_days", "median"),
+                warning_days_min=("warning_days", "min"),
+                warning_days_max=("warning_days", "max"),
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
+    else:
+        by_type = pd.DataFrame(columns=BY_TYPE_COLUMNS)
     agree = _agreement(store, cfg, conds, period)
-    store.write_pd(curves, "gold", "evaluation_curves_validation")
-    store.write_pd(matched, "gold", "evaluation_matched_validation")
-    store.write_pd(headline, "gold", "evaluation_headline_validation")
-    store.write_pd(by_type, "gold", "evaluation_headline_by_type_validation")
-    store.write_pd(caught, "gold", "evaluation_events_validation")
-    store.write_pd(
-        agree if len(agree) else pd.DataFrame({"note": ["no work requests"]}),
-        "gold",
-        "diagnosis_agreement_validation",
-    )
     return {
         "curves": curves,
         "matched": matched,
         "headline": headline,
         "by_type": by_type,
+        "caught": caught,
         "agreement": agree,
         "conditions": len(conds_p),
         "sensor_conditions": len(sensor),
+    }
+
+
+def shadow_periods(cfg: dict[str, Any]) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """The periods a shadow-quarter run reports, each as of the run's horizon: the month that ends at the
+    horizon, the quarter to date and, once the horizon reaches the record end, July 2025 to June 2026."""
+    b = splits.boundaries(cfg)
+    end = horizon(cfg)
+    local_last = (end - pd.Timedelta(hours=1)).tz_convert(LOCAL_TZ)
+    month_start = pd.Timestamp(local_last.strftime("%Y-%m-01"), tz=LOCAL_TZ).tz_convert("UTC")
+    q = b["shadow"][0].tz_convert(LOCAL_TZ)
+    out = [
+        (local_last.strftime("%Y-%m"), max(month_start, b["shadow"][0]), end),
+        (f"{q.year}-Q{(q.month - 1) // 3 + 1}", b["shadow"][0], end),
+    ]
+    if end >= b["shadow"][1]:
+        v = b["validation"][0].tz_convert(LOCAL_TZ)
+        out.append((f"{v:%Y-%m}_to_{local_last:%Y-%m}", b["validation"][0], end))
+    return out
+
+
+def _uniform_types(df: pd.DataFrame) -> pd.DataFrame:
+    """One type per column before a Delta write: columns that mix booleans and numbers (a count that is
+    a boolean where a period has no rows) become numbers; other mixed columns become strings."""
+    out = df.copy()
+    for c in out.columns:
+        if out[c].dtype != object:
+            continue
+        kinds = {type(v) for v in out[c].dropna()}
+        numeric = {bool, int, float, np.bool_, np.int64, np.int32, np.float64}
+        if len(kinds) > 1 and kinds <= numeric:
+            out[c] = pd.to_numeric(out[c].map(lambda v: float(v) if v is not None else np.nan))
+        elif len(kinds) > 1:
+            out[c] = out[c].map(
+                lambda v: v if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
+            )
+    return out
+
+
+def _replace_periods(
+    store: Store, schema: str, table: str, new: pd.DataFrame, key: str, labels: list[str]
+) -> None:
+    """Write the rows for these periods, keeping rows earlier runs wrote for other periods."""
+    if store.exists(schema, table):
+        old = store.read_pd(schema, table)
+        if key in old:
+            old = old[~old[key].astype(str).isin(labels)]
+            new = pd.concat([old, new], ignore_index=True) if len(old) else new
+    store.write_pd(_uniform_types(new.reset_index(drop=True)), schema, table)
+
+
+def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Section 12 evaluation. While the shadow quarter is held out: the validation period
+    (gold.evaluation_*_validation). After the holdout is lifted the validation tables stay as computed,
+    and each run evaluates its shadow periods as of its horizon (gold.evaluation_*_shadow with a period
+    column; gold.evaluation_headline_year once the horizon reaches the record end)."""
+    inp = _evaluation_inputs(store, cfg)
+    if cfg["evaluation"].get("holdout_shadow", True):
+        r = _evaluate(store, cfg, splits.boundaries(cfg)["validation"], inp)
+        store.write_pd(r["curves"], "gold", "evaluation_curves_validation")
+        store.write_pd(r["matched"], "gold", "evaluation_matched_validation")
+        store.write_pd(r["headline"], "gold", "evaluation_headline_validation")
+        store.write_pd(r["by_type"], "gold", "evaluation_headline_by_type_validation")
+        store.write_pd(r["caught"], "gold", "evaluation_events_validation")
+        store.write_pd(
+            r["agreement"] if len(r["agreement"]) else pd.DataFrame({"note": ["no work requests"]}),
+            "gold",
+            "diagnosis_agreement_validation",
+        )
+        return r
+    periods = shadow_periods(cfg)
+    labels = [p[0] for p in periods]
+    res = {label: _evaluate(store, cfg, (a, e), inp) for label, a, e in periods}
+    for table, key in (
+        ("evaluation_curves_shadow", "curves"),
+        ("evaluation_matched_shadow", "matched"),
+        ("evaluation_headline_shadow", "headline"),
+        ("evaluation_headline_by_type_shadow", "by_type"),
+        ("evaluation_events_shadow", "caught"),
+    ):
+        new = pd.concat([res[label][key].assign(period=label) for label in labels], ignore_index=True)
+        _replace_periods(store, "gold", table, new, "period", labels)
+    agree = pd.concat(
+        [
+            (
+                res[label]["agreement"]
+                if len(res[label]["agreement"])
+                else pd.DataFrame({"note": ["no work requests"]})
+            ).assign(period=label)
+            for label in labels
+        ],
+        ignore_index=True,
+    )
+    _replace_periods(store, "gold", "diagnosis_agreement_shadow", agree, "period", labels)
+    if len(periods) == 3:
+        store.write_pd(
+            res[labels[2]]["headline"].assign(period=labels[2]), "gold", "evaluation_headline_year"
+        )
+    return {
+        "periods": labels,
+        "headline": {label: res[label]["headline"] for label in labels},
+        "conditions": {label: res[label]["conditions"] for label in labels},
+        "sensor_conditions": {label: res[label]["sensor_conditions"] for label in labels},
     }
 
 
@@ -1280,11 +1416,257 @@ def _agreement(
 
 
 # ---------------------------------------------------------------- monitoring
-def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
-    """Monthly event performance, feature drift and the retraining decision over the shadow quarter;
-    skipped while the shadow quarter is held out."""
-    if cfg["evaluation"].get("holdout_shadow", True):
-        return {"skipped": "shadow quarter held out until design freeze"}
+MONITORED = ("rule_floor", "nbm", "controller", "model_layer_instrumented")
+PROFILED_TABLES = (("gold", "scoring_log"), ("silver", "hourly_indicators"))
+
+
+def _monitored_episodes(cfg: dict[str, Any], inp: dict[str, Any]) -> dict[str, tuple[pd.DataFrame, int]]:
+    """Alert episodes at each monitored method's operating point, with the asset count it is rated on."""
+    op = _operating(cfg)
+    rf, nbm_ep, ctrl_ep, case_ep = inp["rf"], inp["nbm_ep"], inp["ctrl_ep"], inp["case_ep"]
     return {
-        "skipped": "holdout_shadow is false; monitoring is rebuilt on the evaluation tables at design freeze"
+        "rule_floor": (
+            rf[(rf["method"] == "rule_floor") & (rf["sweep"] == op["rule_floor"])],
+            inp["n_instr"],
+        ),
+        "nbm": (nbm_ep[nbm_ep["sweep"] == op["nbm"]], inp["n_instr"]),
+        "controller": (ctrl_ep[ctrl_ep["sweep"] == op["controller"]], inp["n_mach"]),
+        "model_layer_instrumented": (
+            case_ep[
+                (case_ep["sweep"] == op["model_layer_instrumented"])
+                & case_ep["asset_id"].isin(inp["instr_assets"])
+            ],
+            inp["n_instr"],
+        ),
+    }
+
+
+def alert_rows(ep: pd.DataFrame, conds: pd.DataFrame, end: pd.Timestamp, window_days: float) -> pd.DataFrame:
+    """One row per alert episode (opening time) with whether a confirmed condition on the asset followed
+    within the window; unknown while the window is still open at the horizon."""
+    w = pd.Timedelta(days=window_days)
+    if ep.empty:
+        return pd.DataFrame(
+            {
+                "asset_id": pd.Series(dtype=object),
+                "ts": pd.Series(dtype="datetime64[ns, UTC]"),
+                "confirmed_within_window": pd.Series(dtype=float),
+            }
+        )
+    opened = pd.to_datetime(ep["opened"], utc=True)
+    out = []
+    for asset, t0 in zip(ep["asset_id"], opened, strict=True):
+        if t0 + w > end:
+            out.append(np.nan)
+            continue
+        c = conds.loc[conds["asset_key"] == asset, "credit_ts"]
+        out.append(float(((c >= t0) & (c <= t0 + w)).any()))
+    return pd.DataFrame(
+        {"asset_id": ep["asset_id"].to_numpy(), "ts": opened.to_numpy(), "confirmed_within_window": out}
+    )
+
+
+def scoring_log(
+    scores: pd.DataFrame,
+    status: pd.DataFrame,
+    conds: pd.DataFrame,
+    threshold_col: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    window_days: float,
+    cfg: dict[str, Any],
+) -> pd.DataFrame:
+    """Per scored point-hour from start: score, threshold, exceedance as the prediction, the asset's
+    tier at that hour, model version and the outcome (a confirmed condition on the asset within the
+    window after the hour), null while the window is open at the horizon. Prediction and outcome are 0 or 1
+    (doubles) for the classification inference profile."""
+    w = pd.Timedelta(days=window_days)
+    s = scores.copy()
+    s["hour_utc"] = pd.to_datetime(s["hour_utc"], utc=True)
+    s = s[(s["hour_utc"] >= start) & (s["hour_utc"] < end)].sort_values(["asset_id", "hour_utc"])
+    st = status.copy()
+    st["ts"] = pd.to_datetime(st["ts"], utc=True)
+    st = st.sort_values("ts")
+    parts = []
+    for asset, g in s.groupby("asset_id", sort=False):
+        g = g.sort_values("hour_utc").reset_index(drop=True)
+        a = st[st["asset_id"] == asset]
+        if len(a):
+            idx = np.searchsorted(a["ts"].to_numpy(), g["hour_utc"].to_numpy(), side="right") - 1
+            tier = np.where(idx >= 0, a["status"].to_numpy()[np.clip(idx, 0, None)], "OK")
+        else:
+            tier = np.full(len(g), "OK", dtype=object)
+        c = np.sort(conds.loc[conds["asset_key"] == asset, "credit_ts"].to_numpy(dtype="datetime64[ns]"))
+        h = g["hour_utc"].dt.tz_localize(None).to_numpy(dtype="datetime64[ns]")
+        j = np.searchsorted(c, h, side="left")
+        nxt = np.where(
+            j < c.size, c[np.clip(j, 0, max(c.size - 1, 0))] if c.size else h, np.datetime64("NaT")
+        )
+        hit = (j < c.size) & ((nxt - h) <= w.to_timedelta64())
+        closed = (g["hour_utc"] + w <= end).to_numpy()
+        outcome = pd.Series(np.where(closed, hit.astype(float), np.nan)).astype(object).where(closed, None)
+        parts.append(
+            pd.DataFrame(
+                {
+                    "asset_id": asset,
+                    "point_id": g["point_id"].to_numpy(),
+                    "hour_utc": g["hour_utc"].to_numpy(),
+                    "score": g["score"].to_numpy(),
+                    "threshold": g[threshold_col].to_numpy(),
+                    "prediction": (g["score"] > g[threshold_col]).astype(float).to_numpy(),
+                    "tier": tier,
+                    "model_version": g["model_version"].to_numpy(),
+                    "outcome": outcome.to_numpy(),
+                }
+            )
+        )
+    out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    if len(out):
+        out["period"] = splits.chronological(out["hour_utc"], cfg).to_numpy()
+    return out
+
+
+def shadow_months(cfg: dict[str, Any]) -> list[str]:
+    """Local months of the shadow quarter up to the run's horizon."""
+    b = splits.boundaries(cfg)
+    end = horizon(cfg)
+    first = b["shadow"][0].tz_convert(LOCAL_TZ)
+    last = (end - pd.Timedelta(hours=1)).tz_convert(LOCAL_TZ)
+    return [str(d) for d in pd.period_range(first.strftime("%Y-%m"), last.strftime("%Y-%m"), freq="M")]
+
+
+def _refresh_profiles(store: Store) -> dict[str, str]:
+    """Refresh the data profiles on the scoring log and the hourly indicators, where they exist."""
+    if not store.catalog:
+        return {}
+    from databricks.sdk import WorkspaceClient
+
+    w = WorkspaceClient()
+    out = {}
+    for schema, table in PROFILED_TABLES:
+        name = store.name(schema, table)
+        try:
+            r = w.quality_monitors.run_refresh(table_name=name)
+            out[name] = f"refresh {r.refresh_id} {r.state}"
+        except Exception as e:  # noqa: BLE001
+            out[name] = f"not refreshed: {str(e)[:200]}"
+        LOG.info("profile %s: %s", name, out[name])
+    return out
+
+
+def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Monthly monitoring over the shadow quarter as of the run's horizon: gold.scoring_log;
+    monitoring.event_performance and monitoring.feature_drift for every shadow month so far (recall, lead
+    time and alert counts are fixed once a month has passed; alert precision fills in as the 30-day
+    windows close, with the number of alerts it rests on); monitoring.retraining_decision over those
+    months; then a refresh of the data profiles. Skipped while the shadow quarter is held out."""
+    from pdm.monitoring import performance as mon
+
+    if cfg["evaluation"].get("holdout_shadow", True):
+        return {"skipped": "shadow quarter held out"}
+    b = splits.boundaries(cfg)
+    end = horizon(cfg)
+    month = shadow_periods(cfg)[0][0]
+    nb = cfg["models"]["nbm"]
+    ev_cfg = cfg["evaluation"]
+    window = ev_cfg["alert_precision_window_days"]
+    inp = _evaluation_inputs(store, cfg)
+    conds = inp["conds"]
+
+    thr_col = f"thr_{nb['threshold_percentile']:g}"
+    sc = store.read_pd("gold", "nbm_scores")[
+        ["point_id", "asset_id", "hour_utc", "score", thr_col, "model_version"]
+    ]
+    log = scoring_log(
+        sc,
+        store.read_pd("gold", "asset_status"),
+        conds,
+        f"thr_{nb['threshold_percentile']:g}",
+        b["validation"][0],
+        end,
+        window,
+        cfg,
+    )
+    store.write_pd(log, "gold", "scoring_log")
+
+    months = shadow_months(cfg)
+    events = store.read_pd("gold", "evaluation_events_shadow")
+    events = events[events["period"].astype(str).isin(months)]
+    op = _operating(cfg)
+    eps = _monitored_episodes(cfg, inp)
+    caught = pd.concat(
+        [
+            events[(events["method"] == m) & (events["sweep"].astype(float) == float(op[m]))]
+            for m in MONITORED
+        ],
+        ignore_index=True,
+    )
+    shadow_start = b["shadow"][0]
+    fa = []
+    for m, (ep, _n) in eps.items():
+        opened = pd.to_datetime(ep["opened"], utc=True)
+        fa.append(
+            alert_rows(ep[(opened >= shadow_start) & (opened < end)], conds, end, window).assign(method=m)
+        )
+    fa = pd.concat(fa, ignore_index=True)
+    fa["ts"] = pd.to_datetime(fa["ts"], utc=True)
+    credit = conds.drop_duplicates("wo_id").set_index("wo_id")["credit_ts"]
+    n_assets = {m: n for m, (_e, n) in eps.items()}
+    perf = (
+        mon.event_performance(caught, fa, credit, n_assets)
+        if len(caught) or len(fa)
+        else pd.DataFrame(columns=["method", "month"])
+    )
+    perf = perf[perf["month"].isin(months)]
+    grid = pd.DataFrame([(m, mo) for m in MONITORED for mo in months], columns=["method", "month"])
+    perf = grid.merge(perf, on=["method", "month"], how="left")
+    for c in ("conditions", "alerts"):
+        perf[c] = perf[c].fillna(0).astype(int)
+    perf["alerts_per_asset_month"] = perf["alerts_per_asset_month"].fillna(0.0)
+    closed = fa.dropna(subset=["confirmed_within_window"]).assign(month=lambda d: mon.month_of(d["ts"]))
+    counts = closed.groupby(["method", "month"]).size().rename("precision_alerts").reset_index()
+    perf = perf.merge(counts, on=["method", "month"], how="left")
+    perf["precision_alerts"] = perf["precision_alerts"].fillna(0).astype(int)
+    perf = perf.assign(as_of=str(end))
+    store.write_pd(perf, "monitoring", "event_performance")
+
+    feats = list(nbm.VECTOR_SOURCE)
+    ind = store.read_pd("silver", "hourly_indicators", ["point_id", "hour_utc", "implausible", *feats])
+    ind["hour_utc"] = _utc(ind["hour_utc"])
+    ind = ind[(ind["hour_utc"] < end) & ~ind["implausible"].fillna(False).astype(bool)]
+    base_months = sorted(
+        set(
+            mon.month_of(
+                ind.loc[
+                    (ind["hour_utc"] >= b["validation"][0]) & (ind["hour_utc"] < b["validation"][1]),
+                    "hour_utc",
+                ]
+            )
+        )
+    )
+    drift = mon.feature_drift(ind, feats, base_months, months).assign(as_of=str(end))
+    store.write_pd(drift, "monitoring", "feature_drift")
+
+    curves = store.read_pd("gold", "evaluation_curves_validation")
+    reference = {}
+    for m in MONITORED:
+        r = curves[(curves["method"] == m) & curves["operating_point"].astype(bool)]
+        if len(r):
+            reference[m] = {
+                "recall": float(r["caught_share"].iat[0]),
+                "alerts_per_asset_month": float(r["episodes_per_asset_month"].iat[0]),
+            }
+    decisions = pd.concat(
+        [mon.retraining_decision(perf, drift, reference, cfg, m) for m in MONITORED],
+        ignore_index=True,
+    ).assign(as_of=str(end))
+    store.write_pd(decisions, "monitoring", "retraining_decision")
+    profiles = _refresh_profiles(store)
+    return {
+        "month": month,
+        "scoring_log_rows": len(log),
+        "event_performance": perf,
+        "drift_rows": len(drift),
+        "retraining_decision": decisions,
+        "profiles": profiles,
     }
