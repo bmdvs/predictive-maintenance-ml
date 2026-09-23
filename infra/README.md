@@ -78,6 +78,14 @@ databricks bundle deployment bind pdm_pipeline <pipeline id> -t prod
 databricks bundle deployment bind pdm_monthly <job id> -t prod
 ```
 
+The deploy service principal needs owner rights on the registered model: the model owner creates versions,
+sets their tags and moves aliases. Only a metastore admin can make a service principal the owner; a
+non-admin owner can transfer a model only to a group they belong to. Without metastore admin rights the
+model is owned by the built-in group `account users`, which contains both the catalog owner and the
+service principal, so every identity in the Databricks account has owner rights on that model. In an
+account with other users, a metastore admin should instead give the model to the service principal or to a
+dedicated deploy group.
+
 Prod deploys run from GitHub Actions (`.github/workflows/ci.yml`): bundle validate on pull requests and
 pushes to main, deploy on pushes to main, with the repository secrets `DATABRICKS_HOST`,
 `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (the service principal's OAuth secret).

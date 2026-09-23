@@ -6,11 +6,12 @@
 # is never written to the repository.
 #
 # Required: PDM_DEPLOY_SP (application id of the service principal)
-# Optional: PDM_CATALOG (default pdm), DATABRICKS_CONFIG_PROFILE for --check
+# Optional: PDM_CATALOG (default pdm), PDM_MODEL_OWNER (default account users), DATABRICKS_CONFIG_PROFILE for --check
 set -euo pipefail
 
 SP="${PDM_DEPLOY_SP:?set PDM_DEPLOY_SP to the service principal application id}"
 CATALOG="${PDM_CATALOG:-pdm}"
+MODEL_OWNER="${PDM_MODEL_OWNER:-account users}"
 
 # Tables the job tasks write (train, score, monitor); the pipeline's own tables are not listed.
 JOB_TABLES=(
@@ -43,8 +44,10 @@ done
 echo "GRANT USE SCHEMA, CREATE MODEL ON SCHEMA $CATALOG.ml TO \`$SP\`;"
 echo "GRANT USE SCHEMA ON SCHEMA $CATALOG.landing TO \`$SP\`;"
 echo "GRANT READ VOLUME, WRITE VOLUME ON VOLUME $CATALOG.landing.exports TO \`$SP\`;"
-echo "-- Registered model owner (no SQL statement exists for this; run with the Databricks CLI or set it in Catalog Explorer):"
-echo "-- databricks registered-models update $CATALOG.ml.nbm_point_models --owner $SP"
+echo "-- Registered model owner, with the Databricks CLI (SQL has no statement for it). Only a metastore admin can"
+echo "-- give a model to a service principal; a non-admin owner can give it to a group they belong to. Without"
+echo "-- metastore admin rights the owner is the account group that contains the service principal:"
+echo "-- databricks registered-models update $CATALOG.ml.nbm_point_models --owner \"$MODEL_OWNER\""
 for t in "${JOB_TABLES[@]}"; do
   echo "ALTER TABLE $CATALOG.gold.$t OWNER TO \`$SP\`;"
 done
