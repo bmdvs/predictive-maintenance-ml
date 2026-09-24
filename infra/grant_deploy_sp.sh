@@ -45,6 +45,8 @@ done
 echo "GRANT USE SCHEMA, CREATE MODEL ON SCHEMA $CATALOG.ml TO \`$SP\`;"
 echo "GRANT USE SCHEMA ON SCHEMA $CATALOG.landing TO \`$SP\`;"
 echo "GRANT READ VOLUME, WRITE VOLUME ON VOLUME $CATALOG.landing.exports TO \`$SP\`;"
+echo "-- The monitor task refreshes the data profile on the hourly indicators, a pipeline table the service principal does not own:"
+echo "GRANT MANAGE ON TABLE $CATALOG.silver.hourly_indicators TO \`$SP\`;"
 echo "-- Registered model owner, with the Databricks CLI (SQL has no statement for it). Only a metastore admin can"
 echo "-- give a model to a service principal; a non-admin owner can give it to a group they belong to. Without"
 echo "-- metastore admin rights the owner is the account group that contains the service principal:"

@@ -79,7 +79,7 @@ def cases(
     quiet = pd.Timedelta(days=quiet_days)
     rows = []
     for asset, g in changes.sort_values("ts").groupby("asset_id"):
-        sig = signals[signals["asset_id"] == asset].sort_values("ts")
+        sig = signals[signals["asset_id"] == asset].sort_values(["ts", "rules"], kind="stable")
         open_until = None
         for r in _alarm_openings(g, sig).itertuples():
             if open_until is not None and r.ts < open_until:
