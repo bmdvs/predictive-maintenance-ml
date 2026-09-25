@@ -88,7 +88,11 @@ def run(stages: tuple[str, ...] = STAGES, as_of: str | None = None) -> dict[str,
             windows.healthy_windows(pts, wo, cfg), "silver", "healthy_windows"
         )
         summary["rows"]["silver.controller_hourly"] = store.write(
-            controller.controller_hourly(store.read("bronze", "ctrl_minute")), "silver", "controller_hourly"
+            controller.controller_hourly(
+                store.read("bronze", "ctrl_minute"), cfg["advisory"]["tsc_pump_on_min_bar"]
+            ),
+            "silver",
+            "controller_hourly",
         )
         summary["rows"]["silver.controller_event_daily"] = store.write(
             controller.controller_event_daily(store.read("bronze", "ctrl_events")),

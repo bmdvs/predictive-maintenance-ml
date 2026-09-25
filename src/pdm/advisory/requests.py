@@ -140,13 +140,14 @@ def tsc_drop_daily(hourly: pd.DataFrame, ref_days: tuple[int, int]) -> pd.DataFr
     return pd.concat(out, ignore_index=True).assign(indicator="tsc_drop") if out else pd.DataFrame()
 
 
-def tsc_pressure_daily(hourly: pd.DataFrame, ref_days: tuple[int, int]) -> pd.DataFrame:
-    """Per machine and local day: the median of the hourly controller coolant pressure over hours with
-    pressure above zero, the number of such hours, the reference median (ref_days[1] to ref_days[0] days
-    earlier, as the TSC pressure drop uses) and the drop against it. The hourly value is the silver
-    controller table's mean over active cutting time by program, which includes time the pump is off,
-    so it follows pressure and the programs' through-spindle coolant duty together."""
-    h = hourly[hourly["coolant_pressure_bar"] > 0].copy()
+def tsc_pressure_daily(
+    hourly: pd.DataFrame, ref_days: tuple[int, int], column: str = "coolant_pressure_pump_on_bar"
+) -> pd.DataFrame:
+    """Per machine and local day: the median of the hourly pressure over hours with pressure above zero
+    (by default the pressure while the through-spindle coolant pump runs), the number of such hours, the
+    reference median (ref_days[1] to ref_days[0] days earlier, as the TSC pressure drop uses) and the drop
+    against it."""
+    h = hourly[hourly[column] > 0].copy()
     h["local_date"] = (
         pd.to_datetime(h["hour_utc"], utc=True)
         .dt.tz_convert("America/Chicago")
@@ -156,7 +157,7 @@ def tsc_pressure_daily(hourly: pd.DataFrame, ref_days: tuple[int, int]) -> pd.Da
     near, far = ref_days
     out = []
     for mid, g in h.groupby("machine_id"):
-        day = g.groupby("local_date")["coolant_pressure_bar"]
+        day = g.groupby("local_date")[column]
         s = day.median()
         ref = s.rolling(f"{far - near}D", min_periods=5).median()
         ref.index = ref.index + pd.Timedelta(days=near)
