@@ -140,6 +140,50 @@ def tsc_drop_daily(hourly: pd.DataFrame, ref_days: tuple[int, int]) -> pd.DataFr
     return pd.concat(out, ignore_index=True).assign(indicator="tsc_drop") if out else pd.DataFrame()
 
 
+def tsc_pressure_daily(hourly: pd.DataFrame, ref_days: tuple[int, int]) -> pd.DataFrame:
+    """Per machine and local day: the median of the hourly controller coolant pressure over hours with
+    pressure above zero, the number of such hours, the reference median (ref_days[1] to ref_days[0] days
+    earlier, as the TSC pressure drop uses) and the drop against it. The hourly value is the silver
+    controller table's mean over active cutting time by program, which includes time the pump is off,
+    so it follows pressure and the programs' through-spindle coolant duty together."""
+    h = hourly[hourly["coolant_pressure_bar"] > 0].copy()
+    h["local_date"] = (
+        pd.to_datetime(h["hour_utc"], utc=True)
+        .dt.tz_convert("America/Chicago")
+        .dt.normalize()
+        .dt.tz_localize(None)
+    )
+    near, far = ref_days
+    out = []
+    for mid, g in h.groupby("machine_id"):
+        day = g.groupby("local_date")["coolant_pressure_bar"]
+        s = day.median()
+        ref = s.rolling(f"{far - near}D", min_periods=5).median()
+        ref.index = ref.index + pd.Timedelta(days=near)
+        ref = ref[~ref.index.duplicated()].reindex(s.index, method="ffill")
+        out.append(
+            pd.DataFrame(
+                {
+                    "machine_id": mid,
+                    "local_date": s.index,
+                    "pressure_median_bar": s.to_numpy(),
+                    "running_hours": day.size().reindex(s.index).to_numpy(),
+                    "reference_median_bar": ref.to_numpy(),
+                    "drop_share": (1 - s / ref).to_numpy(),
+                }
+            )
+        )
+    cols = [
+        "machine_id",
+        "local_date",
+        "pressure_median_bar",
+        "running_hours",
+        "reference_median_bar",
+        "drop_share",
+    ]
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=cols)
+
+
 def controller_z(daily: pd.DataFrame, train_end: pd.Timestamp) -> pd.DataFrame:
     """z per entity, day and controller indicator against the entity's training-period days."""
     d = daily.dropna(subset=["value"]).copy()

@@ -2,7 +2,9 @@
 # promote (register the challenger and move the champion alias when its gates pass), score (from the
 # champion) and monitor, as Python wheel tasks on one shared single-node job cluster. auto_promote false
 # registers and tags only, for a manual review cycle. as_of (YYYY-MM) sets the shadow-quarter month a
-# run covers: every task reads data to the end of that month.
+# run covers: every task reads data to the end of that month. train_stages (all, or a comma-separated
+# subset of rule_floor, nbm, controller_health, survival, supervised) limits the train task;
+# monitor_stages (all, evaluation, monitoring) limits the monitor task.
 resources:
   jobs:
     pdm_monthly:
@@ -13,6 +15,10 @@ resources:
           default: "true"
         - name: as_of
           default: ""
+        - name: train_stages
+          default: "all"
+        - name: monitor_stages
+          default: "all"
       job_clusters:
         - job_cluster_key: single_node
           new_cluster:
@@ -42,6 +48,7 @@ resources:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
               as_of: "{{job.parameters.as_of}}"
+              stages: "{{job.parameters.train_stages}}"
               experiment_root: ${var.experiment_root}
               job_run_id: "{{job.run_id}}"
           libraries:
@@ -86,5 +93,6 @@ resources:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
               as_of: "{{job.parameters.as_of}}"
+              stages: "{{job.parameters.monitor_stages}}"
           libraries:
             - whl: ../dist/bundle/*.whl

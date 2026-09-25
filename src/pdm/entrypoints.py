@@ -41,6 +41,7 @@ def parse(prog: str, argv: list[str] | None = None) -> argparse.Namespace:
     _flag(p, "run-id", default=None, help="promote: the challenger run, outside a job")
     _flag(p, "auto-promote", type=_bool, default=True)
     _flag(p, "as-of", default=None, help="shadow-quarter month YYYY-MM; the data horizon is its end")
+    _flag(p, "stages", default="all", help="train or monitor: comma-separated stages, or all")
     return p.parse_args(argv)
 
 
@@ -58,16 +59,44 @@ def setup(prog: str, argv: list[str] | None = None) -> tuple[Store, dict[str, An
     return Store(spark, catalog=args.catalog), cfg, args
 
 
+TRAIN_STAGES = ("rule_floor", "nbm", "controller_health", "survival", "supervised")
+
+
+MONITOR_STAGES = ("evaluation", "monitoring")
+
+
+def stages(value: str, known: tuple[str, ...]) -> list[str]:
+    """The stages to run, in their fixed order: all, or a comma-separated subset of known."""
+    if value.strip().lower() in ("", "all"):
+        return list(known)
+    asked = {s.strip() for s in value.split(",") if s.strip()}
+    unknown = asked - set(known)
+    if unknown:
+        raise ValueError(f"unknown stages: {sorted(unknown)}")
+    return [s for s in known if s in asked]
+
+
+def train_stages(value: str) -> list[str]:
+    return stages(value, TRAIN_STAGES)
+
+
 def train_models(argv: list[str] | None = None) -> None:
     """Rule-floor comparison runs, per-point model challengers, controller health, survival and the
-    supervised gate."""
+    supervised gate; --stages runs a subset (a survival-only run logs no per-point challenger)."""
     store, cfg, args = setup("pdm-train-models", argv)
     root = args.experiment_root.rstrip("/")
-    tasks.rule_floor_task(store, cfg, f"{root}/rule_floor")
-    tasks.nbm_task(store, cfg, f"{root}/nbm", job_run_id=args.job_run_id)
-    tasks.controller_health_task(store, cfg, f"{root}/controller_health")
-    tasks.survival_task(store, cfg, f"{root}/survival")
-    tasks.supervised_task(store, cfg)
+    stages = train_stages(args.stages)
+    LOG.info("training stages %s", stages)
+    if "rule_floor" in stages:
+        tasks.rule_floor_task(store, cfg, f"{root}/rule_floor")
+    if "nbm" in stages:
+        tasks.nbm_task(store, cfg, f"{root}/nbm", job_run_id=args.job_run_id)
+    if "controller_health" in stages:
+        tasks.controller_health_task(store, cfg, f"{root}/controller_health")
+    if "survival" in stages:
+        tasks.survival_task(store, cfg, f"{root}/survival")
+    if "supervised" in stages:
+        tasks.supervised_task(store, cfg)
 
 
 def promote(argv: list[str] | None = None) -> None:
@@ -107,7 +136,12 @@ def score(argv: list[str] | None = None) -> None:
 
 
 def monitor(argv: list[str] | None = None) -> None:
-    """Validation evaluation, then monitoring (skipped while the shadow quarter is held out)."""
-    store, cfg, _ = setup("pdm-monitor", argv)
-    tasks.evaluation_task(store, cfg)
-    tasks.monitoring_task(store, cfg)
+    """Evaluation, then monitoring (skipped while the shadow quarter is held out); --stages monitoring
+    recomputes monitoring as of a month without rewriting that month's published evaluation."""
+    store, cfg, args = setup("pdm-monitor", argv)
+    run = stages(args.stages, MONITOR_STAGES)
+    LOG.info("monitor stages %s", run)
+    if "evaluation" in run:
+        tasks.evaluation_task(store, cfg)
+    if "monitoring" in run:
+        tasks.monitoring_task(store, cfg)

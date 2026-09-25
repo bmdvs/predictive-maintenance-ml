@@ -719,6 +719,7 @@ def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = No
         _utc_cols(store.read_pd("bronze", "ctrl_events").query("event_type == 'collision'"), ["ts_utc"]),
         _utc_cols(store.read_pd("bronze", "cmms_pm_schedule"), ["due", "completed"]),
         (b["train"][0], horizon(cfg)),
+        close_lag_days=float(max(cfg["label_noise"]["close_lag_days"])),
     )
     res = survival.fit_models(lives)
     summary = pd.DataFrame(
@@ -1016,7 +1017,21 @@ def fusion_advisory_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     wr = _work_requests(store, op_cases, cfg)
     store.write_pd(wr, "gold", "work_requests")
     out["work_requests"] = len(wr)
+    tsc = _tsc_pressure_daily(store, cfg)
+    store.write_pd(tsc, "gold", "tsc_pressure_daily")
+    out["tsc_pressure_days"] = len(tsc)
     return out
+
+
+def _tsc_pressure_daily(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
+    """Daily through-spindle coolant pressure per HMC to the horizon (silver controller hourly mean over
+    active cutting time), for the queue's controller panel."""
+    hmc = set(store.read_pd("bronze", "reg_machines").query("`class` == 'hmc'")["machine_id"])
+    chh = store.read_pd("silver", "controller_hourly", ["machine_id", "hour_utc", "coolant_pressure_bar"])
+    chh["hour_utc"] = _utc(chh["hour_utc"])
+    chh = chh[chh["machine_id"].isin(hmc) & (chh["hour_utc"] < horizon(cfg))]
+    a = cfg["advisory"]["tsc_pressure_reference_days"]
+    return adv.tsc_pressure_daily(chh, (a[0], a[1]))
 
 
 def _controller_daily_z(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
@@ -1535,6 +1550,29 @@ def shadow_months(cfg: dict[str, Any]) -> list[str]:
     return [str(d) for d in pd.period_range(first.strftime("%Y-%m"), last.strftime("%Y-%m"), freq="M")]
 
 
+def _drift_rebaselines(
+    store: Store, cfg: dict[str, Any], since: pd.Timestamp, end: pd.Timestamp
+) -> dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]:
+    """Per point, the post-repair and post-remount re-baseline windows that started after `since`:
+    those usable for a refit (complete before end, not excluded for a nearby failure, not flagged by
+    the post-repair sanity check), as the per-point model segments use them, and those still in progress
+    at end, whose hours are left out of the comparison and which never serve as a reference (they end
+    after every month compared)."""
+    rb = pd.Timedelta(days=cfg["models"]["nbm"]["rebaseline_days"])
+    win = _utc_cols(store.read_pd("silver", "healthy_windows"), ["start", "end"])
+    win = win[win["start"] < end]
+    sanity = store.read_pd("gold", "baseline_sanity")
+    flagged_ids = set(sanity.loc[sanity["flagged"].astype(bool), "window_id"])
+    out: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
+    for pid, w in win.groupby("point_id"):
+        plan = nbm.segment_plan(w, flagged_ids, end, rb)
+        keep = plan["refit"].astype(bool) | ~plan["complete"].astype(bool)
+        use = plan[(plan["reason"] != "install") & keep & (plan["start"] >= since)]
+        if len(use):
+            out[pid] = [(a, a + rb) for a in use["start"]]
+    return out
+
+
 def _refresh_profiles(store: Store) -> dict[str, str]:
     """Refresh the data profiles on the scoring log and the hourly indicators, where they exist."""
     if not store.catalog:
@@ -1588,6 +1626,8 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         cfg,
     )
     store.write_pd(log, "gold", "scoring_log")
+    val = (log["hour_utc"] >= b["validation"][0]) & (log["hour_utc"] < b["validation"][1])
+    store.write_pd(log[val].reset_index(drop=True), "gold", "scoring_log_baseline")
 
     months = shadow_months(cfg)
     events = store.read_pd("gold", "evaluation_events_shadow")
@@ -1644,7 +1684,17 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
             )
         )
     )
-    drift = mon.feature_drift(ind, feats, base_months, months).assign(as_of=str(end))
+    rebase = _drift_rebaselines(store, cfg, b["validation"][0], end)
+    sc_drift = sc.rename(columns={"score": mon.SCORE_FEATURE})
+    sc_drift["hour_utc"] = _utc(sc_drift["hour_utc"])
+    sc_drift = sc_drift[sc_drift["hour_utc"] < end]
+    drift = pd.concat(
+        [
+            mon.feature_drift(ind, feats, base_months, months, rebase),
+            mon.feature_drift(sc_drift, [mon.SCORE_FEATURE], base_months, months, rebase),
+        ],
+        ignore_index=True,
+    ).assign(as_of=str(end))
     store.write_pd(drift, "monitoring", "feature_drift")
 
     curves = store.read_pd("gold", "evaluation_curves_validation")

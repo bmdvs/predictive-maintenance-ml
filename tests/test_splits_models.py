@@ -354,6 +354,69 @@ def test_shared_shape_weibull():
     ).all()
 
 
+def _life_inputs(replacements: str, install_year: int | None):
+    machines = pd.DataFrame([{"machine_id": "HMC-09", "age_class": "newer", "install_year": install_year}])
+    pumps = pd.DataFrame(
+        [
+            {
+                "asset_id": "HMC-09-CP",
+                "kind": "flood",
+                "machine_id": "HMC-09",
+                "replacement_dates": replacements,
+            }
+        ]
+    )
+    spindles = pd.DataFrame(columns=["machine_id", "rebuild_dates"])
+    comps = pd.DataFrame(columns=["asset_id", "motor_bearing_replaced", "airend_rebuilt", "install_year"])
+    ts = lambda s: pd.Timestamp(s, tz="UTC")  # noqa: E731
+    wo = pd.DataFrame(
+        [
+            {
+                "asset_id": "HMC-09-CP",
+                "wo_type": "unplanned_repair",
+                "failure_code": "PMP-BRG",
+                "opened": ts("2024-05-10 12:00"),
+                "closed": ts("2024-05-11 09:00"),
+                "downtime_hours": 8.0,
+            },
+        ]
+    )
+    col = pd.DataFrame(columns=["machine_id", "ts_utc"])
+    pm = pd.DataFrame(columns=["pm_task", "asset_id", "due", "outcome"])
+    return machines, pumps, spindles, comps, wo, col, pm, (ts("2023-07-01"), ts("2026-07-01"))
+
+
+def test_lives_register_date_on_failure_day_is_the_same_event():
+    from pdm.models import survival
+
+    # register date at midnight of the failure's opening day: it is the failure's replacement
+    lives = survival.lifetimes(*_life_inputs("2022-03-01;2024-05-10", 2019), close_lag_days=2)
+    assert len(lives) == 2
+    first, second = lives.sort_values("start").itertuples()
+    assert first.event == 1 and first.start == pd.Timestamp("2022-03-01", tz="UTC")
+    assert (
+        abs(first.duration_days - (pd.Timestamp("2024-05-10 12:00") - pd.Timestamp("2022-03-01")).days - 0.5)
+        < 1e-9
+    )
+    assert second.start == pd.Timestamp("2024-05-11 09:00", tz="UTC") and second.event == 0
+    assert (lives["duration_days"] > 1).all()
+    # without the rule the midnight date would cut a 0.5-day life ending in the failure
+    lag0 = survival.same_event_removed(
+        [pd.Timestamp("2024-05-10", tz="UTC")], _life_inputs("", 2019)[4], pd.Timedelta(0)
+    )
+    assert lag0 == []
+
+
+def test_lives_start_at_install_when_no_register_date_precedes_the_record():
+    from pdm.models import survival
+
+    lives = survival.lifetimes(*_life_inputs("", 2019), close_lag_days=2).sort_values("start")
+    first = lives.iloc[0]
+    assert first["start"] == pd.Timestamp("2019-07-01", tz="UTC")
+    assert first["entry_days"] == (pd.Timestamp("2023-07-01") - pd.Timestamp("2019-07-01")).days
+    assert first["event"] == 1
+
+
 def test_entrypoint_arguments(monkeypatch):
     from pdm import entrypoints
 
