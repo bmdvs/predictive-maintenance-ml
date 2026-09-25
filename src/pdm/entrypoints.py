@@ -41,7 +41,8 @@ def parse(prog: str, argv: list[str] | None = None) -> argparse.Namespace:
     _flag(p, "run-id", default=None, help="promote: the challenger run, outside a job")
     _flag(p, "auto-promote", type=_bool, default=True)
     _flag(p, "as-of", default=None, help="shadow-quarter month YYYY-MM; the data horizon is its end")
-    _flag(p, "stages", default="all", help="train or monitor: comma-separated stages, or all")
+    _flag(p, "train-stages", default="all", help="train: comma-separated training stages, or all")
+    _flag(p, "monitor-stages", default="all", help="monitor: evaluation, monitoring, or all")
     return p.parse_args(argv)
 
 
@@ -82,10 +83,10 @@ def train_stages(value: str) -> list[str]:
 
 def train_models(argv: list[str] | None = None) -> None:
     """Rule-floor comparison runs, per-point model challengers, controller health, survival and the
-    supervised gate; --stages runs a subset (a survival-only run logs no per-point challenger)."""
+    supervised gate; --train-stages runs a subset (a survival-only run logs no per-point challenger)."""
     store, cfg, args = setup("pdm-train-models", argv)
     root = args.experiment_root.rstrip("/")
-    stages = train_stages(args.stages)
+    stages = train_stages(args.train_stages)
     LOG.info("training stages %s", stages)
     if "rule_floor" in stages:
         tasks.rule_floor_task(store, cfg, f"{root}/rule_floor")
@@ -136,10 +137,10 @@ def score(argv: list[str] | None = None) -> None:
 
 
 def monitor(argv: list[str] | None = None) -> None:
-    """Evaluation, then monitoring (skipped while the shadow quarter is held out); --stages monitoring
+    """Evaluation, then monitoring (skipped while the shadow quarter is held out); --monitor-stages monitoring
     recomputes monitoring as of a month without rewriting that month's published evaluation."""
     store, cfg, args = setup("pdm-monitor", argv)
-    run = stages(args.stages, MONITOR_STAGES)
+    run = stages(args.monitor_stages, MONITOR_STAGES)
     LOG.info("monitor stages %s", run)
     if "evaluation" in run:
         tasks.evaluation_task(store, cfg)
