@@ -151,6 +151,10 @@ def _hourly(point: str, start: str, end: str, level_by_period: list[tuple[str, f
     return pd.DataFrame({"point_id": point, "hour_utc": hours, "x": v})
 
 
+def _ts(s: str) -> pd.Timestamp:
+    return pd.Timestamp(s, tz="UTC")
+
+
 def test_drift_reference_resets_after_a_rebaseline_window():
     from pdm.monitoring import performance as mon
 
@@ -160,21 +164,44 @@ def test_drift_reference_resets_after_a_rebaseline_window():
     months = ["2026-04", "2026-05", "2026-06"]
     plain = mon.feature_drift(ind, ["x"], base, months)
     assert (plain["wasserstein_scaled"] > 5).all() and set(plain["reference"]) == {"validation"}
-    win = {"P": [(pd.Timestamp("2026-03-10", tz="UTC"), pd.Timestamp("2026-03-31", tz="UTC"))]}
-    reset = mon.feature_drift(ind, ["x"], base, months, win)
+    ref = mon.Reference(_ts("2026-03-10"), _ts("2026-03-31"), _ts("2026-04-30 05:00"), False)
+    reset = mon.feature_drift(ind, ["x"], base, months, {"P": [ref]})
+    assert set(reset["month"]) == {"2026-04", "2026-05", "2026-06"}
     assert (reset["wasserstein_scaled"] < 0.5).all()
-    assert set(reset["reference"]) == {"re-baseline 2026-03-09"}
+    assert set(reset["reference"]) == {"re-baseline 2026-03-09 plus scored days"}
 
 
-def test_drift_window_not_complete_by_month_end_keeps_validation_and_skips_window_hours():
+def test_drift_reference_still_forming_keeps_validation_and_skips_its_hours():
     from pdm.monitoring import performance as mon
 
     ind = _hourly("P", "2025-07-01", "2026-07-01", [("2026-04-20", 1.0)])
     base = [f"2025-{m:02d}" for m in range(7, 13)]
-    win = {"P": [(pd.Timestamp("2026-04-20", tz="UTC"), pd.Timestamp("2026-05-11", tz="UTC"))]}
-    d = mon.feature_drift(ind, ["x"], base, ["2026-04", "2026-05"], win).set_index("month")
+    ref = mon.Reference(_ts("2026-04-20"), _ts("2026-05-11"), None, False)
+    d = mon.feature_drift(ind, ["x"], base, ["2026-04", "2026-05"], {"P": [ref]}).set_index("month")
+    assert list(d.index) == ["2026-04"]
     assert d.at["2026-04", "reference"] == "validation" and d.at["2026-04", "wasserstein_scaled"] < 0.5
-    assert d.at["2026-05", "reference"].startswith("re-baseline")
+
+
+def test_drift_references_window_plus_scored_days_or_window_only():
+    from pdm.monitoring import performance as mon
+
+    hours = pd.Series(pd.date_range("2026-03-31 12:00", "2026-06-30 12:00", freq="12h", tz="UTC"))
+    win = [(_ts("2026-03-10"), _ts("2026-03-31"), True)]
+    end = _ts("2026-07-01 05:00")
+    (r,) = mon.drift_references(win, hours, [], end, 30)
+    assert not r.window_only and r.reference_end == _ts("2026-04-30 05:00")
+    # a case open from before the window's end skips its days
+    (r2,) = mon.drift_references(win, hours, [(_ts("2026-03-20"), _ts("2026-04-05"))], end, 30)
+    assert not r2.window_only and r2.reference_end > r.reference_end
+    # a case opening within the scored days leaves the window alone, marked
+    (r3,) = mon.drift_references(win, hours, [(_ts("2026-04-15"), _ts("2026-04-20"))], end, 30)
+    assert r3.window_only and r3.reference_end == _ts("2026-03-31")
+    # not enough scored days before the horizon: still forming
+    (r4,) = mon.drift_references(win, hours, [], _ts("2026-04-20"), 30)
+    assert r4.reference_end is None
+    # a window not complete at the horizon is still forming
+    (r5,) = mon.drift_references([(_ts("2026-06-20"), _ts("2026-07-11"), False)], hours, [], end, 30)
+    assert r5.reference_end is None
 
 
 def test_retraining_decision_action_and_score_drift():
