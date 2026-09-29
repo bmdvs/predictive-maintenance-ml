@@ -46,6 +46,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 "generate/checks/realism.py" = ["E501"]
 "generate/checks/realism_full.py" = ["E501"]
+"src/pdm/reports/*.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
