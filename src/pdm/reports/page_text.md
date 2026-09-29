@@ -71,8 +71,6 @@ Tiles:
 | False episodes per asset-month | 0.22, or 0.14 with outcome known | 0.19, or 0.10 with outcome known |
 | Work requests | 11 raised, 2 confirmed, 4 open at the record end | |
 
-Request outcomes use the record-end definition in the tile, the outcome bar and the agreement matrix: 2 confirmed, 4 open, 5 closed with no finding recorded.
-
 ### 2. Model results
 
 #### 2.1 Detection and warning

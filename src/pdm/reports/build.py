@@ -4,7 +4,7 @@ python -m pdm.reports.build
 
 Outputs: docs/index.html, docs/reports/model_report.html, docs/reports/monitoring_report.html,
 README.md, and a check that every block of page text appears verbatim on its page and that no other
-paragraph or list item on a page carries a number.
+paragraph or list item on a page carries a number, and the trace of every number in appendix.yaml to the record.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import re
 import sys
 
 from pdm import log, paths
-from pdm.reports import model_report, monitoring_report, queue, style
+from pdm.reports import appendix, model_report, monitoring_report, queue, style
 from pdm.reports.data import Data
 from pdm.reports.text import PageText
 
@@ -156,8 +156,11 @@ def main() -> int:
     (paths.REPO_ROOT / "README.md").write_text(readme(t), encoding="utf-8")
     pages = {sec: (style.DOCS / rel).read_text(encoding="utf-8") for sec, rel in PAGES.items()}
     problems = check(t, pages)
+    app_problems, traced = appendix.check(d)
+    problems += app_problems
     for p in problems:
         LOG.warning(p)
+    LOG.info("appendix C and I: %d numbers and point ids traced, %d problems", traced, len(app_problems))
     LOG.info("pages built; text check: %d problems", len(problems))
     return 1 if problems else 0
 

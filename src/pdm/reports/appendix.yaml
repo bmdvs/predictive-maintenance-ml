@@ -1,0 +1,47 @@
+# Model report appendix C (evaluation definitions) and appendix I (limitations, the rows before the page
+# text's own). Each row's `trace` names the record source of every number in its text:
+#   config:<dotted key>   a value in config/config.yaml
+#   record:<name>         a value computed from the gold snapshot (pdm.reports.appendix.RECORD)
+# The key "ids" traces the point ids in the text (each one must be in the record set; "ids_all" requires the
+# full set). The build fails on any number or point id without a trace, and on any trace that does not match.
+
+definitions:
+  - term: Caught
+    text: An alert episode or open case on the same asset (affected point, or any point for asset-level causes) at confirmation, opened within the 60 days before it
+    trace: {"60": config:evaluation.catch.opened_within_days}
+  - term: False episode
+    text: An alert episode followed by no confirmed condition on the asset within 30 days; episodes whose window is open at the record end count as false as published and are shown as outcome pending
+    trace: {"30": config:evaluation.alert_precision_window_days}
+  - term: Warning days
+    text: From the opening of the episode or case (a fused case's chain) to confirmation
+  - term: Matched budget
+    text: Each method at the vendor rules' false episodes per asset-month
+  - term: Chance
+    text: The catch share expected from each method's case-open time share per asset
+  - term: Healthy hours
+    text: A point's measured hours outside repairs, open work, the 30 days before a confirmed condition and the 21-day re-baseline windows
+    trace: {"30": config:models.nbm.exclude_before_condition_days, "21": config:models.nbm.rebaseline_days}
+  - term: Inspection hours per false episode
+    text: 1.19 h, the median labor hours of the CMMS inspection work orders
+    trace: {"1.19": record:inspection_hours}
+  - term: Request outcomes
+    text: "As of the record end: confirmed finding, still open at the record end, or closed with no finding recorded"
+  - term: Drift reference
+    text: The validation period, or for a point re-baselined after the validation start its re-baseline window plus the first 30 scored days with no open case on the point (the window alone, marked, when a case opens within them)
+    trace: {"30": config:monitoring.drift.reference_scored_days}
+  - term: Window-only drift references
+    text: "HMC-01-SP-F, HMC-01-SP-R, HMC-03-SP-F, HMC-03-SP-R, HMC-04-SP-F, HMC-04-SP-R and HMC-04-TSC keep the 21-day window: no score drift, feature drift against the narrow window"
+    trace: {"21": config:models.nbm.rebaseline_days, ids_all: record:window_only_points}
+  - term: Through-spindle coolant pressure
+    text: The panel shows the pressure while the pump runs; the advisory pressure drop reads the time-weighted series, pump-off time included
+
+limitations:
+  - text: "Secondary trigger: fires in April because points whose post-repair references are still forming leave the denominator, and in June because narrow post-repair score references give large scaled distances; the retrain verdicts come from the primary trigger"
+  - text: "Window-only drift references: six spindle points and HMC-04-TSC keep the 21-day window"
+    trace: {"six": record:window_only_spindle_points, "21": config:models.nbm.rebaseline_days, ids: record:window_only_points}
+  - text: The advisory pressure drop reads the time-weighted pressure, which masks the rotary-union leak drops; the drop feeds diagnosis only, so it opens no case
+  - text: Monitoring reruns for earlier months use the monitoring stage only; a full rerun would recompute those months' evaluation from later cases
+  - text: "Cross-platform model fits: the autoencoder per-point models and the penalized Cox concordance differ across platforms at outcome level; parity is judged on outcomes"
+  - text: Covariate survival models are not supported by this record
+  - text: Bursts are retained on vendor alerts and weekly, so cases opened by the per-point models have no burst at the first alarm
+  - text: "Shadow mode: no CMMS work request numbers and no inspections against advisory requests in the quarter"

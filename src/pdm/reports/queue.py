@@ -31,6 +31,14 @@ TREND = [
     ("vel", "Velocity"),
     ("ord_01", "1x"),
 ]
+TREND_UNITS = [
+    ("env_bpfi", "env_bpfi_1_g2", "Envelope BPFI, g²", True),
+    ("env_bpfo", "env_bpfo_1_g2", "Envelope BPFO, g²", True),
+    ("hf", "hf_rms_g", "HF acceleration, g", False),
+    ("vel", "vel_rms_mm_s", "Velocity, mm/s", False),
+]
+BASELINE_DAYS = 60
+FAULTS = [("BPFO", "bpfo", ":"), ("BPFI", "bpfi", "--"), ("BSF", "bsf", "-."), ("FTF", "ftf", (0, (1, 3)))]
 DEFAULT = "CMP-01"
 
 
@@ -64,6 +72,25 @@ def _points(d: Data, asset: str) -> list[str]:
     return sorted(s.loc[s["asset_id"] == asset, "point_id"])
 
 
+def request_id(s: str) -> str:
+    """The advisory request id as shown: asset and creation hour joined by a hyphen."""
+    return str(s).replace("|", "-")
+
+
+def _days(days: float) -> str:
+    if np.isnan(days):
+        return ""
+    return "<1" if days < 1 else str(int(days))
+
+
+def _suspected(w: pd.Series) -> str:
+    """Condition and location, capitalized, without the z-score."""
+    cond = str(w["suspected_condition"])
+    where = re.sub(r"\s*\(.*\)$", "", str(w["suspected_detail"] or "")).strip()
+    loc = "" if (not where or " z " in f" {where} ") else where
+    return cond[:1].upper() + cond[1:] + (f", {loc}" if loc else "")
+
+
 def _layers(s: str) -> str:
     names = [LAYER_LABEL.get(x.strip(), x.strip()) for x in str(s or "").split(",") if x.strip()]
     return ", ".join(dict.fromkeys(names))
@@ -84,6 +111,13 @@ class Queue:
             regime=ind["regime"].to_numpy(),
         )
         self.stats = stats
+        ref = d.st.read_pd("silver", "hourly_indicators_trend_reference")
+        ref["hour_utc"] = utc(ref["hour_utc"])
+        ref = ref[~ref["implausible"].fillna(False).astype(bool)]
+        cols = ["point_id", "hour_utc"] + [c for _, c, _, _ in TREND_UNITS]
+        raw = pd.concat([ref[cols], ind[cols]], ignore_index=True)
+        raw["day"] = raw["hour_utc"].dt.tz_convert(TZ).dt.tz_localize(None).dt.normalize()
+        self.daily = raw.groupby(["point_id", "day"])[cols[2:]].median().reset_index()
         ep = d.episodes
         self.model_eps = ep[ep["method"] == "nbm"]
         ra = d.g("rule_floor_alerts")
@@ -110,52 +144,47 @@ class Queue:
                 if c is not None and c["case_id"] in self.req_by_case.index
                 else None
             )
-            sus = ""
-            if w is not None:
-                sus = w["suspected_condition"] + (
-                    f", {w['suspected_detail']}" if w["suspected_detail"] else ""
-                )
+            days = (END - c["opened"]) / pd.Timedelta(days=1) if c is not None else np.nan
             rows.append(
                 {
                     "Asset": a["asset"],
                     "Class": a["class"],
                     "Status": st,
                     "Case opened": local(c["opened"]) if c is not None else "",
-                    "Days open": round((END - c["opened"]) / pd.Timedelta(days=1), 1)
-                    if c is not None
-                    else np.nan,
-                    "Suspected condition": sus,
+                    "Days open": _days(days),
+                    "Suspected condition": _suspected(w) if w is not None else "",
                     "Points": ", ".join(p for p in str(c["trigger_points"] or "").split(",") if p)
                     if c is not None
                     else "",
                     "Triggering layer": _layers(c["layers"]) if c is not None else "",
-                    "Request id": w["request_id"] if w is not None else "",
-                    "Request status": status_label if w is not None else "",
+                    "Request id": request_id(w["request_id"]) if w is not None else "",
+                    "Request status": status_label.split(":")[0] if w is not None else "",
+                    "_days": days,
                 }
             )
         q = pd.DataFrame(rows)
         q["_o"] = q["Status"].map(STATUS_ORDER)
-        q["_d"] = -q["Days open"].fillna(-1)
+        q["_d"] = -q["_days"].fillna(-1)
         return q.sort_values(["_o", "_d", "Asset"]).drop(columns=["_o", "_d"]).reset_index(drop=True)
 
     # ---------------------------------------------------------------- figures
     def trend(self, asset: str, points: list[str], case: pd.Series | None) -> str:
-        f, axes = style.fig(h=1.55 * len(TREND) + 0.4, w=8.6, nrows=len(TREND), sharex=True)
+        n = len(TREND_UNITS)
+        f, axes = style.fig(h=1.9 * n + 0.6, w=12.5, nrows=n, sharex=True)
         colors = [style.BRAND_BLUE, style.AMBER, style.GREEN]
-        for ax, (k, lab) in zip(axes, TREND, strict=True):
-            ax.axhspan(
-                -self.d.cfg["evaluation"]["advisory_z"],
-                self.d.cfg["evaluation"]["advisory_z"],
-                color=style.LIGHT_BLUE,
-                alpha=0.25,
-                lw=0,
-            )
+        ref_end = case["opened"].tz_convert(TZ).tz_localize(None) if case is not None else self.start
+        ref_start = ref_end - pd.Timedelta(days=BASELINE_DAYS)
+        for ax, (_, col, lab, logy) in zip(axes, TREND_UNITS, strict=True):
             for p, colr in zip(points, colors, strict=False):
-                g = self.hz[
-                    (self.hz["point_id"] == p) & (self.hz["day"] >= self.start) & (self.hz["day"] < self.stop)
-                ]
-                ax.plot(g["day"], g[k], color=colr, lw=1.1, label=p)
-            ax.set_ylabel(f"{lab}, z", fontsize=8)
+                g = self.daily[self.daily["point_id"] == p]
+                base = g.loc[(g["day"] >= ref_start) & (g["day"] < ref_end), col].dropna()
+                if len(base):
+                    ax.axhspan(base.quantile(0.05), base.quantile(0.95), color=colr, alpha=0.13, lw=0)
+                w = g[(g["day"] >= self.start) & (g["day"] < self.stop)]
+                ax.plot(w["day"], w[col], color=colr, lw=1.1, label=p)
+            if logy:
+                ax.set_yscale("log")
+            ax.set_ylabel(lab, fontsize=8)
         top = axes[0]
         for p in points:
             for t in self.vendor_alerts.loc[
@@ -187,6 +216,14 @@ class Queue:
             for ax in axes:
                 ax.axvline(case["opened"].tz_convert(TZ).tz_localize(None), color=style.RED, lw=1.2)
         handles = [plt_line(c, label=p) for p, c in zip(points, colors, strict=False)]
+        handles.append(
+            plt_band(
+                style.GREY,
+                "Baseline band, 60 days before the case"
+                if case is not None
+                else "Baseline band, 60 days before",
+            )
+        )
         handles += [
             plt_line(style.GREY, label="Vendor alert"),
             plt_line(style.GREEN, ":", label="Model alert opened"),
@@ -207,7 +244,7 @@ class Queue:
                 & (self.disc["local_date"] >= self.start)
                 & (self.disc["local_date"] < self.stop)
             ]
-            f, ax = style.fig(h=2.2, w=8.6)
+            f, ax = style.fig(h=2.2, w=12.5)
             ax.plot(g["local_date"], g["discharge_residual_c"], color=style.AMBER, lw=1.1)
             ax.set_ylabel("Discharge residual, C", fontsize=8)
             f.autofmt_xdate()
@@ -219,7 +256,7 @@ class Queue:
         ]
         hmc = mch.startswith("HMC-")
         n = 4 if hmc else 3
-        f, axes = style.fig(h=1.5 * n + 0.3, w=8.6, nrows=n, sharex=True)
+        f, axes = style.fig(h=1.5 * n + 0.3, w=12.5, nrows=n, sharex=True)
         axes[0].plot(g["local_date"], 100 * g["spindle_load_drift"], color=style.AMBER, lw=1.1)
         axes[0].set_ylabel("Spindle load\ndrift, %", fontsize=8)
         axes[1].plot(g["local_date"], 100 * g["axis_drift_max"], color=style.AMBER, lw=1.1)
@@ -242,22 +279,21 @@ class Queue:
         pts = sorted(b["point_id"].unique())
         brg = self.d.st.read_pd("bronze", "reg_bearings").set_index("part")
         sens = self.d.sensors.set_index("point_id")
-        f, axes = style.fig(h=5.2, w=8.6, nrows=2, ncols=len(pts), squeeze=False)
-        colors = {
-            "baseline reference": style.GREY,
-            "first after first alarm": style.AMBER,
-            "latest before the cut": style.RED,
-        }
+        f, axes = style.fig(h=2.7 * 2 * len(pts) + 0.5, w=12.5, nrows=2 * len(pts), squeeze=False)
+        colors = {"baseline reference": style.GREY, "latest before the cut": style.RED}
         offsets = []
         for j, p in enumerate(pts):
+            raw_ax, env_ax = axes[2 * j, 0], axes[2 * j + 1, 0]
             geo = brg.loc[sens.loc[p, "bearing"]]
             orders = kinematics.fault_orders(
                 int(geo["n"]), float(geo["d_mm"]), float(geo["pitch_mm"]), float(geo["contact_deg"])
             )
             axis = 1 if str(sens.loc[p, "radial_axis"]) == "y" else 0
             g = b[b["point_id"] == p]
-            last_speed = None
-            for r in g.itertuples():
+            for r in g[g["role"] == "first after first alarm"].itertuples():
+                offsets.append((p, float(r.offset_from_first_alarm_days)))
+            last_speed, lo_amp = None, []
+            for r in g[g["role"].isin(list(colors))].itertuples():
                 z = np.load(self.d.st.file(r.file))
                 x = filters.remove_dc(np.asarray(z["accel_g"], dtype=float))
                 spec, freqs = filters.rfft_with_freqs(x, float(z["fs_hz"]))
@@ -266,31 +302,42 @@ class Queue:
                 ef, ea = envelope.envelope_spectrum(
                     spec[axis], freqs, n, float(z["fs_hz"]), r.band_lo_hz, r.band_hi_hz
                 )
-                lab = f"{r.role}, {local(r.hour_utc, '%Y-%m-%d %H:%M')}"
-                axes[0, j].semilogy(freqs, amp, color=colors[r.role], lw=0.5, label=lab)
-                axes[1, j].plot(ef, ea, color=colors[r.role], lw=0.7, label=lab)
-                if r.role == "first after first alarm":
-                    offsets.append((p, float(r.offset_from_first_alarm_days)))
-                last_speed = r.speed_rpm
+                lab = f"{r.role[:1].upper()}{r.role[1:]}, {local(r.hour_utc, '%Y-%m-%d %H:%M')}"
+                band = (freqs >= 10) & (freqs <= 1000)
+                raw_ax.semilogy(freqs[band], amp[band], color=colors[r.role], lw=0.6, label=lab)
+                lo_amp.append(amp[band])
+                env_ax.plot(ef, ea, color=colors[r.role], lw=0.8, label=lab)
+                if r.role == "latest before the cut":
+                    last_speed = r.speed_rpm
             ff = kinematics.fault_frequencies_hz(orders, last_speed / 60.0)
-            for k, ls in (("bpfo", ":"), ("bpfi", "--"), ("bsf", "-."), ("ftf", (0, (1, 3)))):
+            xmax = 1.05 * 3 * max(ff[k] for _, k, _ in FAULTS)
+            for name, k, ls in FAULTS:
                 for h in (1, 2, 3):
-                    axes[1, j].axvline(ff[k] * h, color=style.BRAND_BLUE, ls=ls, lw=0.7, alpha=0.7)
-            axes[0, j].set_xlim(0, 10000)
-            axes[0, j].set_ylim(1e-5, 1)
-            axes[0, j].set_title(f"{p}, spectrum", fontsize=9)
-            axes[1, j].set_xlim(0, ff["bpfi"] * 3.4)
-            axes[1, j].set_title(f"{p}, envelope spectrum", fontsize=9)
-            axes[1, j].set_xlabel("Hz", fontsize=8)
-            axes[0, j].set_ylabel("g", fontsize=8)
-        h, lab = axes[0, 0].get_legend_handles_labels()
-        h += [
-            plt_line(style.BRAND_BLUE, ":", label="BPFO"),
-            plt_line(style.BRAND_BLUE, "--", label="BPFI"),
-            plt_line(style.BRAND_BLUE, "-.", label="BSF"),
-        ]
-        f.tight_layout(rect=(0, 0.1, 1, 1))
-        f.legend(handles=h, loc="lower center", ncol=2, frameon=False, fontsize=8)
+                    fx = ff[k] * h
+                    env_ax.axvline(fx, color=style.BRAND_BLUE, ls=ls, lw=0.7, alpha=0.75)
+                    env_ax.text(
+                        fx,
+                        1.01,
+                        f"{name} {h}x",
+                        transform=env_ax.get_xaxis_transform(),
+                        rotation=90,
+                        fontsize=6.5,
+                        color=style.BRAND_BLUE,
+                        ha="center",
+                        va="bottom",
+                    )
+            raw_ax.set_xscale("log")
+            raw_ax.set_xlim(10, 1000)
+            a = np.concatenate(lo_amp)
+            raw_ax.set_ylim(max(float(a[a > 0].min()) * 0.5, 1e-8), float(a.max()) * 2)
+            raw_ax.set_title(f"{p}, spectrum", fontsize=9, loc="left")
+            raw_ax.set_ylabel("g", fontsize=8)
+            raw_ax.set_xlabel("Hz", fontsize=8)
+            raw_ax.legend(frameon=False, fontsize=7.5, loc="upper right")
+            env_ax.set_xlim(0, xmax)
+            env_ax.set_title(f"{p}, envelope spectrum", fontsize=9, loc="left", pad=34)
+            env_ax.set_xlabel("Hz", fontsize=8)
+        f.tight_layout(h_pad=1.6)
         return style.save(f, f"queue_spectra_{asset}", f"{asset} spectral evidence"), offsets
 
     # ---------------------------------------------------------------- panel parts
@@ -318,14 +365,13 @@ class Queue:
                         "Point": p,
                         "Indicator": lab,
                         "Against baseline, last 7 days": f"{ratio:.1f} times" if ratio else "",
-                        "z, last 7 days": znow,
-                        "Days above z 3": streak,
+                        "Days above threshold": streak,
                     }
                 )
         head = f"<p><b>Triggering layer:</b> {html.escape(_layers(case['layers']))}</p>"
         if not rows:
             return head
-        return head + style.table(pd.DataFrame(rows), {"z, last 7 days": 1})
+        return head + style.table(pd.DataFrame(rows))
 
     def _ratio(self, p: str, k: str) -> float | None:
         lg = self.log[
@@ -382,16 +428,21 @@ class Queue:
             out += "<h4>Work orders</h4>" + style.table(wt, {"Downtime, h": 1})
         return out
 
-    def last_work(self, asset: str) -> str:
+    def last_work(self, asset: str) -> list[tuple[str, str]]:
+        """The last repair (with its finding code) and the last PM before the record end."""
         w = self.d.wo
-        h = w[
-            w["asset_id"].str.startswith(asset) & (w["closed"] < END) & (w["wo_type"] != "project")
-        ].sort_values("closed")
-        if h.empty:
-            return ""
-        r = h.iloc[-1]
-        kind = "PM" if r["wo_type"] == "pm" else r["wo_type"].replace("_", " ")
-        return f"{r['wo_id']} ({kind}{', ' + r['failure_code'] if r['failure_code'] else ''}), {local(r['closed'])}"
+        h = w[w["asset_id"].str.startswith(asset) & (w["closed"] < END)].sort_values("closed")
+        out = []
+        rep = h[h["wo_type"].isin(["unplanned_repair", "condition_based", "corrective"])]
+        if len(rep):
+            r = rep.iloc[-1]
+            code = f", {str(r['failure_code']).replace('_', ' ')}" if r["failure_code"] else ""
+            out.append(("Last repair", f"{r['wo_id']}{code}, {local(r['closed'])}"))
+        pm = h[h["wo_type"] == "pm"]
+        if len(pm):
+            r = pm.iloc[-1]
+            out.append(("Last PM", f"{r['wo_id']}, {local(r['closed'])}"))
+        return out
 
     def panel(self, a: dict, q: pd.Series) -> str:
         d, t = self.d, self.t
@@ -407,12 +458,16 @@ class Queue:
         summary = [("Asset", f"{asset}, {a['class']}"), ("Status", q["Status"])]
         if case is not None:
             summary += [
-                ("Case opened", f"{local(case['opened'])}, {q['Days open']:.1f} days open"),
+                (
+                    "Case opened",
+                    f"{local(case['opened'])}, {q['Days open']} {'day' if q['Days open'] in ('<1', '1') else 'days'} open",
+                ),
                 ("Suspected condition", q["Suspected condition"]),
                 ("Points", q["Points"]),
                 ("Request", f"{q['Request id']}, {q['Request status']}"),
             ]
-        summary.append(("Last repair or PM", self.last_work(asset)))
+        for label, text in self.last_work(asset):
+            summary.append((label, text))
         dl = "".join(f"<dt>{html.escape(k)}</dt><dd>{html.escape(str(v))}</dd>" for k, v in summary)
         parts = [
             f"<h3>{html.escape(asset)}</h3><h4>{html.escape(labels[0])}</h4><dl class='summary'>{dl}</dl>"
@@ -456,12 +511,22 @@ class Queue:
     def build(self) -> str:
         t = self.t
         q = self.rows()
+        fold = ((q["Status"] == "OK") & (q["Case opened"] == "")).to_list()
         attrs = [
-            f'data-asset="{html.escape(a)}" class="row status-{s.lower()}"'
-            for a, s in zip(q["Asset"], q["Status"], strict=True)
+            f'data-asset="{html.escape(a)}" class="row status-{s.lower()}{" okfold" if f else ""}"'
+            for a, s, f in zip(q["Asset"], q["Status"], fold, strict=True)
         ]
-        table = style.table(q, {"Days open": 1}, cls="data queue", row_attrs=attrs)
+        shown = q.drop(columns=["_days"])
+        table = style.table(shown, cls="data queue", row_attrs=attrs)
+        first = attrs[fold.index(True)]
+        toggle = (
+            f'<tr class="fold" id="okfold"><td colspan="{shown.shape[1]}">'
+            f'<span class="caret">&#9656;</span> {sum(fold)} assets OK</td></tr>'
+        )
+        table = table.replace(f"<tr {first}>", toggle + f"<tr {first}>", 1)
+        status = t.field("A", "Request status label")
         legend = "".join(f"<li>{html.escape(x)}</li>" for x in t.items("A", "Status legend"))
+        legend += f"<li>{html.escape(status)}.</li>"
         qi = q.set_index("Asset")
         panels = "".join(self.panel(a, qi.loc[a["asset"]]) for a in self.assets)
         title = t.field("A", "Title")
@@ -481,9 +546,12 @@ const DEFAULT = {json.dumps(DEFAULT)};
 function show(a, scroll) {{
   document.querySelectorAll('.panel').forEach(p => p.style.display = p.dataset.asset === a ? 'block' : 'none');
   document.querySelectorAll('tr.row').forEach(r => r.classList.toggle('selected', r.dataset.asset === a));
+  const row = document.querySelector('tr.row[data-asset="' + a + '"]');
+  if (row && row.classList.contains('okfold')) document.body.classList.add('ok-open');
   if (scroll) document.getElementById('panel-' + a).scrollIntoView();
 }}
 document.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', () => show(r.dataset.asset, true)));
+document.getElementById('okfold').addEventListener('click', () => document.body.classList.toggle('ok-open'));
 const h = decodeURIComponent(location.hash.replace('#', ''));
 if (new URLSearchParams(location.search).get('capture') === 'detail') document.body.classList.add('capture-detail');
 if (h.startsWith('panel-')) show(h.slice(6), true); else show(DEFAULT, false);
@@ -509,6 +577,11 @@ table.queue tr.row { cursor: pointer; }
 table.queue td:first-child, table.queue td:nth-child(9) { white-space: nowrap; }
 body.capture-detail #queue, body.capture-detail .lead, body.capture-detail .qhead, body.capture-detail .legend { display: none; }
 body.capture-detail .panel { border-top: 0; margin-top: 0; }
+table.queue tr.okfold { display: none; }
+body.ok-open table.queue tr.okfold { display: table-row; }
+table.queue tr.fold td { cursor: pointer; color: var(--muted); font-weight: 600; background: #F7F9FB; }
+table.queue tr.fold .caret { display: inline-block; transition: transform 0.15s; }
+body.ok-open table.queue tr.fold .caret { transform: rotate(90deg); }
 table.queue tr.row:hover td { background: #F3F6F9; }
 table.queue tr.selected td { background: #E6EEF5; }
 table.queue tr.status-alarm td:nth-child(3) { color: #CC0000; font-weight: 700; }
@@ -516,7 +589,7 @@ table.queue tr.status-watch td:nth-child(3) { color: #D4881E; font-weight: 700; 
 .panel { display: none; border-top: 3px solid var(--brand); margin-top: 26px; padding-top: 4px; }
 .panel h3 { font-size: 19px; margin: 10px 0 4px; }
 .panel h4 { border-bottom: 1px solid var(--rule); padding-bottom: 3px; }
-.panel img { max-width: 900px; }
+.panel img { width: 100%; max-width: 100%; }
 dl.summary { display: grid; grid-template-columns: 170px 1fr; gap: 3px 14px; font-size: 13.5px; margin: 6px 0; }
 dl.summary dt { color: var(--muted); }
 dl.summary dd { margin: 0; }
@@ -538,6 +611,12 @@ def utc_cols(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     for c in cols:
         df[c] = utc(df[c])
     return df
+
+
+def plt_band(color: str, label: str):
+    from matplotlib.patches import Patch
+
+    return Patch(facecolor=color, alpha=0.25, lw=0, label=label)
 
 
 def plt_line(color: str, ls: str = "-", label: str = ""):
