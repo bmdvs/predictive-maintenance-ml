@@ -37,7 +37,6 @@ The text of the pages, assembled with their exhibits by pdm.reports.build.
 
 **Fixed panel lines:**
 - **Remaining time, where no estimate exists:** "No remaining-time estimate is offered for this asset."
-- **Spectral evidence, where no burst exists at the first alarm:** "Nearest retained burst: {offset} days from the first alarm." The offset comes from the panel data.
 - **Coolant pressure:** "Through-spindle coolant pressure while the pump runs. Rating 69 bar."
 - **Asset with no open case:** "No open case."
 - **HMC-03-SP:** "Status OK; case open until a repair work order or 7 quiet days close it."
