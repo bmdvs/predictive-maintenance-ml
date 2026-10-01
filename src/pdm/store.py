@@ -1,7 +1,7 @@
 """Table access for job tasks and the local parity runner.
 
 On the platform tables are Unity Catalog tables (catalog.schema.table); locally they are Delta folders
-under exports/local_gold/<schema>/<table>. Every task reads and writes through a Store, so the same
+under data/local_gold/<schema>/<table>. Every task reads and writes through a Store, so the same
 task code runs in both places.
 """
 

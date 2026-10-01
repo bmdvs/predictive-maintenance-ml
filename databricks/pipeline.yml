@@ -1,7 +1,7 @@
-# pdm_pipeline: sources by file pattern under pipelines/, serverless with Photon, triggered, the pdm
+# pdm_pipeline: sources by file pattern under databricks/pipeline/, serverless with Photon, triggered, the pdm
 # wheel as the environment dependency and the six configuration keys the pipeline sources read. Where
 # the pipeline already exists in the workspace, bind it before the first deploy of the target that should
-# own it (infra/README.md), otherwise a deploy creates a second pipeline.
+# own it (databricks/README.md), otherwise a deploy creates a second pipeline.
 resources:
   pipelines:
     pdm_pipeline:
@@ -15,7 +15,7 @@ resources:
       root_path: ..
       libraries:
         - glob:
-            include: ../pipelines/**
+            include: pipeline/**
       environment:
         dependencies:
           - ../dist/bundle/*.whl

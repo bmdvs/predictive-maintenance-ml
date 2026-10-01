@@ -5,8 +5,8 @@
 # system folder between the local exports and the volume, read-only.
 #
 # Requires: Databricks CLI authenticated to the workspace (profile in ~/.databrickscfg, not in the repo).
-# Usage: infra/land_exports.sh [PROFILE]          copies the exports
-#        infra/land_exports.sh [PROFILE] --check  read-only count and byte comparison
+# Usage: databricks/scripts/land_exports.sh [PROFILE]          copies the exports
+#        databricks/scripts/land_exports.sh [PROFILE] --check  read-only count and byte comparison
 set -euo pipefail
 
 PROFILE="${1:-${DATABRICKS_CONFIG_PROFILE:-DEFAULT}}"

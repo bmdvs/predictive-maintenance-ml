@@ -1,5 +1,5 @@
 """Local parity run: the pipeline's bronze, silver and gold tables and every job task, in dependency
-order, on the local exports, writing Delta tables to exports/local_gold/<schema>/<table>.
+order, on the local exports, writing Delta tables to data/local_gold/<schema>/<table>.
 
 python -m pdm.parity [--skip-bronze] [--only STAGE ...]
 
