@@ -8,7 +8,7 @@ from generate.checks.realism import check_independence
 from pdm.config import load_config
 from pdm.paths import REPO_ROOT
 
-BANNED = re.compile(r"case study|portfolio|demonstration|simulation|synthetic", re.IGNORECASE)
+BANNED = re.compile(r"case study|portfolio|demonstration|simulation|simulated|synthetic", re.IGNORECASE)
 
 
 def test_pdm_does_not_depend_on_generator():

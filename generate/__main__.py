@@ -105,7 +105,7 @@ def run(pilot: bool, window_days: int | None = None, workers: int | None = None)
             local_ts(pilot_cfg["window"]["end"]) + pd.Timedelta(days=1),
         )
         rendered = set(pilot_cfg["points"])
-        machines = [m for m in pilot_cfg["simulated_assets"] if m.startswith("HMC")]
+        machines = [m for m in pilot_cfg["pilot_assets"] if m.startswith("HMC")]
         overrides = pilot_cfg.get("override", {})
     else:
         start, end = (
