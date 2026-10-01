@@ -392,10 +392,6 @@ class MonitoringReport:
         self.text("Data-quality exceptions rose")
         x("Exhibit: Feature drift by point", self.heatmap())
         x("Exhibit: Data quality by point", self.quality())
-        x(
-            "Exhibit: Data profiling dashboard",
-            style.screenshot("platform/data_profiling_dashboard.png", "", up=1).split("</div>", 1)[1],
-        )
         self.h(3, "2.3 Model updates and baseline resets", "s23", True)
         self.text("Model versions.")
         x("Exhibit: Champion per monthly cycle", style.table(self.versions(), {"Rate": 3, "Budget": 3}))
