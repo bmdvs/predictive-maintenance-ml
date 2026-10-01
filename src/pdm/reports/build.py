@@ -98,7 +98,7 @@ def check(t: PageText, pages: dict[str, str]) -> list[str]:
         for w in want:
             w = w.split("{")[0].strip()
             allowed.add(html.escape(w, quote=False))
-            if w and html.escape(w, quote=False) not in pages["A"]:
+            if w and w not in t.not_shown and html.escape(w, quote=False) not in pages["A"]:
                 problems.append(f"A{i}: not found on the page: {w[:60]}")
     for sec, i in sorted(t.used):
         if sec in ("A", "D"):

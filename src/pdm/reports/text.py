@@ -39,6 +39,7 @@ class PageText:
                 blocks.append(cur)
             self.sections[key] = blocks
         self.used: set[tuple[str, int]] = set()
+        self.not_shown: set[str] = set()
 
     def _find(self, section: str, start: str) -> tuple[int, list[str]]:
         hits = [(i, b) for i, b in enumerate(self.sections[section]) if b[0].lstrip("#*- ").startswith(start)]
