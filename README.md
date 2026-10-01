@@ -54,7 +54,7 @@ Spindle and pump failures on the HMC cell stop the shop's highest-margin work. V
 - **Models:** MLflow experiments and the Unity Catalog model registry, with a `champion` alias.
 - **Monitoring:** Databricks data profiling.
 - **Deployment:** `databricks bundle deploy -t prod` from a Declarative Automation Bundle with dev and prod targets. GitHub Actions lints, tests and validates every pull request and deploys production as a service principal.
-- **Cost:** about $4 in Azure infrastructure through October 26, 2026, with Databricks usage covered by the trial allowance.
+- **Cost:** about $6 in Azure infrastructure through October 27, 2026, with Databricks usage covered by the trial allowance.
 
 ![architecture](docs/figures/model_architecture.png)
 

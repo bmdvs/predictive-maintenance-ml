@@ -1,9 +1,15 @@
-"""Shared fixtures: a local Spark session (skipped when no Java runtime is available)."""
+"""Shared fixtures: a local Spark session (skipped when no Java runtime is available).
+
+Spark workers start the interpreter running the tests (PYSPARK_PYTHON), set here before any session starts.
+"""
 
 import os
 import shutil
+import sys
 
 import pytest
+
+os.environ["PYSPARK_PYTHON"] = sys.executable
 
 
 def _java_available() -> bool:

@@ -37,17 +37,21 @@ access connector and its role assignment) are created in the Azure portal; `azur
 
 ## Local Java for Spark tests
 
-The local Spark tests and the parity runner need `JAVA_HOME` set to an installed JDK 17. A JDK update
-installs into a new folder named for the new version (for example `jdk-17.0.20-hotspot` became
-`jdk-17.0.20.101-hotspot`) and removes the old one, so a `JAVA_HOME` that names the old folder makes local
-Spark hang at startup. After a JDK update, point `JAVA_HOME` at the new folder:
+The local Spark tests and the parity runner need a JDK 17 through `JAVA_HOME`. The Microsoft OpenJDK
+installer sets the machine-level `JAVA_HOME` and updates it when a JDK update installs into a new folder
+(for example `jdk-17.0.20-hotspot` became `jdk-17.0.20.101-hotspot`). Do not set a user-level `JAVA_HOME`:
+it overrides the machine variable, and once an update removes the folder it names, local Spark hangs at
+startup. Check from a new terminal:
 
 ```
-setx JAVA_HOME "C:\Program Files\Microsoft\jdk-<version>-hotspot"
+[Environment]::GetEnvironmentVariable("JAVA_HOME", "User")     # empty
+[Environment]::GetEnvironmentVariable("JAVA_HOME", "Machine")  # the installed JDK folder
 ```
 
-On Windows, also set `PYSPARK_PYTHON` to the virtual environment's `python.exe` so Spark workers start
-the same interpreter.
+Spark workers must start the same interpreter as the driver. `tests/conftest.py` sets `PYSPARK_PYTHON` to
+the running interpreter before any Spark session starts, so the tests need no environment setting. For the
+parity runner on Windows, set it in the terminal for that run (`$env:PYSPARK_PYTHON = (Get-Command python).Source`
+inside the activated virtual environment) rather than as a user variable.
 
 ## Bundle
 
