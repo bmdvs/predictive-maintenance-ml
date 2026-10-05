@@ -415,7 +415,9 @@ def check_independence_and_crash(cfg: dict[str, Any], events: pd.DataFrame) -> C
         text = f.read_text(encoding="utf-8")
         hits += [f"{f.name}:gold" for tok in ("local_gold", "gold_snapshot") if tok in text]
     f = events[
-        (events["event"] == "unplanned_failure") & events["asset_id"].astype(str).str.match(r"HMC-\d+-SP$")
+        (events["event"] == "unplanned_failure")
+        & events["asset_id"].astype(str).str.match(r"HMC-\d+-SP$")
+        & events["mode"].isin(["bearing", "crash"])
     ]
     n_crash, n_all = int((f["mode"] == "crash").sum()), len(f)
     share = n_crash / n_all if n_all else np.nan
@@ -446,14 +448,17 @@ def thermistor_report(cfg: dict[str, Any], bronze_root: Path, machine_hours: pd.
         month = int(f.parent.name.split("-")[1])
         if month not in (7, 8):
             continue
-        a = pd.read_parquet(f, columns=["machine_id", "minute_utc", "spindle_temp_c_mean"])
+        mid = f.stem
+        a = pd.read_parquet(f, columns=["minute_utc", "spindle_temp_c_mean"])
         a["hour_utc"] = pd.to_datetime(a["minute_utc"], utc=True).dt.floor("h")
-        m = mh[mh["machine_id"] == a["machine_id"].iat[0]].set_index("hour_utc")
+        m = mh[mh["machine_id"] == mid].set_index("hour_utc")
         sick = (m["cooler_residual_c"] > 0) | (m["lube_temp_c"] > 0) | (m["spindle_s4"] > 0)
-        a = a[~sick.reindex(a["hour_utc"]).fillna(False).to_numpy()]
+        a = a[~sick.reindex(a["hour_utc"]).fillna(False).astype(bool).to_numpy()]
+        if a["spindle_temp_c_mean"].notna().sum() == 0:
+            continue
         rows.append(
             {
-                "machine_id": a["machine_id"].iat[0],
+                "machine_id": mid,
                 "month": f.parent.name,
                 "max_c": float(a["spindle_temp_c_mean"].max()),
             }
