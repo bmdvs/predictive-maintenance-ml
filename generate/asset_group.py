@@ -1209,7 +1209,7 @@ class HmcGroup(MachineMixin, AssetGroup):
         self.schedule_calendar_pm(machine_id, "way_lube_hydraulic", pm["way_lube_hydraulic"]["interval"])
         self.schedule_calendar_pm(machine_id, "backlash_check", pm["backlash_check"]["interval"])
         last = reg.pumps[tsc_asset]["last_replacement"] or f"{self.machine['install_year']}-07-01"
-        due =pd.Timestamp(str(last), tz=LOCAL_TZ).tz_convert("UTC") + pd.Timedelta(
+        due = pd.Timestamp(str(last), tz=LOCAL_TZ).tz_convert("UTC") + pd.Timedelta(
             days=pm["tsc_pump_unit_replacement"]["interval"]
         )
         self.schedule_calendar_pm(
