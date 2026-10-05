@@ -140,7 +140,12 @@ def timing_projection(cfg: dict[str, Any], chk: dict[str, Any], timing: dict[str
     n_cmp_points = sum(1 for pid in reg.sensors if pid.startswith("CMP"))
     total = n_hmc * hmc_group + n_cmp_points * cmp_ * record_days
     overhead_s = timing["elapsed_s"] - timing["render_extract_s"]
-    wall_min = (hmc_group * ms / 1000 + overhead_s * record_days / days) / 60
+    hmc_elapsed = [v for k, v in timing.get("groups", {}).items() if k.startswith("HMC")]
+    wall_min = (
+        max(hmc_elapsed) * record_days / days / 60
+        if hmc_elapsed
+        else (hmc_group * ms / 1000 + overhead_s * record_days / days) / 60
+    )
     rows = [
         ("measured render plus extraction per burst (ms)", f"{ms:.1f}"),
         ("pilot bursts rendered", f"{timing['bursts_rendered']:,}"),
@@ -170,6 +175,25 @@ def _rev2_section(chk: dict[str, Any], timing: dict[str, Any]) -> list[str]:
             + f"; cooler overheat stops {oh.get('cooler_stops', 0)}",
             "",
         ]
+    m5 = chk.get("m5")
+    if m5:
+        out += [
+            f"TSC wear onsets during cavitation (M5): {m5['onsets_during_cavitation']} over "
+            f"{m5['cavitating_tsc_hours']} cavitating TSC hours, expected {m5['expected']}; "
+            f"all TSC wear onsets {m5['tsc_wear_onsets_all']}",
+            "",
+        ]
+    tac = chk.get("temperature_alert_causes")
+    if tac is not None:
+        out += [
+            "Vendor temperature alerts by point class and cause:",
+            "",
+            _md_table(tac) if len(tac) else "none",
+            "",
+        ]
+    al = chk.get("airend_lube")
+    if al is not None and len(al):
+        out += ["Airend lubrication events per compressor against expectation:", "", _md_table(al), ""]
     sp = timing.get("spare_spindle")
     if sp:
         out += [

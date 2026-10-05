@@ -124,7 +124,7 @@ bearing_degradation:                      # [plant] 8.2, exponential model (Math
     tsc_pump_motor: {older: 7500, newer: 10000}     # 7,000 to 11,000
     flood_pump_motor: {older: 9500, newer: 13000}   # 9,000 to 14,000
     compressor_motor: {older: 22000, newer: 28000}  # 20,000 to 30,000
-    compressor_airend: {older: 39000, newer: 50000} # rev2 R2.6.3, Quincy airend at least 40,000 h (was 27,000 and 38,000)
+    compressor_airend: {older: 40000, newer: 50000} # rev2 R2.6.3; older 40,000 h at pilot04 decision 4, the quoted Quincy industry figure (was 39,000 in v12; originally 27,000 and 38,000)
   hazard_multipliers:
     crash_remaining_life_factor: [0.3, 0.7]          # spindle front set, per collision above severity threshold
     lubrication_loss: 0.5                            # remaining life multiplier while the state persists
@@ -692,7 +692,7 @@ checks:                                   # [fixed] sections 9 and 16
     hmc_spindle_preventive_rebuilds: 1.3              # unchanged: HMC-05 and -06 stay below 20,000 h in the record (was 1.3)
     crash_spindle_failures_no_precursor: 4.2          # x2 (was 2.1)
     hmc_pump_unplanned_failures: 10.0                 # x2 = 13, less about a quarter caught at inspection with the slower R2.6.1 progression (was 6.5)
-    compressor_unplanned_events: 7.5                  # running hours x1.9, airend lives about 0.7x on that mode (was 4.65)
+    compressor_unplanned_events: 7.5                  # running hours x1.9, airend lives about 0.7x on that mode (was 4.65); unchanged at the older airend life 40,000 h (effect under 0.1 event)
     axis_ball_screw_replacements: 8.0                 # x2 (was 4.0)
     shadow_year_failures_instrumented: 7.0            # 1.2 per quarter x4 x2, less slower pump progression (was shadow_failures_instrumented 1.2, quarter)
     shadow_year_failures_uninstrumented: 10.4         # 1.3 x4 x2 (was shadow_failures_uninstrumented 1.3, quarter)
@@ -750,7 +750,8 @@ checks:                                   # [fixed] sections 9 and 16
   instrumented_assets: [HMC-01-SP, HMC-02-SP, HMC-03-SP, HMC-04-SP, HMC-05-SP, HMC-06-SP, HMC-07-SP, HMC-08-SP, HMC-01-TSC, HMC-02-TSC, HMC-03-TSC, HMC-04-TSC, HMC-05-TSC, HMC-06-TSC, HMC-07-TSC, HMC-08-TSC, HMC-01-CP, HMC-02-CP, HMC-03-CP, HMC-04-CP, HMC-05-CP, HMC-06-CP, HMC-07-CP, HMC-08-CP, CMP-01, CMP-02, CMP-03, CMP-04]   # rev2: 28 (was 14)
   technician_labor_share_max: 0.80          # rev2 check 27
   crash_share_hmc_spindle_published: [0.30, 0.60]   # rev2 check 29, reported
-  housing_share_of_residual_check: [0.5, 1.0]       # rev2 check 23
+  housing_share_of_residual_check: [0.5, 1.0]       # rev2 check 23, pooled per point class (pilot04 decision 8)
+  housing_check_settled_cutting_h: 6                # rev2 check 23 estimator (pilot04): hours after 6 consecutive cutting hours (housing lag settled), excluding stage 3+ or lubrication heat on the point
   abrupt_overheat_within_h: 6                       # rev2 check 23: abrupt faults reach 46 C within hours while cutting
   lube_trend_alpha: 0.05                            # rev2 check 28: Poisson trend test across record years
   expected_ranges:

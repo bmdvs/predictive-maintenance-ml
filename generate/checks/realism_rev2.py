@@ -57,9 +57,18 @@ def _cond_starts(events: pd.DataFrame, kind: str) -> pd.DataFrame:
     return cs
 
 
+def _shop_ambient(cfg: dict[str, Any], hours: pd.Series) -> np.ndarray:
+    """The shop's seasonal ambient (no daily cycle), so the housing excess is measured above it."""
+    a = cfg["benign"]["shop_ambient_c"]
+    coldest = cfg["benign"]["ambient_room_c"]["coldest_day_of_year"]
+    doy = hours.dt.tz_convert(TZ).dt.dayofyear.to_numpy(float)
+    return a["annual_mean"] - a["annual_amplitude"] * np.cos(2 * np.pi * (doy - coldest) / 365.25)
+
+
 def check_cooling_housing(
     cfg: dict[str, Any],
     reg: Register,
+    truth: pd.DataFrame,
     events: pd.DataFrame,
     scalars: pd.DataFrame,
     machine_hours: pd.DataFrame,
@@ -76,6 +85,12 @@ def check_cooling_housing(
     mh["hour_utc"] = pd.to_datetime(mh["hour_utc"], utc=True)
     cs = _cond_starts(events, "spindle_cooling")
     rows = []
+    pooled: dict[str, list[float]] = {}
+    settle_h = int(cfg["checks"]["housing_check_settled_cutting_h"])
+    tt = truth[truth["point_id"].str.contains("-SP-")].copy()
+    tt["hour_utc"] = pd.to_datetime(tt["hour_utc"], utc=True)
+    tt["other"] = (tt["stage"] >= 3) | (tt["lube_severity"] > 0)
+    th = {pid: g.set_index("hour_utc")["other"] for pid, g in tt.groupby("point_id")}
     for c in cs.itertuples():
         mid = c.asset_id.removesuffix("-SP")
         rated = float(reg.machines[mid]["rated_rpm"])
@@ -107,6 +122,7 @@ def check_cooling_housing(
         for pid in (f"{mid}-SP-F", f"{mid}-SP-R"):
             p = res[res["point_id"] == pid].copy()
             p["band"] = (p["speed_rpm_at_measurement"] / rated * 4).round()
+            p["temp_c"] = p["temp_c"] - _shop_ambient(cfg, p["hour_utc"])
             pre = p[(p["hour_utc"] >= c.ts - pd.Timedelta(days=base_days)) & (p["hour_utc"] < c.ts)]
             during = p[(p["hour_utc"] >= c.ts) & (p["hour_utc"] < end)].copy()
             if pre.empty or during.empty:
@@ -117,23 +133,45 @@ def check_cooling_housing(
             during["resid"] = m["cooler_residual_c"].reindex(during["hour_utc"]).to_numpy()
             during["cut"] = (m["cut_min"].reindex(during["hour_utc"]).to_numpy() / 60.0).clip(0, 1)
             during["speed"] = during["speed_rpm_at_measurement"] / rated
-            plateau = during[during["resid"] >= 0.5 * during["resid"].max()]
+            cut_h = m["cut_min"] > 0
+            settled = cut_h.rolling(settle_h + 1).sum() == settle_h + 1
+            during["settled"] = settled.reindex(during["hour_utc"]).fillna(False).to_numpy()
+            other = th.get(pid)
+            if other is not None:
+                during["other_heat"] = other.reindex(during["hour_utc"]).fillna(False).to_numpy()
+            else:
+                during["other_heat"] = False
+            plateau = during[
+                (during["resid"] >= 0.5 * during["resid"].max()) & during["settled"] & ~during["other_heat"]
+            ]
             if len(plateau) < 12:
                 continue
             excess = plateau["temp_c"].to_numpy() - base.reindex(plateau["band"]).to_numpy()
-            ratio = float(
-                np.median(excess / (plateau["resid"] * plateau["speed"] * plateau["cut"]).clip(lower=0.1))
-            )
+            per_hour = excess / (plateau["resid"] * plateau["speed"] * plateau["cut"]).clip(lower=0.1)
+            pclass = "spindle_front" if pid.endswith("-F") else "spindle_rear"
+            pooled.setdefault(pclass, []).extend(per_hour.tolist())
             rows.append(
                 {
                     "asset_id": pid,
                     "start": c.ts,
                     "abrupt": False,
-                    "measure": "housing excess over residual x speed x cutting share (median)",
-                    "value": ratio,
-                    "pass": bool(lo * 0.8 <= ratio <= hi * 1.2),
+                    "measure": "housing excess over residual x speed x cutting share (median, episode)",
+                    "value": float(np.median(per_hour)),
+                    "pass": None,
                 }
             )
+    for pclass, vals in sorted(pooled.items()):
+        v = float(np.median(vals))
+        rows.append(
+            {
+                "asset_id": f"pooled {pclass}",
+                "start": pd.NaT,
+                "abrupt": False,
+                "measure": f"pooled median over all gradual episodes ({len(vals)} settled hours)",
+                "value": v,
+                "pass": bool(lo <= v <= hi),
+            }
+        )
     tab = pd.DataFrame(rows)
     if tab.empty:
         return CheckResult(
@@ -142,13 +180,15 @@ def check_cooling_housing(
     return CheckResult(
         "23",
         "Spindle cooling and housing temperature",
-        f"gradual: housing rise {lo}-{hi} x thermistor residual "
-        "(speed-normalized, 20% tolerance for lag and noise); "
+        f"gradual, pooled per point class: housing rise {lo}-{hi} x thermistor residual "
+        "(speed-normalized); per-episode values reported; "
         f"abrupt: overheat stop within {within_h} h of cutting",
         "; ".join(
-            f"{r.asset_id} {'abrupt' if r.abrupt else 'gradual'} {r.value:.2f}" for r in tab.itertuples()
+            f"{r.asset_id} {'abrupt' if r.abrupt else ('gradual' if r.asset_id.startswith('HMC') else '')} "
+            f"{r.value:.2f}"
+            for r in tab.itertuples()
         ),
-        bool(tab["pass"].all()),
+        bool(tab["pass"].dropna().astype(bool).all()) if tab["pass"].notna().any() else None,
         tab,
     )
 
@@ -494,6 +534,110 @@ def overheat_report(events: pd.DataFrame, machine_hours: pd.DataFrame) -> dict[s
 _EVENT_COLS = ["ts", "event", "asset_id", "mode", "kind", "cause", "p_abrupt", "p_rise_c", "ramp_h"]
 
 
+def m5_report(cfg: dict[str, Any], truth: pd.DataFrame, events: pd.DataFrame) -> dict[str, float]:
+    """TSC wear onsets that began during a cavitation episode, against the expectation from the
+    cavitating hours at the M5 onset multiplier."""
+    t = truth[truth["point_id"].str.endswith("-TSC") & truth["cavitation"].astype(bool)]
+    cav_hours = {
+        (r.point_id.removesuffix("-TSC") + "-TSC", pd.Timestamp(r.hour_utc).floor("h"))
+        for r in t.itertuples()
+    }
+    pc = cfg["pump"]
+    rate = (
+        pc["seal_wear"]["onset_rate_per_pump_year"] + pc["impeller_wear"]["onset_rate_per_pump_year"]
+    ) * pc["cavitation"]["tsc_wear_multipliers"]["onset_hazard"]
+    expected = len(cav_hours) * rate / (365.25 * 24)
+    w = events[(events["event"] == "pump_wear_start") & events["asset_id"].astype(str).str.endswith("-TSC")]
+    during = sum((r.asset_id, pd.Timestamp(r.ts).floor("h")) in cav_hours for r in w.itertuples())
+    return {
+        "cavitating_tsc_hours": len(cav_hours),
+        "onsets_during_cavitation": during,
+        "expected": round(expected, 2),
+        "tsc_wear_onsets_all": len(w),
+    }
+
+
+def temperature_alert_causes(
+    cfg: dict[str, Any],
+    reg: Register,
+    alerts: pd.DataFrame,
+    truth: pd.DataFrame,
+    machine_hours: pd.DataFrame,
+    air: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Vendor temperature alerts by point class and the truth condition present at the alert hour."""
+    ta = alerts[alerts["rules"].astype(str).str.contains("temp_")] if len(alerts) else alerts
+    if ta is None or ta.empty:
+        return pd.DataFrame(columns=["point_class", "cause", "level", "alerts"])
+    t = truth.copy()
+    t["hour_utc"] = pd.to_datetime(t["hour_utc"], utc=True)
+    ti = t.set_index(["point_id", "hour_utc"])
+    mh = machine_hours.copy()
+    mh["hour_utc"] = pd.to_datetime(mh["hour_utc"], utc=True)
+    mi = mh.set_index(["machine_id", "hour_utc"])
+    ai = (
+        air.assign(hour_utc=pd.to_datetime(air["hour_utc"], utc=True)).set_index("hour_utc")
+        if air is not None
+        else None
+    )
+    rows = []
+    for a in ta.itertuples():
+        h = pd.Timestamp(a.alert_ts).floor("h")
+        r = ti.loc[(a.point_id, h)] if (a.point_id, h) in ti.index else None
+        mid = a.point_id.split("-")[0] + "-" + a.point_id.split("-")[1]
+        causes = []
+        if r is not None:
+            if r["stage"] >= 3:
+                causes.append("bearing stage 3 or 4")
+            if r["lube_severity"] > 0:
+                causes.append("lubrication")
+            if bool(r["cavitation"]):
+                causes.append("cavitation")
+            if r["wear_frac"] > 0:
+                causes.append("pump wear")
+        if (mid, h) in mi.index and float(mi.loc[(mid, h), "cooler_residual_c"]) > 0:
+            causes.append("spindle cooling")
+        if (
+            ai is not None
+            and f"{mid}_fouling_rise_c" in ai
+            and float(ai[f"{mid}_fouling_rise_c"].get(h, 0.0)) > 0
+        ):
+            causes.append("oil cooler fouling")
+        rows.append(
+            {
+                "point_class": reg.point_class(a.point_id),
+                "cause": "+".join(causes) or "no condition",
+                "level": a.level,
+            }
+        )
+    df = pd.DataFrame(rows)
+    return df.groupby(["point_class", "cause", "level"]).size().rename("alerts").reset_index()
+
+
+def airend_lube_report(cfg: dict[str, Any], events: pd.DataFrame, air: pd.DataFrame | None) -> pd.DataFrame:
+    """Airend lubrication events per compressor against the per-running-hour expectation."""
+    if air is None:
+        return pd.DataFrame()
+    rate = cfg["compressor"]["airend_lube_events_per_running_h"]
+    ev = events[
+        (events["event"] == "lube_episode_start") & events["asset_id"].astype(str).str.startswith("CMP")
+    ]
+    rows = []
+    for c in sorted(
+        {col.split("_")[0] for col in air.columns if col.startswith("CMP-") and col.endswith("_running")}
+    ):
+        h = float(air[f"{c}_running"].astype(bool).sum())
+        rows.append(
+            {
+                "compressor_id": c,
+                "running_h": int(h),
+                "events": int((ev["asset_id"] == c).sum()),
+                "expected": round(rate * h, 2),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def run_rev2_checks(
     cfg: dict[str, Any],
     reg: Register,
@@ -529,7 +673,7 @@ def run_rev2_checks(
     c26, split = check_compressor_duty(cfg, reg, air)
     c27, labor = check_technician_labor(cfg, wo)
     results = [
-        check_cooling_housing(cfg, reg, events, scalars, machine_hours, ctrl),
+        check_cooling_housing(cfg, reg, truth, events, scalars, machine_hours, ctrl),
         c24,
         check_spare_spindle(cfg, truth_dir, wo_engine),
         c26,
@@ -543,4 +687,7 @@ def run_rev2_checks(
         "technician_labor": labor,
         "thermistor_summer": thermistor_report(cfg, bronze_root, machine_hours),
         "overheat_alarms": overheat_report(events, machine_hours),
+        "m5": m5_report(cfg, truth, events),
+        "temperature_alert_causes": temperature_alert_causes(cfg, reg, alerts, truth, machine_hours, air),
+        "airend_lube": airend_lube_report(cfg, events, air),
     }

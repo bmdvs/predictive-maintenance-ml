@@ -38,6 +38,7 @@ def condition_type() -> F.Column:
     repair = wt.isin("unplanned_repair", "condition_based", "corrective")
     return (
         F.when((wt == "inspection") & notes.contains("lubrication"), F.lit("lubrication"))
+        .when((wt == "pm") & notes.contains("lubrication degraded"), F.lit("lubrication"))
         .when((wt == "pm") & code.isNotNull(), mapped)
         .when(repair & code.isNull() & (wt == "unplanned_repair"), F.lit("unplanned, no code"))
         .when(repair & code.isin(*BEARING_CODES) & (wt == "unplanned_repair"), F.lit("bearing (unplanned)"))
