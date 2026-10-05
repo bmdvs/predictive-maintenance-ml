@@ -20,15 +20,11 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from generate import plant_air, shop_schedule
-from generate.asset_group import CompressorGroup, GroupOutput, HmcGroup
+from generate import shop_schedule
 from generate.checks import realism, run_report
-from generate.provenance import RUNS_DIR, RunContext, new_run, rng_for
+from generate.provenance import RUNS_DIR, RunContext, new_run
 from generate.provenance import config_hash as config_hash_of
 from generate.run_full import run_full_record
-from generate.sensor_platform_export import write_cm_platform
-from generate.shared import build_shared
-from generate.truth_archive import write_truth
 from pdm import log, paths
 from pdm.config import load_config, load_register
 
@@ -104,76 +100,30 @@ def run(pilot: bool, window_days: int | None = None, workers: int | None = None)
             local_ts(pilot_cfg["window"]["start"]),
             local_ts(pilot_cfg["window"]["end"]) + pd.Timedelta(days=1),
         )
-        rendered = set(pilot_cfg["points"])
-        machines = [m for m in pilot_cfg["pilot_assets"] if m.startswith("HMC")]
-        overrides = pilot_cfg.get("override", {})
-    else:
-        start, end = (
-            local_ts(cfg["meta"]["record"]["start"]),
-            local_ts(cfg["meta"]["record"]["end"]) + pd.Timedelta(days=1),
+        if window_days is not None:
+            end = start + pd.Timedelta(days=window_days)
+        return run_full(
+            ctx,
+            cfg,
+            reg,
+            resolved,
+            start,
+            end,
+            t_start,
+            workers,
+            bronze_root=paths.DATA_DIR / "pilot" / ctx.run_id / "bronze",
+            groups=list(pilot_cfg["pilot_assets"]),
+            rendered=list(pilot_cfg["points"]),
+            overrides=pilot_cfg.get("override", {}),
+            pilot=True,
         )
-        rendered = set(reg.sensors)
-        machines = [m for m, v in reg.machines.items() if v["class"] == "hmc"]
-        overrides = {}
-
+    start, end = (
+        local_ts(cfg["meta"]["record"]["start"]),
+        local_ts(cfg["meta"]["record"]["end"]) + pd.Timedelta(days=1),
+    )
     if window_days is not None:
         end = start + pd.Timedelta(days=window_days)
-    if not pilot:
-        return run_full(ctx, cfg, reg, resolved, start, end, t_start, workers)
-    shared, sats = build_shared(cfg, reg, ctx, start, end, rendered)
-    hmc_ids = [m for m, v in reg.machines.items() if v["class"] == "hmc"]
-    heavy, drift, titanium = shop_schedule.cell_benign_draws(
-        cfg, hmc_ids, start, end, rng_for(ctx.run_seed, "cell_benign")
-    )
-    ti_machines = set(cfg["benign"]["titanium_job"]["machines"])
-
-    outputs: list[GroupOutput] = []
-    benign: list[dict[str, Any]] = []
-    schedules = {}
-    for mid in machines:
-        sched, _, ben = shop_schedule.machine_schedule(
-            cfg,
-            reg.machines[mid],
-            shared.frame,
-            shared.holidays,
-            sats["hmc"],
-            rng_for(ctx.run_seed, "schedule", mid),
-            heavy[mid],
-            titanium if mid in ti_machines else None,
-            drift[mid],
-        )
-        schedules[mid] = sched
-        benign += ben + [
-            {"event": "coolant_drift", "asset_id": mid, "ts": a, "end": b, "load_gain": g}
-            for a, b, g in drift[mid]
-        ]
-        LOG.info("group_start group=%s hours=%d", mid, len(sched))
-        outputs.append(HmcGroup(ctx, cfg, reg, shared, mid, sched, overrides).run())
-    air = plant_air.compressor_hours(
-        cfg, shared.frame, shared.plant_minutes, list(reg.compressors), rng_for(ctx.run_seed, "air")
-    )
-    LOG.info("group_start group=CMP hours=%d", len(air))
-    outputs.append(CompressorGroup(ctx, cfg, reg, shared, air, overrides).run())
-
-    bronze_root = paths.DATA_DIR / "pilot" / ctx.run_id / "bronze" if pilot else paths.BRONZE_DIR
-    counts = write_cm_platform(outputs, bronze_root, ctx)
-    truth_dir = write_truth(outputs, ctx, resolved)
-    pd.DataFrame(benign).assign(**ctx.stamp()).to_parquet(truth_dir / "benign.parquet", index=False)
-    for mid, sched in schedules.items():
-        sched.assign(**ctx.stamp()).to_parquet(truth_dir / f"schedule_{mid}.parquet", index=False)
-    air.assign(**ctx.stamp()).to_parquet(truth_dir / "compressor_hours.parquet", index=False)
-    elapsed = time.perf_counter() - t_start
-    timing = {
-        "elapsed_s": elapsed,
-        "bursts_rendered": sum(o.bursts_rendered for o in outputs),
-        "render_extract_s": sum(o.render_seconds for o in outputs),
-    }
-    LOG.info("generation_done elapsed_s=%.1f bursts=%d", elapsed, timing["bursts_rendered"])
-    with open(ctx.run_dir / "generation.json", "w", encoding="utf-8") as fh:
-        json.dump({"counts": counts, "timing": timing, "pilot": pilot}, fh, indent=1)
-    report(ctx, cfg, reg, bronze_root, truth_dir, counts, timing, pilot)
-    LOG.info("run_done run_id=%s", ctx.run_id)
-    return ctx
+    return run_full(ctx, cfg, reg, resolved, start, end, t_start, workers)
 
 
 def run_full(
@@ -185,10 +135,15 @@ def run_full(
     end: pd.Timestamp,
     t_start: float,
     workers: int | None,
+    bronze_root: Path | None = None,
+    groups: list[str] | None = None,
+    rendered: list[str] | None = None,
+    overrides: dict[str, Any] | None = None,
+    pilot: bool = False,
 ) -> RunContext:
-    bronze_root = paths.BRONZE_DIR
+    bronze_root = bronze_root or paths.BRONZE_DIR
     if bronze_root.exists() and any(bronze_root.iterdir()):
-        raise SystemExit(f"{bronze_root} is not empty; a full run writes a fresh bronze export")
+        raise SystemExit(f"{bronze_root} is not empty; a run writes a fresh bronze export")
     truth_dir = ctx.run_dir / "truth"
     truth_dir.mkdir(parents=True)
     with open(ctx.run_dir / "resolved_config.json", "w", encoding="utf-8") as fh:
@@ -204,13 +159,23 @@ def run_full(
             fh,
             indent=1,
         )
-    res = run_full_record(ctx, start, end, bronze_root, workers or max((os.cpu_count() or 2) - 1, 1))
+    res = run_full_record(
+        ctx,
+        start,
+        end,
+        bronze_root,
+        workers or max((os.cpu_count() or 2) - 1, 1),
+        groups,
+        rendered,
+        overrides,
+    )
     elapsed = time.perf_counter() - t_start
     timing = {
         "elapsed_s": elapsed,
         "bursts_rendered": sum(r["bursts_rendered"] for r in res["results"]),
         "render_extract_s": sum(r["render_s"] for r in res["results"]),
         "groups": {r["group"]: round(r["elapsed_s"], 1) for r in res["results"]},
+        "spare_spindle": res["spare"],
     }
     counts = {
         **res["counts"],
@@ -229,8 +194,8 @@ def run_full(
     }
     LOG.info("generation_done elapsed_s=%.1f bursts=%d", elapsed, timing["bursts_rendered"])
     with open(ctx.run_dir / "generation.json", "w", encoding="utf-8") as fh:
-        json.dump({"counts": counts, "timing": timing, "pilot": False}, fh, indent=1)
-    report(ctx, cfg, reg, bronze_root, truth_dir, counts, timing, False)
+        json.dump({"counts": counts, "timing": timing, "pilot": pilot}, fh, indent=1, default=str)
+    report(ctx, cfg, reg, bronze_root, truth_dir, counts, timing, pilot)
     LOG.info("run_done run_id=%s", ctx.run_id)
     return ctx
 

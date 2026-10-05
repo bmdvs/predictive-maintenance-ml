@@ -67,6 +67,30 @@ _FREE_TEXT = [
 ]
 
 
+_SPARE_NOTES = {
+    "swap": " Spindle exchanged with the cell spare; failed spindle sent out for rebuild.",
+    "no_spare": " Cell spare out for rebuild; spindle sent out for rebuild and reinstalled on return.",
+}
+
+
+def close_time(closed: pd.Timestamp, ln: dict[str, Any], rng: np.random.Generator) -> pd.Timestamp:
+    """When the work order is closed in the CMMS: an end-of-week batch (the next close weekday on or
+    after the work, within the configured working days) or a lag of the configured days."""
+    b = ln["close_batch"]
+    if rng.random() < b["share"]:
+        target = ["mon", "tue", "wed", "thu", "fri"].index(b["weekday"])
+        local = closed.tz_convert(LOCAL_TZ)
+        day = local.normalize()
+        steps = 0
+        while day.weekday() != target or day + pd.Timedelta(hours=15) < local:
+            day += pd.Timedelta(days=1)
+            if day.weekday() < 5:
+                steps += 1
+        if steps <= b["working_days_after_work"][1]:
+            return (day + pd.Timedelta(hours=15)).tz_convert("UTC")
+    return closed + pd.Timedelta(days=float(rng.uniform(*ln["close_lag_days"])))
+
+
 def component_of(asset_id: str, mode: str | None) -> str:
     if mode in _MODE_COMPONENT:
         return _MODE_COMPONENT[mode]
@@ -155,6 +179,8 @@ def build_work_orders(
                 notes = "Found at spindle chiller check (monthly spindle PM). " + notes
             elif wo.get("found_by") == "operator":
                 notes = "Operator reported spindle chiller fault indication. " + notes
+            if isinstance(wo.get("spindle_repair_case"), str):
+                notes += _SPARE_NOTES[wo["spindle_repair_case"]]
             if wo.get("post_repair_finding") == "misalignment":
                 notes += (
                     " Post-repair check: misalignment found; laser alignment, corrected "
@@ -171,15 +197,25 @@ def build_work_orders(
             )
         elif wtype == "pm":
             notes = f"PM: {wo.get('task')}."
+        elif wtype == "rebuild_order":
+            notes = (
+                "Spindle rebuild order: failed spindle out to the rebuild shop; returns as the cell spare."
+                if wo.get("spindle_repair_case") == "swap"
+                else "Spindle rebuild order: spindle out to the rebuild shop; reinstalled on this machine."
+            )
         down_h = float(wo.get("downtime_h") or 0.0)
         started = wo.get("started", wo["opened"])
         closed = wo.get("closed", started)
         lag = pd.Timedelta(0)
         if wtype in ("unplanned_repair", "condition_based", "corrective"):
-            lag = pd.Timedelta(days=float(rng.uniform(*ln["close_lag_days"])))
+            lag = close_time(pd.Timestamp(closed), ln, rng) - pd.Timestamp(closed)
+            basis = wo.get("labor_basis_h")
+            basis_h = float(basis) if basis is not None and np.isfinite(float(basis)) else down_h
             labor = float(rng.uniform(*cm["labor_frac_of_repair_time"])) * min(
-                down_h, cm["labor_h_max_per_day"] * max(np.ceil(down_h / HOURS_PER_DAY), 1.0)
+                basis_h, cm["labor_h_max_per_day"] * max(np.ceil(basis_h / HOURS_PER_DAY), 1.0)
             )
+        elif wtype == "rebuild_order":
+            labor = 0.0
         elif wtype == "inspection":
             labor = float(rng.uniform(*cm["inspection_labor_h"]))
         else:
@@ -196,9 +232,13 @@ def build_work_orders(
                 "closed": closed + lag,
                 "downtime_hours": round(down_h, 2),
                 "technician": str(rng.choice(cm["technicians"])),
-                "parts": _CODE_PARTS.get(code or "")
-                if code in _CONDITION_CODES
-                else _parts(reg, asset, comp, wtype),
+                "parts": "SPINDLE-REBUILD"
+                if wtype == "rebuild_order"
+                else (
+                    _CODE_PARTS.get(code or "")
+                    if code in _CONDITION_CODES
+                    else _parts(reg, asset, comp, wtype)
+                ),
                 "labor_hours": round(labor, 2),
                 "notes": notes,
                 "no_fault_found": bool(wo.get("no_fault_found", False)) if wtype == "inspection" else False,
@@ -223,6 +263,9 @@ def build_work_orders(
             note += " Spindle chiller check: cooler degraded; repair work order opened."
         elif finding == "rotary_union_leak":
             note += " TSC pressure low; rotary union leaking; replacement planned."
+        elif finding == "lubrication":
+            pm_comp = "SPINDLE"
+            note += " Spindle lubrication degraded, found at the lube check; regreased."
         rows.append(
             {
                 "wo_id": f"PM-{i:06d}",

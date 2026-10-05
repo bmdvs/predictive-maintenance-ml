@@ -13,7 +13,7 @@ from pdm.config import load_config
 
 def test_full_path_short_window(tmp_path, monkeypatch):
     cfg = copy.deepcopy(load_config())
-    cfg["meta"]["shadow"] = {"start": "2023-07-24", "end": "2023-07-26"}
+    cfg["meta"]["hz1_window"] = {"start": "2023-07-24", "end": "2023-07-26"}
     for mod in (cli, run_report, provenance):
         monkeypatch.setattr(mod, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(paths, "DATA_DIR", tmp_path / "data")

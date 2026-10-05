@@ -687,6 +687,8 @@ def _condition_type(r: Any) -> str | None:
     if r.wo_type == "inspection":
         return "lubrication" if "lubrication" in notes else None
     if r.wo_type == "pm":
+        if "lubrication degraded" in notes:
+            return "lubrication"
         return _TYPE_BY_CODE.get(code) if code else None
     if r.wo_type not in ("unplanned_repair", "condition_based", "corrective"):
         return None
@@ -710,19 +712,18 @@ def confirmed_conditions(
     period = np.select(
         [
             local_day.between(str(sp["train"][0]), str(sp["train"][1])),
-            local_day.between(str(sp["validation"][0]), str(sp["validation"][1])),
             local_day.between(str(sp["shadow"][0]), str(sp["shadow"][1])),
         ],
-        ["training", "validation", "shadow"],
+        ["training", "shadow_year"],
         default="outside",
     )
     wo = wo.assign(period=period)
     tab = wo.groupby(["ctype", "period"]).size().unstack(fill_value=0)
-    for col in ("training", "validation", "shadow"):
+    for col in ("training", "shadow_year"):
         if col not in tab:
             tab[col] = 0
-    tab = tab[["training", "validation", "shadow"]]
-    tab["jul2025_jun2026"] = tab["validation"] + tab["shadow"]
+    tab = tab[["training", "shadow_year"]]
+    tab["jul2025_jun2026"] = tab["shadow_year"]
     tab = tab.sort_values("jul2025_jun2026", ascending=False)
     total = tab.sum().rename("total")
     tab = pd.concat([tab, total.to_frame().T])

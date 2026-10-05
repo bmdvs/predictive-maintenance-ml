@@ -50,8 +50,7 @@ def vendor_alerts(
         if pdf.empty:
             return pd.DataFrame(columns=["method", "point_id", "alert_ts", "level", "rules", "value"])
         pid = pdf["point_id"].iat[0]
-        key = ISO_KEY[pdf["point_class"].iat[0]]
-        settings = VendorRuleSettings.for_point_class(cfg, key, "compressor" if key == "compressor" else key)
+        settings = VendorRuleSettings.for_point(cfg, pdf["point_class"].iat[0])
         pdf = pdf.copy()
         pdf["hour_utc"] = pd.to_datetime(pdf["hour_utc"]).dt.tz_localize("UTC")
         out = replay_point(pid, pdf, _events_utc(events), settings, cfg)
@@ -148,8 +147,7 @@ def rule_floor_exceedances(
         if pdf.empty:
             return pd.DataFrame(columns=["method", "sweep", "point_id", "ts", "level"])
         pid = pdf["point_id"].iat[0]
-        key = ISO_KEY[pdf["point_class"].iat[0]]
-        base = VendorRuleSettings.for_point_class(cfg, key, "compressor" if key == "compressor" else key)
+        base = VendorRuleSettings.for_point(cfg, pdf["point_class"].iat[0])
         pdf = pdf.copy()
         pdf["hour_utc"] = pd.to_datetime(pdf["hour_utc"]).dt.tz_localize("UTC")
         ev = _events_utc(events)

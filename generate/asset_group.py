@@ -42,6 +42,14 @@ _ISO_KEY = {
     "compressor_motor": "compressor",
     "compressor_airend": "compressor",
 }
+_STAGE_TEMP_KEY = {
+    "spindle_front": "spindle",
+    "spindle_rear": "spindle",
+    "tsc_pump": "pump",
+    "flood_pump": "pump",
+    "compressor_motor": "compressor",
+    "compressor_airend": "compressor",
+}
 _TEMP_KEY = {
     "spindle_front": "spindle",
     "spindle_rear": "spindle",
@@ -73,6 +81,7 @@ class PointRuntime:
     env_band: tuple[float, float] | None = None
     housing_gain_db: float = 0.0
     pending: list[dict[str, Any]] = field(default_factory=list)
+    temp_state: float | None = None
 
 
 @dataclass
@@ -142,6 +151,7 @@ class AssetGroup:
         self.wo_index: dict[str, dict[str, Any]] = {}
         self.ingress_hazard: dict[str, tuple[int, float]] = {}
         self.pm_row: int | None = None
+        self.stage_rise: dict[tuple[str, int], tuple[float, float]] = {}
 
     # ---------------- conditions ----------------
     def start_condition(self, c: Condition) -> Condition:
@@ -278,7 +288,7 @@ class AssetGroup:
 
     def corrective_duration(self, kinds: list[str]) -> pd.Timedelta:
         if "spindle_cooling" in kinds:
-            return pd.Timedelta(hours=float(self.crng.uniform(*self.cfg["spindle_cooling"]["repair_hours"])))
+            return pd.Timedelta(days=float(self.crng.uniform(*self.cfg["spindle_cooling"]["repair_days"])))
         if "rotary_union_leak" in kinds:
             return pd.Timedelta(hours=float(self.crng.uniform(*self.cfg["coolant_ingress"]["repair_hours"])))
         return pd.Timedelta(
@@ -363,9 +373,7 @@ class AssetGroup:
     def add_point(self, point_id: str, comp: BearingInstance) -> None:
         s = self.reg.sensors[point_id]
         pclass = self.reg.point_class(point_id)
-        iso_key = _ISO_KEY[pclass]
-        hf_key = "compressor" if pclass.startswith("compressor") else iso_key
-        rules = VendorRuleState(point_id, VendorRuleSettings.for_point_class(self.cfg, iso_key, hf_key))
+        rules = VendorRuleState(point_id, VendorRuleSettings.for_point(self.cfg, pclass))
         fn = self.sig["resonance_fn_hz"][pclass]
         jit = self.sig["resonance_fn_jitter_frac_by_point"]
         prng = rng_for(self.ctx.run_seed, "point", point_id)
@@ -394,6 +402,10 @@ class AssetGroup:
         heapq.heappush(self.queue, (ts, next(self._seq), kind, payload))
 
     def apply_overrides(self) -> None:
+        for fe in self.overrides.get("forced_events", []):
+            if fe["group"] == self.group_id:
+                ts = pd.Timestamp(str(fe["date"]), tz=LOCAL_TZ).tz_convert("UTC")
+                self.schedule(ts, "forced_event", spec=fe)
         for fi in self.overrides.get("forced_instances", []):
             comp = next((c for c in self.components.values() if c.point_id == fi["point_id"]), None)
             if comp is None:
@@ -474,6 +486,14 @@ class AssetGroup:
                 defect=c.defect,
             )
 
+    def on_forced_event(self, ts: pd.Timestamp, spec: dict[str, Any]) -> None:
+        """Pilot-only forced events (pilot overlay); a full run refuses the overlay."""
+        self.log(ts, "forced_event", kind=spec["kind"], asset_id=spec.get("asset_id", self.group_id))
+        self.forced_event(ts, spec)
+
+    def forced_event(self, ts: pd.Timestamp, spec: dict[str, Any]) -> None:
+        raise NotImplementedError(spec["kind"])
+
     def on_remount(self, ts: pd.Timestamp, point_id: str) -> None:
         tf = self.sig["transfer_function_by_mounting"]
         p = self.points[point_id]
@@ -529,10 +549,12 @@ class AssetGroup:
             ):
                 found.append(f"bearing:{cid}")
         ep = self.lube.get(asset_id)
+        det = self.cfg["lubrication"]["inspection_detection_prob"]
         if (
             ep is not None
             and ep.active(ts)
-            and self.rng.random() < self.cfg["lubrication"]["inspection_detection_prob"]
+            and self.rng.random()
+            < (det["rise_at_least_5c"] if ep.severity(ts) * ep.temp_rise_c >= 5.0 else det["below_5c"])
         ):
             ep.clear(ts, "inspection")
             self.log(ts, "lube_cleared", asset_id=ep.asset_id, by="inspection")
@@ -634,9 +656,17 @@ class AssetGroup:
         return None
 
     def unplanned_failure(
-        self, ts: pd.Timestamp, asset_id: str, comps: list[str], mode: str, comp_class: str
+        self,
+        ts: pd.Timestamp,
+        asset_id: str,
+        comps: list[str],
+        mode: str,
+        comp_class: str,
+        dur: pd.Timedelta | None = None,
+        **wo_extra: Any,
     ) -> None:
-        dur = maintenance.repair_duration(self.cfg, comp_class, self.rng)
+        if dur is None:
+            dur = maintenance.repair_duration(self.cfg, comp_class, self.rng)
         wo = self.new_wo(
             asset_id,
             "unplanned_repair",
@@ -646,6 +676,7 @@ class AssetGroup:
             failure_mode=mode,
             downtime_h=dur / pd.Timedelta(hours=1),
             components=",".join(comps),
+            **wo_extra,
         )
         instances = {c: self.components[c].instance_id for c in comps}
         self.log(
@@ -891,24 +922,47 @@ class AssetGroup:
             p.baseline_rows.append(rows[RESULTANT])
         return rows
 
-    def temperature(self, p: PointRuntime, i: int, ts: pd.Timestamp, cond: dict[str, Any]) -> float:
-        rise = self.cfg["sensor_temperature_rise_c"][_TEMP_KEY[p.point_class]]
-        if p.point_class.startswith("spindle"):
-            rise *= cond["shaft_hz"] / cond["rated_hz"]
-        amb = self.sh.room_ambient[i] if p.point_class.startswith("compressor") else self.sh.shop_ambient[i]
-        th = self.cfg["bearing_degradation"]
-        s4lo, hf = th["stage_thresholds_hi"]["stage4"], th["failure"]["hi_threshold"]
-        s4 = (
-            float(np.clip((p.component.signature_hi() - s4lo) / (hf - s4lo), 0, 1))
-            if p.component.defect
-            else 0.0
-        )
-        t = amb + rise + s4 * self.sig["stage4"]["temp_rise_c_at_failure"]
-        t += (
-            cond.get("lube_temp", 0.0)
-            + cond.get("wear_frac", 0.0) * self.cfg["pump"]["wear_signature_at_end"]["temp_rise_c"]
-        )
-        return float(t)
+    def bearing_temp(self, p: PointRuntime) -> float:
+        """Housing heat from the bearing's stage: a stage-3 rise, growing through stage 4 to the
+        instance's rise at failure (drawn per instance)."""
+        comp = p.component
+        if not comp.defect or comp.onset_ts is None:
+            return 0.0
+        key = (comp.component_id, comp.instance_no)
+        if key not in self.stage_rise:
+            rng = np.random.default_rng(derive_seed(self.ctx.run_seed, "stage_temp", *map(str, key)))
+            st = self.sig
+            r3 = float(rng.uniform(*st["stage3_temp_rise_c"]))
+            rf = float(rng.uniform(*st["stage4"]["temp_rise_c_at_failure"][_STAGE_TEMP_KEY[p.point_class]]))
+            self.stage_rise[key] = (r3, max(rf, r3))
+        r3, rf = self.stage_rise[key]
+        th = self.cfg["bearing_degradation"]["stage_thresholds_hi"]
+        hf = self.cfg["bearing_degradation"]["failure"]["hi_threshold"]
+        hi = comp.signature_hi()
+        f3 = float(np.clip((hi - th["stage3"]) / (th["stage4"] - th["stage3"]), 0, 1))
+        f4 = float(np.clip((hi - th["stage4"]) / (hf - th["stage4"]), 0, 1))
+        return r3 * f3 + (rf - r3) * f4
+
+    def housing_drivers(self, p: PointRuntime, i: int, ts: pd.Timestamp) -> dict[str, float]:
+        """Ambient, running share of the hour, scale of the running rise and other heat (C)."""
+        raise NotImplementedError
+
+    def housing_target(self, p: PointRuntime, i: int, ts: pd.Timestamp) -> float:
+        d = self.housing_drivers(p, i, ts)
+        rise = self.cfg["sensor_temperature_rise_c"][_TEMP_KEY[p.point_class]] * d["rise_scale"]
+        return float(d["amb"] + rise + d["run"] * self.bearing_temp(p) + d["extra"])
+
+    def housing_temps(self, p: PointRuntime, idx: list[int]) -> dict[int, float]:
+        """Housing temperature for each hour of the day: a first-order lag on its drivers."""
+        tau = self.cfg["sensor_temperature"]["housing_lag_tau_h"]
+        a = float(np.exp(-1.0 / tau))
+        out = {}
+        for i in idx:
+            ts = self.sh.frame["hour_utc"].iat[i]
+            tgt = self.housing_target(p, i, ts)
+            p.temp_state = tgt if p.temp_state is None else tgt + (p.temp_state - tgt) * a
+            out[i] = p.temp_state
+        return out
 
     def reported_axes(self, p: PointRuntime) -> list[str]:
         ax = self.cfg["indicators"]["axes_reported"]
@@ -949,6 +1003,7 @@ class AssetGroup:
         for pid, p in self.points.items():
             if not p.rendered:
                 continue
+            temps = self.housing_temps(p, idx)
             for i in idx:
                 ts = self.sh.frame["hour_utc"].iat[i]
                 if ts < p.install or not self.point_scheduled(pid, i) or self.in_outage(p, ts):
@@ -966,7 +1021,7 @@ class AssetGroup:
                     continue
                 t0 = time.perf_counter()
                 burst, fault_hz = self.render_point_hour(p, ts, cond)
-                temp = self.temperature(p, i, ts, cond)
+                temp = temps[i]
                 radio = self.rng.random() < self.cfg["sensor_behavior"]["radio_noise_row_frac"]
                 entry = {
                     "ts": ts,
@@ -999,7 +1054,11 @@ class AssetGroup:
                         p.baseline_start = None
                     rows, diags = self.reduce_burst(p, burst, cond, fault_hz)
                     rows = self.emit_measured(p, entry, rows, diags, baseline=False)
-                    alert = p.rules.update(ts, rows[RESULTANT]) if p.rules.baseline is not None else None
+                    alert = (
+                        p.rules.update(ts, {**rows[RESULTANT], "temp_c": p.last_temp})
+                        if p.rules.baseline is not None
+                        else None
+                    )
                 self.out.render_seconds += time.perf_counter() - t0
                 self.out.bursts_rendered += 1
                 local = ts.tz_convert(LOCAL_TZ)
@@ -1044,6 +1103,10 @@ class AssetGroup:
             if i == len(frame) - 1 or local_dates[i + 1] != local_dates[i]:
                 self.end_of_day(day_idx)
                 day_idx = []
+                if i == len(frame) - 1:
+                    for p in self.points.values():
+                        if p.pending:
+                            self.flush_pending(p)
                 if (
                     self.scalar_sink is not None
                     and self.out.scalars
@@ -1051,9 +1114,6 @@ class AssetGroup:
                 ):
                     self.scalar_sink(months[i], self.out.scalars)
                     self.out.scalars = []
-        for p in self.points.values():
-            if p.pending:
-                self.flush_pending(p)
         self.emit_gap_events()
         return self.out
 
@@ -1084,9 +1144,12 @@ class HmcGroup(MachineMixin, AssetGroup):
         schedule_frame: pd.DataFrame,
         overrides=None,
         axis_events=None,
+        spindle_cases: dict[int, str] | None = None,
     ):
         super().__init__(ctx, cfg, reg, shared, machine_id, overrides)
         self.init_machine(machine_id, schedule_frame, axis_events or [])
+        self.spindle_cases = {int(k): v for k, v in (spindle_cases or {}).items()}
+        self.spindle_failures: list[dict[str, Any]] = []
         sp_asset, tsc_asset, cp_asset = f"{machine_id}-SP", f"{machine_id}-TSC", f"{machine_id}-CP"
         age_class = self.machine["age_class"]
         spin = reg.hmc_spindles[machine_id]
@@ -1145,8 +1208,8 @@ class HmcGroup(MachineMixin, AssetGroup):
         self.schedule_calendar_pm(machine_id, "coolant_check", pm["coolant_check"]["interval"])
         self.schedule_calendar_pm(machine_id, "way_lube_hydraulic", pm["way_lube_hydraulic"]["interval"])
         self.schedule_calendar_pm(machine_id, "backlash_check", pm["backlash_check"]["interval"])
-        last = reg.pumps[tsc_asset]["last_replacement"]
-        due = pd.Timestamp(str(last), tz=LOCAL_TZ).tz_convert("UTC") + pd.Timedelta(
+        last = reg.pumps[tsc_asset]["last_replacement"] or f"{self.machine['install_year']}-07-01"
+        due =pd.Timestamp(str(last), tz=LOCAL_TZ).tz_convert("UTC") + pd.Timedelta(
             days=pm["tsc_pump_unit_replacement"]["interval"]
         )
         self.schedule_calendar_pm(
@@ -1174,6 +1237,82 @@ class HmcGroup(MachineMixin, AssetGroup):
     def renew_rotary_union(self, ts: pd.Timestamp) -> None:
         self.union_remaining_h = cnd.rotary_union_remaining_h(self.cfg, 0.0, self.crng)
         self.union_found = False
+
+    def forced_event(self, ts: pd.Timestamp, spec: dict[str, Any]) -> None:
+        kind, sp = spec["kind"], self.sp_asset
+        if kind == "spindle_failure" and sp not in self.failed:
+            self.unplanned_failure(ts, sp, list(self.asset_components[sp]), "crash", "spindle_front")
+        elif kind == "spindle_cooling" and self.active_condition(sp, "spindle_cooling", ts) is None:
+            c = cnd.draw_spindle_cooling(self.cfg, sp, ts, self.crng, abrupt=bool(spec.get("abrupt")))
+            c.params["notice"] = False
+            self.start_condition(c)
+        elif kind == "lube" and self.lube[sp] is None:
+            self.lube[sp] = LubeEpisode.draw(self.cfg, sp, ts, self.rng)
+            self.log(ts, "lube_episode_start", asset_id=sp, hf_rise=self.lube[sp].hf_rise, forced=True)
+        elif kind == "cavitation":
+            pump = self.pumps[spec["asset_id"]]
+            pump.cavitation = pump_wear.Cavitation(
+                ts, float(self.rng.uniform(*self.cfg["pump"]["cavitation"]["hf_rise_frac"]))
+            )
+            self.log(ts, "cavitation_start", asset_id=spec["asset_id"], hf_rise=pump.cavitation.hf_rise)
+
+    def spindle_repair(self, n: int, case: str, ts: pd.Timestamp) -> tuple[pd.Timedelta, pd.Timedelta]:
+        """Downtime and swap labor basis for the n-th unplanned spindle failure of this HMC. Drawn from
+        a stream keyed by machine, ordinal and case, so a rerun with the same case draws the same value."""
+        ss = self.cfg["maintenance"]["spare_spindle"]
+        rng = np.random.default_rng(derive_seed(self.ctx.run_seed, "spindle_repair", self.mid, str(n), case))
+        swap = pd.Timedelta(days=float(rng.uniform(*ss["unplanned_swap_days"])))
+        if case == "swap":
+            return swap, swap
+        lo, hi = ss["unplanned_no_spare_working_days"]
+        local_h = int(ts.tz_convert(LOCAL_TZ).hour)
+        back = maintenance.add_working_days(ts, int(rng.integers(lo, hi + 1)), self.sh.holidays, local_h)
+        return back - ts, swap
+
+    def unplanned_failure(
+        self,
+        ts: pd.Timestamp,
+        asset_id: str,
+        comps: list[str],
+        mode: str,
+        comp_class: str,
+        dur: pd.Timedelta | None = None,
+        **wo_extra: Any,
+    ) -> None:
+        if asset_id != self.sp_asset or dur is not None:
+            super().unplanned_failure(ts, asset_id, comps, mode, comp_class, dur, **wo_extra)
+            return
+        n = len(self.spindle_failures)
+        case = self.spindle_cases.get(n, "swap")
+        dur, labor_basis = self.spindle_repair(n, case, ts)
+        self.spindle_failures.append({"machine_id": self.mid, "ordinal": n, "ts": ts, "case": case})
+        super().unplanned_failure(
+            ts,
+            asset_id,
+            comps,
+            mode,
+            comp_class,
+            dur,
+            spindle_repair_case=case,
+            labor_basis_h=labor_basis / pd.Timedelta(hours=1),
+        )
+        self.new_wo(
+            asset_id,
+            "rebuild_order",
+            ts,
+            started=ts,
+            closed=ts + dur
+            if case == "no_spare"
+            else maintenance.add_working_days(
+                ts,
+                int(self.cfg["maintenance"]["spare_spindle"]["rebuild_out_working_days"]),
+                self.sh.holidays,
+                int(ts.tz_convert(LOCAL_TZ).hour),
+            ),
+            downtime_h=0.0,
+            spindle_repair_case=case,
+            source_wo=self.out.work_orders[-1]["wo_id"],
+        )
 
     def program_one_x(self, program: str | None, ts: pd.Timestamp) -> float:
         if not program:
@@ -1250,6 +1389,8 @@ class HmcGroup(MachineMixin, AssetGroup):
             if ep is not None and ep.active(ts):
                 ep.clear(ts, "lube_pm")
                 self.log(ts, "lube_cleared", asset_id=asset_id, by="lube_pm")
+                if self.cfg["lubrication"]["pm_clear_records_finding"]:
+                    self.record_pm_finding("lubrication")
         elif task == "coolant_check":
             for pump in self.pumps.values():
                 if pump.cavitation is not None and pump.cavitation.active(ts):
@@ -1365,6 +1506,30 @@ class HmcGroup(MachineMixin, AssetGroup):
             "faults": self.point_faults(pid, ts),
         }
 
+    def housing_drivers(self, p: PointRuntime, i: int, ts: pd.Timestamp) -> dict[str, float]:
+        op = self.ops[i]
+        amb = float(self.sh.shop_ambient[i])
+        cut = float(np.clip(op["cut"] / SECONDS_PER_MINUTE, 0.0, 1.0))
+        if p.point_class.startswith("spindle"):
+            speed = float(op["speed"]) / float(self.machine["rated_rpm"])
+            ep = self.lube.get(self.sp_asset)
+            lube = ep.severity(ts) * ep.temp_rise_c if ep is not None else 0.0
+            cool = sum(
+                c.level(ts) * c.params["rise_c"] * c.params["housing_share"]
+                for c in self.conditions
+                if c.kind == "spindle_cooling" and c.asset_id == self.sp_asset
+            )
+            return {
+                "amb": amb,
+                "run": cut,
+                "rise_scale": cut * speed,
+                "extra": cut * lube + cut * speed * cool,
+            }
+        pump = self.pumps[p.asset_id]
+        run = cut * float(op["tsc"] if pump.kind == "tsc" else op["flood"])
+        wear = pump.wear_fraction(ts) * self.cfg["pump"]["wear_signature_at_end"]["temp_rise_c"]
+        return {"amb": amb, "run": run, "rise_scale": run, "extra": run * wear}
+
     def hour_step(self, i: int, ts: pd.Timestamp) -> None:
         if i == 0:
             self.ops: dict[int, dict[str, Any]] = {}
@@ -1409,12 +1574,19 @@ class HmcGroup(MachineMixin, AssetGroup):
         pc = cfg["pump"]
         for asset_id, pump in self.pumps.items():
             k = pump.kind
+            cav_mult = pc["cavitation"]["tsc_wear_multipliers"]
+            cavitating = k == "tsc" and pump.cavitation_rise(ts) > 0
+            onset_m = cav_mult["onset_hazard"] if cavitating else 1.0
+            if cavitating:
+                for w in pump.wear:
+                    if w.start <= ts:
+                        w.extra_days += (cav_mult["progression"] - 1.0) / HOURS_PER_DAY
             p_wear = {
                 "seal": pump_wear.hourly_probability(
-                    pc["seal_wear"]["onset_rate_per_pump_year"], 1.0, HOURS_PER_YEAR
+                    pc["seal_wear"]["onset_rate_per_pump_year"] * onset_m, 1.0, HOURS_PER_YEAR
                 ),
                 "impeller": pump_wear.hourly_probability(
-                    pc["impeller_wear"]["onset_rate_per_pump_year"], 1.0, HOURS_PER_YEAR
+                    pc["impeller_wear"]["onset_rate_per_pump_year"] * onset_m, 1.0, HOURS_PER_YEAR
                 ),
             }
             for kind in pump_wear.maybe_start_wear(cfg, pump, ts, p_wear, self.rng):
@@ -1631,7 +1803,7 @@ class HmcGroup(MachineMixin, AssetGroup):
         if op["cut"] <= 0 or op["down"] or sp in self.failed:
             return
         if with_resid is not None and without is None and cooling is not None:
-            dur = pd.Timedelta(hours=float(self.crng.uniform(*sc["repair_hours"])))
+            dur = pd.Timedelta(days=float(self.crng.uniform(*sc["repair_days"])))
             wo = self.machine_stoppage(ts, sp, "spindle_cooler", (0.0, 0.0), dur=dur)
             self.out.events[-1]["offset_s"] = with_resid
             wo["thermistor_limit_c"] = sc["overheat_limit_c"]
@@ -1698,23 +1870,13 @@ class CompressorGroup(AssetGroup):
             self.schedule_calendar_pm(
                 cid, "oil_sample", cfg["maintenance"]["pm_program"]["compressor"]["oil_sample"]["interval"]
             )
-        duty = next(c for c, v in reg.compressors.items() if v["role"] == "duty")
-        rec = cfg["meta"]["record"]
-        r0 = pd.Timestamp(str(rec["start"]), tz=LOCAL_TZ).tz_convert("UTC")
-        r1 = pd.Timestamp(str(rec["end"]), tz=LOCAL_TZ).tz_convert("UTC")
-        yr = pd.Timedelta(days=DAYS_PER_YEAR)
-        t = r0
-        while t < r1:
-            ts = t + pd.Timedelta(seconds=float(self.rng.uniform(0, yr.total_seconds())))
-            if shared.window_start <= ts < shared.window_end:
-                self.schedule(ts, "airend_lube", cid=duty)
-            t += yr
-        years = (shared.window_end - shared.window_start) / pd.Timedelta(days=DAYS_PER_YEAR)
-        self.duty_running_h_per_year = float(air[f"{duty}_running"].sum()) / years
         self.fault_units = [(cid, [f"{cid}-MDE", f"{cid}-AE"], "compressor") for cid in self.cids]
         self.fouling_rise = {cid: np.zeros(len(shared.frame)) for cid in self.cids}
         self.ctrl_events: list[dict[str, Any]] = []
         self.temp_high = {cid: False for cid in self.cids}
+        self.load_actual = {cid: np.zeros(len(shared.frame)) for cid in self.cids}
+        loads = np.concatenate([air.loc[air[f"{c}_running"], f"{c}_load_frac"].to_numpy() for c in self.cids])
+        self.mean_load = float(loads.mean()) if loads.size else 1.0
         self.local_month = shared.frame["hour_utc"].dt.tz_convert(LOCAL_TZ).dt.month.to_numpy()
         oc = cfg["oil_cooler_fouling"]
         for cid in self.cids:
@@ -1740,6 +1902,13 @@ class CompressorGroup(AssetGroup):
         )
         return ts + pd.Timedelta(days=float(self.crng.uniform(*fc["post_repair_correction_days"])))
 
+    def forced_event(self, ts: pd.Timestamp, spec: dict[str, Any]) -> None:
+        if (
+            spec["kind"] == "cooler_fouling"
+            and self.active_condition(spec["asset_id"], "cooler_fouling", ts) is None
+        ):
+            self.start_condition(cnd.draw_fouling(self.cfg, spec["asset_id"], ts, self.crng))
+
     def on_fouling_cleaned(self, ts: pd.Timestamp, asset_id: str, wo_id: str, by: str) -> None:
         f = self.active_condition(asset_id, "cooler_fouling", ts)
         if f is not None:
@@ -1754,10 +1923,12 @@ class CompressorGroup(AssetGroup):
         lo_m, hi_m = oc["summer_months"]
         summer = lo_m <= self.local_month[i] <= hi_m
         for cid in self.cids:
-            role = self.reg.compressors[cid]["role"]
             f = self.active_condition(cid, "cooler_fouling", ts)
-            if f is None and self.crng.random() < pump_wear.hourly_probability(
-                oc["onset_rate_per_unit_year"][role], 1.0, HOURS_PER_YEAR
+            if (
+                f is None
+                and running[cid]
+                and self.crng.random()
+                < pump_wear.hourly_probability(oc["onset_rate_per_running_h"], 1.0, 1.0)
             ):
                 f = self.start_condition(cnd.draw_fouling(self.cfg, cid, ts, self.crng))
             if f is not None:
@@ -1771,7 +1942,7 @@ class CompressorGroup(AssetGroup):
             if not running[cid]:
                 self.temp_high[cid] = False
                 continue
-            load = float(self.air[f"{cid}_load_frac"].iat[i]) or float(self.air["demand_frac"].iat[i])
+            load = float(self.load_actual[cid][i])
             temp = (
                 dt["base"]
                 + dt["per_c_ambient"] * (float(self.air["room_c"].iat[i]) - amb_mean)
@@ -1833,11 +2004,9 @@ class CompressorGroup(AssetGroup):
 
     def maybe_trip(self, ts: pd.Timestamp, cid: str, run_h: float) -> None:
         c = self.cfg["compressor"]
-        if run_h <= 0 or cid in self.failed or self.duty_running_h_per_year <= 0:
+        if run_h <= 0 or cid in self.failed:
             return
-        p = pump_wear.hourly_probability(
-            c["other_stoppages_per_running_year"], run_h, self.duty_running_h_per_year
-        )
+        p = pump_wear.hourly_probability(c["other_stoppages_per_running_h"], run_h, 1.0)
         if self.rng.random() >= p:
             return
         dur = pd.Timedelta(hours=float(self.rng.uniform(*c["other_stoppage_repair_hours"])))
@@ -1893,14 +2062,41 @@ class CompressorGroup(AssetGroup):
     def point_scheduled(self, pid: str, i: int) -> bool:
         return self.sh.plant_minutes[i] > 0
 
+    def housing_drivers(self, p: PointRuntime, i: int, ts: pd.Timestamp) -> dict[str, float]:
+        cid = p.asset_id
+        st = self.cfg["sensor_temperature"]
+        lt = st["compressor_load_term"]
+        run = 1.0 if self.ops[i][cid] else 0.0
+        load = float(self.load_actual[cid][i])
+        scale = (
+            run
+            * (lt["base"] + lt["per_load_frac"] * load)
+            / (lt["base"] + lt["per_load_frac"] * self.mean_load)
+        )
+        extra = 0.0
+        if p.point_class == "compressor_airend":
+            ep = self.lube[cid]
+            lube = ep.severity(ts) * ep.temp_rise_c if ep is not None else 0.0
+            extra = run * (lube + st["airend_share_of_fouling_residual"] * float(self.fouling_rise[cid][i]))
+        return {"amb": float(self.sh.room_ambient[i]), "run": run, "rise_scale": scale, "extra": extra}
+
     def running(self, i: int, ts: pd.Timestamp) -> dict[str, bool]:
-        r = {c: bool(self.air[f"{c}_running"].iat[i]) and ts >= self.down_until[c] for c in self.cids}
-        lead = self.air["lead"].iat[i]
-        if self.air[f"{lead}_running"].iat[i] and not r[lead]:
-            for c in self.cids:
-                if c != lead and ts >= self.down_until[c]:
-                    r[c] = True
-        return r
+        """The planned number of units, taken in rotation order from the units not down (N+1)."""
+        n = int(self.air["units_planned"].iat[i])
+        order = [c for c in str(self.air["order"].iat[i]).split(",") if c in self.cids]
+        up = [c for c in order if ts >= self.down_until[c]]
+        on = set(up[:n])
+        demand = float(self.air["demand_frac"].iat[i])
+        for c in self.cids:
+            self.load_actual[c][i] = demand / len(on) if c in on else 0.0
+        return {c: c in on for c in self.cids}
+
+    def run(self) -> GroupOutput:
+        out = super().run()
+        for c in self.cids:
+            self.air[f"{c}_load_frac"] = self.load_actual[c]
+            self.air[f"{c}_running"] = [bool(self.ops[i][c]) for i in range(len(self.air))]
+        return out
 
     def point_condition(self, pid: str, i: int, ts: pd.Timestamp) -> dict[str, Any] | None:
         p = self.points[pid]
@@ -1909,7 +2105,7 @@ class CompressorGroup(AssetGroup):
             return None
         c = self.reg.compressors[cid]
         motor_hz = c["motor_rpm"] / SECONDS_PER_MINUTE
-        load = float(self.air[f"{cid}_load_frac"].iat[i])
+        load = float(self.load_actual[cid][i])
         faults = self.point_faults(pid, ts)
         if p.point_class == "compressor_motor":
             return {
@@ -1956,6 +2152,16 @@ class CompressorGroup(AssetGroup):
                         defect=ae.defect,
                     )
             run_h = 1.0 if r[cid] else 0.0
+            if (
+                run_h > 0
+                and self.lube[cid] is None
+                and self.crng.random()
+                < pump_wear.hourly_probability(
+                    self.cfg["compressor"]["airend_lube_events_per_running_h"], run_h, 1.0
+                )
+            ):
+                self.on_airend_lube(ts, cid)
+                ep = self.lube[cid]
             self.run_h[cid] += run_h
             self.maybe_trip(ts, cid, run_h)
             if self.run_h[cid] >= self.next_filter_h[cid]:

@@ -1,7 +1,9 @@
-"""Coolant pump seal and impeller wear, cavitation episodes and seal failures.
+"""Coolant pump seal wear and internal wear, cavitation episodes and seal failures.
 
-Inputs: pump configuration and calendar time. Outputs: wear fraction (0 to 1) per pump, cavitation
-state and HF rise, TSC pressure drop, and seal-failure hazard per hour.
+The internal wear mode is internal clearance wear on the positive-displacement TSC pump (69 bar)
+and impeller wear on the centrifugal flood pump; both carry the code PMP-IMP. Inputs: pump
+configuration and calendar time. Outputs: wear fraction (0 to 1) per pump, cavitation state and HF
+rise, TSC pressure drop, and seal-failure hazard per hour.
 """
 
 from __future__ import annotations
@@ -18,9 +20,11 @@ class WearProcess:
     kind: str
     start: pd.Timestamp
     days_to_end: float
+    extra_days: float = 0.0
 
     def fraction(self, ts: pd.Timestamp) -> float:
-        return float(np.clip((ts - self.start) / pd.Timedelta(days=self.days_to_end), 0.0, 1.0))
+        elapsed = (ts - self.start) / pd.Timedelta(days=1) + self.extra_days
+        return float(np.clip(elapsed / self.days_to_end, 0.0, 1.0))
 
 
 @dataclass

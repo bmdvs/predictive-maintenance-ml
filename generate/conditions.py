@@ -153,15 +153,26 @@ def draw_fouling(cfg: dict[str, Any], asset_id: str, ts: pd.Timestamp, rng: np.r
 
 
 def draw_spindle_cooling(
-    cfg: dict[str, Any], asset_id: str, ts: pd.Timestamp, rng: np.random.Generator
+    cfg: dict[str, Any], asset_id: str, ts: pd.Timestamp, rng: np.random.Generator, abrupt: bool | None = None
 ) -> Condition:
+    """Gradual cooler degradation (refrigerant loss, condenser fouling) or an abrupt chiller fault
+    (pump, fan or compressor lock), with the share of the residual that reaches the spindle housing."""
     sc = cfg["spindle_cooling"]
     week_h = pd.Timedelta(weeks=1) / HOUR
-    ramp_h = _u(rng, sc["rise_weeks"]) * week_h
+    drawn = bool(rng.random() < sc["abrupt_share"])
+    abrupt = drawn if abrupt is None else abrupt
+    if abrupt:
+        ramp_h = _u(rng, sc["abrupt_rise_h"])
+        rise = _u(rng, sc["abrupt_residual_c"])
+    else:
+        ramp_h = _u(rng, sc["rise_weeks"]) * week_h
+        rise = _u(rng, sc["thermistor_residual_rise_c"])
     notice = bool(rng.random() < sc["operator_notice_prob"])
     frac = _u(rng, sc["operator_notice_at_ramp_frac"])
     params = {
-        "rise_c": _u(rng, sc["thermistor_residual_rise_c"]),
+        "rise_c": rise,
+        "abrupt": abrupt,
+        "housing_share": _u(rng, sc["housing_share_of_residual"]),
         "notice": notice,
         "notice_at": ts + pd.Timedelta(hours=frac * ramp_h),
     }
