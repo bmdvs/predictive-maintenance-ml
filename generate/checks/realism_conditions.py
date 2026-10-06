@@ -440,6 +440,12 @@ def check_thermal(
 
     sc = starts[starts["kind"] == "spindle_cooling"]
     lo_s, hi_s = cfg["spindle_cooling"]["thermistor_residual_rise_c"]
+    lo_a, hi_a = cfg["spindle_cooling"]["abrupt_residual_c"]
+    other_heat: dict[str, pd.Series] = {}
+    if machine_hours is not None and len(sc):
+        mh = machine_hours[machine_hours["machine_id"].str.startswith("HMC")]
+        mh = mh[(mh["lube_temp_c"] > 0) | (mh["spindle_s4"] > 0)]
+        other_heat = {k: pd.to_datetime(g["hour_utc"], utc=True) for k, g in mh.groupby("machine_id")}
     if len(sc):
         cs = cfg["controller_signals"]["spindle_temp"]
         sa = cfg["benign"]["shop_ambient_c"]
@@ -457,6 +463,8 @@ def check_thermal(
                 ],
             )
             df = df[(df["execution"] == "active") & (df["seconds_in_state"] == SECONDS_PER_MINUTE)]
+            if mid in other_heat:
+                df = df[~df["minute_utc"].dt.floor("h").isin(other_heat[mid])]
             local = df["minute_utc"].dt.tz_convert(TZ)
             amb = seasonal_c(
                 local.dt.dayofyear.to_numpy(float), sa["annual_mean"], sa["annual_amplitude"], coldest
@@ -477,14 +485,18 @@ def check_thermal(
                 level = float(cl["level"].iat[0]) if not cl.empty else np.nan
                 base, rise = _episode_rise(daily, st["ts"], t_clear, end, base_days)
                 completed = t_clear is None or level >= 0.999
+                ab = st.get("p_abrupt", False)
+                abrupt = bool(ab) if pd.notna(ab) else False
+                r_lo, r_hi = (lo_a, hi_a) if abrupt else (lo_s, hi_s)
                 within = (
                     None
                     if pd.isna(rise)
-                    else bool(rise <= hi_s + tol and (rise >= lo_s - tol if completed else True))
+                    else bool(rise <= r_hi + tol and (rise >= r_lo - tol if completed else True))
                 )
                 rows.append(
                     {
                         "mechanism": "spindle_cooling",
+                        "abrupt": abrupt,
                         "asset_id": st["asset_id"],
                         "start": st["ts"],
                         "cleared": t_clear,
@@ -522,7 +534,9 @@ def check_thermal(
         "22",
         "Thermal mechanisms",
         f"measured residual rise within the configured range +/- {tol} C (lower bound only for episodes "
-        f"that reached full rise); compressor residual back within {tol} C of its pre-episode level on "
+        f"that reached full rise; spindle cooling: gradual {lo_s}-{hi_s} C with hours of lubrication or "
+        f"stage-4 heat excluded, abrupt {lo_a}-{hi_a} C); compressor residual back within {tol} C of its "
+        "pre-episode level on "
         f"day {ret_days} after cleaning in >= {need:.0%}; velocity median during episodes of at least "
         f"{vel_days} days within the point's healthy p05-p95; every cooler overheat stop has a rendered "
         "thermistor reading at the limit in the stop hour; no healthy cutting hour reaches the limit; "

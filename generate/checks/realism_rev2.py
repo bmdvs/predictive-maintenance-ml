@@ -18,6 +18,7 @@ import pandas as pd
 from scipy.stats import chisquare
 
 from generate.checks.realism import CheckResult
+from generate.checks.realism_conditions import _read_parts
 from pdm.config import Register
 
 TZ = "America/Chicago"
@@ -65,9 +66,45 @@ def _shop_ambient(cfg: dict[str, Any], hours: pd.Series) -> np.ndarray:
     return a["annual_mean"] - a["annual_amplitude"] * np.cos(2 * np.pi * (doy - coldest) / 365.25)
 
 
+def _abrupt_hours(
+    cfg: dict[str, Any],
+    reg: Register,
+    bronze_root: Path,
+    mid: str,
+    machine_hours: pd.DataFrame,
+    t0: pd.Timestamp,
+    t1: pd.Timestamp,
+) -> tuple[int, int]:
+    """Active cutting hours from t0 to t1: those in which some active minute's expected steady
+    thermistor reading (shop ambient, speed term at that minute's speed, cooler residual) reaches the
+    limit, and those in which none does (the low-speed plateau)."""
+    st = cfg["controller_signals"]["spindle_temp"]
+    lim = cfg["spindle_cooling"]["overheat_limit_c"]
+    rated = float(reg.machines[mid]["rated_rpm"])
+    mm = _read_parts(
+        bronze_root / "controller" / "minute_agg",
+        f"month=*/{mid}.parquet",
+        ["minute_utc", "execution", "spindle_speed_rpm_mean"],
+    )
+    mm = mm[(mm["execution"] == "active") & (mm["minute_utc"] >= t0) & (mm["minute_utc"] < t1)].copy()
+    if mm.empty:
+        return 0, 0
+    mm["hour_utc"] = mm["minute_utc"].dt.floor("h")
+    mh = machine_hours[machine_hours["machine_id"] == mid]
+    resid = pd.Series(mh["cooler_residual_c"].to_numpy(), index=pd.to_datetime(mh["hour_utc"], utc=True))
+    mm["expected"] = (
+        _shop_ambient(cfg, mm["minute_utc"])
+        + st["rise_c_at_rated"] * mm["spindle_speed_rpm_mean"].to_numpy() / rated
+        + resid.reindex(mm["hour_utc"]).fillna(0.0).to_numpy()
+    )
+    hq = mm.groupby("hour_utc")["expected"].max() >= lim
+    return int(hq.sum()), int((~hq).sum())
+
+
 def check_cooling_housing(
     cfg: dict[str, Any],
     reg: Register,
+    bronze_root: Path,
     truth: pd.DataFrame,
     events: pd.DataFrame,
     scalars: pd.DataFrame,
@@ -101,21 +138,22 @@ def check_cooling_housing(
                 (ctrl_events["machine_id"] == mid)
                 & (ctrl_events["event_type"] == "spindle_overheat")
                 & (ctrl_events["ts_utc"] >= c.ts)
+                & (ctrl_events["ts_utc"] <= end)
             ]
-            cut = mh[(mh["machine_id"] == mid) & (mh["hour_utc"] >= c.ts) & (mh["cut_min"] > 0)]
-            first_cut = cut["hour_utc"].min() if len(cut) else pd.NaT
             first_stop = stops["ts_utc"].min() if len(stops) else pd.NaT
-            hours = (
-                (first_stop - first_cut) / HOUR if pd.notna(first_stop) and pd.notna(first_cut) else np.nan
-            )
+            t1 = first_stop.floor("h") + HOUR if pd.notna(first_stop) else end
+            reach_h, plateau_h = _abrupt_hours(cfg, reg, bronze_root, mid, mh, c.ts, t1)
+            ok = reach_h <= within_h if pd.notna(first_stop) else (None if reach_h == 0 else False)
             rows.append(
                 {
                     "asset_id": c.asset_id,
                     "start": c.ts,
                     "abrupt": True,
-                    "measure": "hours from first cutting to overheat",
-                    "value": hours,
-                    "pass": bool(pd.notna(hours) and hours <= within_h),
+                    "measure": "cutting hours at a speed whose expected reading reaches the limit",
+                    "value": float(reach_h),
+                    "plateau_cutting_h": plateau_h,
+                    "first_stop": first_stop,
+                    "pass": ok,
                 }
             )
             continue
@@ -182,10 +220,16 @@ def check_cooling_housing(
         "Spindle cooling and housing temperature",
         f"gradual, pooled per point class: housing rise {lo}-{hi} x thermistor residual "
         "(speed-normalized); per-episode values reported; "
-        f"abrupt: overheat stop within {within_h} h of cutting",
+        f"abrupt: overheat stop within {within_h} cutting hours at a speed whose expected reading reaches "
+        "the limit (low-speed plateau hours reported)",
         "; ".join(
             f"{r.asset_id} {'abrupt' if r.abrupt else ('gradual' if r.asset_id.startswith('HMC') else '')} "
             f"{r.value:.2f}"
+            + (
+                f" h (plateau {int(r.plateau_cutting_h)} h)"
+                if r.abrupt and pd.notna(getattr(r, "plateau_cutting_h", np.nan))
+                else ""
+            )
             for r in tab.itertuples()
         ),
         bool(tab["pass"].dropna().astype(bool).all()) if tab["pass"].notna().any() else None,
@@ -673,7 +717,7 @@ def run_rev2_checks(
     c26, split = check_compressor_duty(cfg, reg, air)
     c27, labor = check_technician_labor(cfg, wo)
     results = [
-        check_cooling_housing(cfg, reg, truth, events, scalars, machine_hours, ctrl),
+        check_cooling_housing(cfg, reg, bronze_root, truth, events, scalars, machine_hours, ctrl),
         c24,
         check_spare_spindle(cfg, truth_dir, wo_engine),
         c26,

@@ -85,11 +85,12 @@ def check_lead_times(
                 }
             )
     df = pd.DataFrame(rows)
+    label = ", ".join(f"{k} {v[0]}-{v[1]} wk" for k, v in er.items())
     if df.empty:
         return CheckResult(
             "5",
             "Lead times",
-            "spindle/compressor 4-12 wk, pump 2-6 wk",
+            label,
             "no failed sensored bearings",
             None,
             df,
@@ -103,7 +104,7 @@ def check_lead_times(
     return CheckResult(
         "5",
         "Lead times (median, first stage-2 envelope detection to failure)",
-        "spindle and compressor 4-12 wk, pump 2-6 wk",
+        label,
         "; ".join(parts),
         ok,
         df,
