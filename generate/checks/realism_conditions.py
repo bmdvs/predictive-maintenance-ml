@@ -527,6 +527,17 @@ def check_thermal(
     by = df.groupby("mechanism")["rise_within_range"].apply(
         lambda s: f"{int(s.dropna().sum())}/{s.notna().sum()}"
     )
+    unmeasured = df[
+        (df["mechanism"] == "spindle_cooling")
+        & df["rise_within_range"].isna()
+        & ~df.get("abrupt", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    ]
+    unmeasured_text = (
+        "; not measurable (no baseline hours free of lubrication or stage-4 heat): "
+        + ", ".join(f"{r.asset_id} {pd.Timestamp(r.start):%Y-%m}" for r in unmeasured.itertuples())
+        if len(unmeasured)
+        else ""
+    )
     sp_ok, sp_text = True, ""
     if machine_hours is not None:
         sp_ok, sp_text = spindle_overheat_consistency(cfg, reg, bronze_root, events, machine_hours, end)
@@ -545,6 +556,7 @@ def check_thermal(
         f"rise within range: {', '.join(f'{k} {v}' for k, v in by.items())}; compressor return by day "
         f"{ret_days}: "
         + (f"{int(ret.sum())}/{len(ret)} ({ret_share:.0%})" if len(ret) else "no measurable cleaned episodes")
+        + unmeasured_text
         + f"; velocity in healthy range {int(vel.sum())}/{len(vel)}"
         + sp_text,
         bool(rise_ok and ret_ok and vel_ok and sp_ok),
@@ -697,11 +709,10 @@ _TYPE_BY_CODE = {
 
 def _condition_type(r: Any) -> str | None:
     code = r.failure_code if isinstance(r.failure_code, str) else None
-    notes = r.notes if isinstance(r.notes, str) else ""
     if r.wo_type == "inspection":
-        return "lubrication" if "lubrication" in notes else None
+        return "lubrication" if code == "lubrication" else None
     if r.wo_type == "pm":
-        if "lubrication degraded" in notes:
+        if code == "lubrication":
             return "lubrication"
         return _TYPE_BY_CODE.get(code) if code else None
     if r.wo_type not in ("unplanned_repair", "condition_based", "corrective"):

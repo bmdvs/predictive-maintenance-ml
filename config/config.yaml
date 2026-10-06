@@ -6,7 +6,7 @@
 
 meta:                                     # [fixed]
   config_version: 12                      # rev2 2026-10-29 (was 11, run-06)
-  generator_version: 0.4.0                # rev2 (was 0.3.0)
+  generator_version: 0.4.1                # run08: CMMS export and register export only (was 0.4.0 for run07; 0.3.0 before rev2)
   run_seed: 20230701
   record: {start: 2023-07-01, end: 2026-06-30}
   shadow: {start: 2025-07-01, end: 2026-06-30}   # rev2: shadow year (was 2026-04-01 to 2026-06-30, the shadow quarter)
@@ -453,11 +453,11 @@ cmms:                                     # [plant] CMMS rendering; approved 202
   inspection_labor_h: [0.5, 2.0]
   pm_labor_h: [0.25, 2.0]
   failure_codes:
-    SPINDLE: [BRG-WEAR, BRG-SPALL, BRG-LUBE, CRASH-DMG, coolant_ingress, spindle_cooler_fault]   # 5.3 codes added before run-05
+    SPINDLE: [BRG-WEAR, BRG-SPALL, BRG-LUBE, CRASH-DMG, coolant_ingress, spindle_cooler_fault, lubrication]   # 5.3 codes added before run-05; lubrication added 2026-10-29 (run07 checkpoint (a)) as an inspection and PM finding code
     ROTARY_UNION: [rotary_union_leak]
-    TSC_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness]
-    COOLANT_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness]
-    COMPRESSOR: [CMP-BRG-MOTOR, CMP-BRG-AIREND, CMP-TRIP, CMP-VALVE, imbalance, misalignment, looseness, oil_cooler_fouled]
+    TSC_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness, cavitation]   # cavitation added 2026-10-29 as an inspection finding code
+    COOLANT_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness, cavitation]   # cavitation added 2026-10-29 as an inspection finding code
+    COMPRESSOR: [CMP-BRG-MOTOR, CMP-BRG-AIREND, CMP-TRIP, CMP-VALVE, imbalance, misalignment, looseness, oil_cooler_fouled, lubrication]   # lubrication added 2026-10-29 as an inspection finding code
     ATC: [ATC-ARM, ATC-SENSOR]
     HYDRAULIC: [HYD-LEAK, HYD-PUMP]
     SERVO: [SRV-DRIVE, SRV-ENCODER]
@@ -466,6 +466,7 @@ cmms:                                     # [plant] CMMS rendering; approved 202
     WAY_COVER: [WAY-COVER]
     CHIP_CONVEYOR: [CHIP-JAM]
     AXIS: [AX-SCREW, AX-GUIDE]
+  finding_only_codes: [lubrication, cavitation]   # 2026-10-29: recorded only on inspection and PM findings; never drawn as a wrong code on unplanned repairs
 
 erp:                                      # [plant] ERP rendering; approved 2026-10-21; frozen at checkpoint (a)
   cycle_time_min_by_material: {aluminum: [4, 20], steel: [8, 35], stainless: [10, 40], cast_iron: [8, 30], titanium: [20, 60]}
@@ -707,7 +708,7 @@ checks:                                   # [fixed] sections 9 and 16
   envelope_detection_ratio: 3.0                     # fault-band RMS amplitude over envelope noise floor
   hf_detection_sigma: 2.0
   stage34_fall_frac_min: 0.30                       # spindle and compressor bearings
-  four_stage_accepted_deviations: {HMC-03-SP-F#0: D-004, HMC-03-SP-F#1: D-005}   # after run-06: run-06 instance accepted under rule 8; D-005 added 2026-10-29 at run07 checkpoint (a)
+  four_stage_accepted_deviations: {HMC-03-SP-F#1: D-005}   # D-005 added 2026-10-29 at run07 checkpoint (a); D-004 (HMC-03-SP-F#0) applies to the frozen run06 record only and was removed from this mapping 2026-10-29 (was {HMC-03-SP-F#0: D-004})
   four_stage_ordering_skip_onset_in_baselining: true      # after run-06: ordering not tested for onsets inside the baselining window
   stage34_fall_frac_min_pump: 0.0                   # after run-05: pump bearings require a fall above 0, percentage reported (DEVIATIONS D-003)
   healthy_exceed_share_max: 0.05
@@ -766,7 +767,7 @@ checks:                                   # [fixed] sections 9 and 16
     hmc_lube_episodes_per_year: [8, 20]            # rev2 x2 spindles (was [4, 10])
     benign_episodes_per_year: [20, 40]             # rev2 x2 (was [10, 20])
     alert_inspections_nff_share: [0.633, 0.833]    # amended 2026-10-22 at checkpoint (a) under rule 8 (run-06 value 0.733 plus or minus 10 points; alert-driven inspections only; unscreened platform alerts, baseline not regime-aware); original [0.20, 0.40]
-    rule_alerts_per_instrumented_asset_month: [0.3, 1.0]
+    rule_alerts_per_instrumented_asset_month: [1.3, 1.9]   # amended 2026-10-29 at run07 checkpoint (a) under rule 8: run07 value 1.6 plus or minus 0.3; healthy-hour rate 4.7 per 1,000 spindle hours (run06 2.0); basis: the vendor baseline is set once per 21-day window, not regime-aware, on more windows in the larger cell; vendor rule unchanged; original [0.3, 1.0]
     shadow_year_failures_instrumented: [3, 14]     # rev2 shadow year (was shadow quarter [0, 4]); amended 2026-10-22 at checkpoint (a) under rule 8 (run-06 value 0); was [1, 4] (2026-10-21, run-02 value 1); original [2, 4]
     shadow_year_failures_uninstrumented: [6, 16]   # rev2 shadow year (was shadow quarter [1, 3])
     no_measurement_share: [0.10, 0.25]

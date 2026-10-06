@@ -439,12 +439,11 @@ def check_lube_trend(
 ) -> CheckResult:
     """Check 28: confirmed lubrication findings on HMC spindles show no trend across record years."""
     alpha = cfg["checks"]["lube_trend_alpha"]
-    notes = wo["notes"].fillna("")
     found = wo[
         wo["asset_id"].str.match(r"HMC-\d+-SP$")
         & (
-            ((wo["wo_type"] == "inspection") & notes.str.contains("lubrication"))
-            | ((wo["wo_type"] == "pm") & notes.str.contains("lubrication degraded"))
+            ((wo["wo_type"] == "inspection") & (wo["failure_code"] == "lubrication"))
+            | ((wo["wo_type"] == "pm") & (wo["failure_code"] == "lubrication"))
         )
     ]
     t = pd.to_datetime(found["opened"], utc=True)

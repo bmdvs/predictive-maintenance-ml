@@ -121,8 +121,24 @@ def write_register(
     tables["sensors"] = pd.DataFrame(sens)
     counts = {}
     for name, df in tables.items():
-        df.astype({c: str for c in df.columns if df[c].dtype == object}).assign(**stamp).to_parquet(
-            root / f"{name}.parquet", index=False
-        )
+        _typed(df).assign(**stamp).to_parquet(root / f"{name}.parquet", index=False)
         counts[name] = len(df)
     return counts
+
+
+def _missing(v: Any) -> bool:
+    return v is None or (isinstance(v, float) and np.isnan(v))
+
+
+def _typed(df: pd.DataFrame) -> pd.DataFrame:
+    """Text columns as strings with real nulls; flag columns as nullable booleans."""
+    out = df.copy()
+    for c in out.columns:
+        if out[c].dtype != object:
+            continue
+        present = out[c][~out[c].map(_missing)]
+        if len(present) and present.map(lambda v: isinstance(v, bool | np.bool_)).all():
+            out[c] = out[c].map(lambda v: None if _missing(v) else bool(v)).astype("boolean")
+        else:
+            out[c] = out[c].map(lambda v: None if _missing(v) else str(v))
+    return out

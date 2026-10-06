@@ -748,7 +748,9 @@ def headline_counts(
         "axis_ball_screw_replacements": int((f["mode"] == "ball_screw_or_guide").sum()),
         "hmc_lube_episodes_per_year": len(lube) / years,
         "benign_episodes_per_year": len(episodes) / years,
-        "alert_inspections_nff_share": float(insp["no_fault_found"].mean()) if len(insp) else np.nan,
+        "alert_inspections_nff_share": (
+            float(insp["no_fault_found"].fillna(False).astype(bool).mean()) if len(insp) else np.nan
+        ),
         "rule_alerts_per_instrumented_asset_month": len(alerts) / (instr_assets * months),
         "shadow_year_failures_instrumented": int(
             in_sh["asset_id"].map(_instrumented_asset).astype(bool).sum()

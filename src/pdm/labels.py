@@ -4,6 +4,7 @@ for event-based evaluation.
 Input: bronze CMMS work orders and the split dates. Output: one row per confirmed condition with its
 type, asset, machine, the time the condition was confirmed (work-order open), the evaluation period,
 and whether it is a PM finding (credited to a method only when the method alerted before the PM).
+Findings are read from failure codes and the source work order link, never from note text.
 Label noise in the CMMS (wrong or missing codes) is carried through, as it is in the shop's records.
 """
 
@@ -29,16 +30,17 @@ TYPE_BY_CODE = {
     "PMP-IMP": "pump seal or impeller",
     "CMP-TRIP": "compressor trip",
     "CMP-VALVE": "compressor trip",
+    "lubrication": "lubrication",
 }
 
 
 def condition_type() -> F.Column:
-    code, wt, notes = F.col("failure_code"), F.col("wo_type"), F.coalesce(F.col("notes"), F.lit(""))
+    code, wt = F.col("failure_code"), F.col("wo_type")
     mapped = F.create_map(*[F.lit(x) for kv in TYPE_BY_CODE.items() for x in kv])[code]
     repair = wt.isin("unplanned_repair", "condition_based", "corrective")
     return (
-        F.when((wt == "inspection") & notes.contains("lubrication"), F.lit("lubrication"))
-        .when((wt == "pm") & notes.contains("lubrication degraded"), F.lit("lubrication"))
+        F.when((wt == "inspection") & (code == "lubrication"), F.lit("lubrication"))
+        .when(wt == "inspection", F.lit(None))
         .when((wt == "pm") & code.isNotNull(), mapped)
         .when(repair & code.isNull() & (wt == "unplanned_repair"), F.lit("unplanned, no code"))
         .when(repair & code.isin(*BEARING_CODES) & (wt == "unplanned_repair"), F.lit("bearing (unplanned)"))
@@ -75,7 +77,10 @@ def confirmed_conditions(work_orders: DataFrame, cfg: dict[str, Any]) -> DataFra
         (F.col("wo_type") == "unplanned_repair").alias("unplanned"),
         (
             (F.col("wo_type") == "pm")
-            | F.coalesce(F.col("notes"), F.lit("")).contains("Found at spindle chiller check")
+            | (
+                F.coalesce(F.col("source_wo_id"), F.lit("")).startswith("PM-")
+                & (F.col("failure_code") == "spindle_cooler_fault")
+            )
         ).alias("pm_finding"),
         period_expr(cfg, "opened").alias("period"),
     )
