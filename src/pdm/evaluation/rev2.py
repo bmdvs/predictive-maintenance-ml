@@ -98,15 +98,13 @@ def _cover(eps: pd.DataFrame, conds_all: pd.DataFrame) -> list[np.ndarray]:
     asset."""
     out = []
     ak = conds_all["asset_key"].to_numpy()
-    ct = conds_all["credit_ts"].to_numpy()
+    ct = np.asarray(
+        pd.to_datetime(conds_all["credit_ts"], utc=True).dt.tz_localize(None), dtype="datetime64[ns]"
+    )
     for r in eps.itertuples():
-        out.append(
-            np.flatnonzero(
-                (ak == r.asset_id)
-                & (ct >= np.datetime64(r.opened.tz_convert(None)))
-                & (ct < np.datetime64(r.closed.tz_convert(None)))
-            )
-        )
+        a = pd.Timestamp(r.opened).tz_convert("UTC").tz_localize(None).to_datetime64()
+        b = pd.Timestamp(r.closed).tz_convert("UTC").tz_localize(None).to_datetime64()
+        out.append(np.flatnonzero((ak == r.asset_id) & (ct >= a) & (ct < b)))
     return out
 
 
@@ -494,4 +492,67 @@ def false_two_ways(
         "unrelated_first": int((f & u).sum()),
         "false_excl_unrelated": n,
         "false_excl_unrelated_per_asset_month": n / asset_months(period, n_assets),
+    }
+
+
+def asset_bootstrap(
+    vendor_eps: pd.DataFrame,
+    ml_eps: dict[float, pd.DataFrame],
+    ml_op: float,
+    conds: pd.DataFrame,
+    conds_all: pd.DataFrame,
+    period: tuple[pd.Timestamp, pd.Timestamp],
+    assets: list[str],
+    window_days: float,
+    draws: int,
+    seed: int,
+    quantiles: tuple[float, float] = (0.05, 0.95),
+) -> dict[str, float]:
+    """90% intervals on the matched-budget catch-rate difference and the false-episode rate difference,
+    resampling whole assets with replacement (each asset's conditions and episodes together)."""
+    months = (period[1] - period[0]) / MONTH
+
+    def per_asset(eps: pd.DataFrame) -> tuple[dict[str, np.ndarray], dict[str, int]]:
+        e = eps.assign(point_id="")
+        caught = (
+            ev.catch_table(e, conds, window_days)["caught"].to_numpy(dtype=bool)
+            if len(e)
+            else np.zeros(len(conds), bool)
+        )
+        inside = e[(e["opened"] >= period[0]) & (e["opened"] < period[1])].reset_index(drop=True)
+        f = false_mask(inside, conds_all).to_numpy() if len(inside) else np.zeros(0, bool)
+        by_c = {a: caught[(conds["asset_key"] == a).to_numpy()] for a in assets}
+        by_f = {a: int(f[(inside["asset_id"] == a).to_numpy()].sum()) for a in assets}
+        return by_c, by_f
+
+    vc, vf = per_asset(vendor_eps)
+    pcts = sorted(ml_eps)
+    mc, mf = {}, {}
+    for p_ in pcts:
+        mc[p_], mf[p_] = per_asset(ml_eps[p_])
+    rng = np.random.default_rng(seed)
+    d_catch, d_false = [], []
+    for _ in range(draws):
+        pick = [assets[i] for i in rng.integers(0, len(assets), len(assets))]
+        am = len(pick) * months
+
+        def share(by: dict[str, np.ndarray], pick: list[str] = pick) -> float:
+            v = np.concatenate([by[a] for a in pick]) if pick else np.zeros(0)
+            return float(v.mean()) if len(v) else np.nan
+
+        v_false = sum(vf[a] for a in pick) / am
+        v_catch = share(vc)
+        xs = np.array([sum(mf[p_][a] for a in pick) / am for p_ in pcts])
+        ys = np.array([share(mc[p_]) for p_ in pcts])
+        o = np.argsort(xs)
+        if np.isfinite(v_catch) and np.isfinite(ys).all():
+            d_catch.append(float(np.interp(v_false, xs[o], ys[o])) - v_catch)
+        d_false.append(sum(mf[ml_op][a] for a in pick) / am - v_false)
+    q_c = np.quantile(d_catch, quantiles) if d_catch else (np.nan, np.nan)
+    q_f = np.quantile(d_false, quantiles)
+    return {
+        "catch_diff_asset_lo": float(q_c[0]),
+        "catch_diff_asset_hi": float(q_c[1]),
+        "false_diff_asset_lo": float(q_f[0]),
+        "false_diff_asset_hi": float(q_f[1]),
     }

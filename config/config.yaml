@@ -681,7 +681,7 @@ evaluation:                               # [fixed] 12, chance levels
   catch: {opened_within_days: 120, episode_gap_days: 7}   # rev2 step 2 decision 2026-10-29: 120 days, set before any result (R2.6.1 stage 2 to failure 8 to 12 weeks; outer-race envelope warning 3 to 6 months); chance levels on the same window; was 60 (step 5 review), originally detection_lookback_days 90
   vendor_sweep_alert_frac: [0.10, 0.15, 0.25, 0.40, 0.60, 1.00]   # operating curve; 0.25 is the vendor's actual setting
   advisory_z: 3.0                          # approved 2026-10-22: suspected-condition rules fire at this z-score against healthy spread
-  holdout_shadow: true                     # rev2: nothing computed on the shadow year until the design is frozen
+  holdout_shadow: false                    # lifted 2026-10-30 after the design freeze (rounds 1 to 3 approved; selection pca_t2_spe_extended, speed bands); was true: nothing computed on the shadow year until the design is frozen
   as_of: null                              # shadow-year month YYYY-MM for a monthly monitoring run; null reads to the record end
   false_episode_counting: per_asset         # rev2 R3.5.1 (was per point for the vendor rules and the model)
   plannable_min_warning_days: 7             # rev2 R3.6

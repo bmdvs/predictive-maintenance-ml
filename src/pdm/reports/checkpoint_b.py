@@ -589,11 +589,7 @@ def rebuild_example(
             continue
         bad = s.loc[s["score"].idxmax()]
         pm = model.models.get(bad["point_id"])
-        if pm is None or pm.settings.candidate not in (
-            "autoencoder_third_octave",
-            "autoencoder_extended",
-            "pca_t2_spe",
-        ):
+        if pm is None or nbm.model_type(pm.settings.candidate) not in ("autoencoder", "pca"):
             return pd.DataFrame(
                 {
                     "note": [
@@ -635,7 +631,7 @@ def rebuild_example(
             z = pm.scaler.transform(raw)
             rec = (
                 pm.model.predict(z)
-                if pm.settings.candidate.startswith("autoencoder")
+                if nbm.model_type(pm.settings.candidate) == "autoencoder"
                 else pm.model.inverse_transform(pm.model.transform(z))
             )
             for j, name in enumerate(cols):
@@ -657,10 +653,7 @@ def rebuild_example(
 def build(store: Store, cfg: dict[str, Any], model: Any) -> dict[str, int]:
     conds = tasks._conditions(store, cfg)
     wo = tasks._wo(store)
-    lev = _u(
-        store.read_pd("gold", "level_episodes"),
-        ["opened", "last", "closed", "alarm_ts", "alarm_criterion_ts", "alarm_escalation_ts"],
-    )
+    lev = ml_tasks._levels(store)
     tables = {
         "cpb_signal_tests": signal_tests(store, cfg, lev, conds, wo),
         "cpb_false_by_context": false_by_context(store, cfg, lev, conds, wo),

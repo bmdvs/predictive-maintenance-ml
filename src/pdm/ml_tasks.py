@@ -768,7 +768,10 @@ def score_task(store: Store, cfg: dict[str, Any], model: Any, model_version: str
                 parts.append(ex.assign(sweep=p, persistence_hours=k))
     ex_all = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["point_id", "ts"])
     ex_all["asset_id"] = ex_all["point_id"].map(assets)
-    hs = shadow_segment_stats(model.healthy_stats, segs, inp["ind"])
+    train_stats = model.healthy_stats
+    if train_stats is None or len(train_stats) == 0:
+        train_stats = tasks._utc_cols(store.read_pd("gold", "point_healthy_stats"), ["segment_start"])
+    hs = shadow_segment_stats(train_stats, segs, inp["ind"])
     store.write_pd(sc.assign(model_version=model_version, settings=model.settings_key), "gold", "nbm_scores")
     store.write_pd(ex_all.assign(method="ml_model", model_version=model_version), "gold", "nbm_exceedances")
     store.write_pd(segs.assign(model_version=model_version), "gold", "ml_segments")
@@ -1313,6 +1316,20 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     mrow = methods[
         (methods["period"] == "shadow") & (methods["method"] == "ML Model") & (methods["level"] == "ALERT")
     ].iloc[0]
+    boot.update(
+        r2.asset_bootstrap(
+            r2.alert_view(vd),
+            curve_eps,
+            op_p,
+            cp,
+            conds,
+            span,
+            sorted(pts["asset_id"].unique()),
+            window,
+            int(cfg["evaluation"].get("bootstrap_draws", 2000)),
+            int(cfg["models"]["seed"]),
+        )
+    )
     matched = pd.DataFrame(
         [
             {
