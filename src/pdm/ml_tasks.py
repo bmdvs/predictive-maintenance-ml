@@ -629,7 +629,7 @@ def train_task(
             **({"pdm.job_run_id": str(job_run_id)} if job_run_id else {}),
         },
         context=tasks.run_context(store, cfg, TRAIN_INPUTS) if experiment else None,
-        extra=_log_model(model, sel),
+        extra=_log_model(model, sel, signature_example(inp["ind"], inp["win"])),
         lineage=(store, TRAIN_INPUTS),
     )
     store.write_pd(pd.DataFrame(fold_rows), "gold", "ml_candidates_fold")
@@ -687,7 +687,19 @@ def healthy_stats_table(scores: pd.DataFrame, ind: pd.DataFrame) -> pd.DataFrame
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
-def _log_model(model: Any, sel: pd.DataFrame) -> Any:
+def signature_example(ind: pd.DataFrame, win: pd.DataFrame) -> pd.DataFrame:
+    """A small model input for the registered signature: one point's first 30 measured hours with its
+    segment starts."""
+    pid = sorted(ind["point_id"].unique())[0]
+    x = ind[ind["point_id"] == pid].sort_values("hour_utc").head(30).copy()
+    starts = win.loc[win["point_id"] == pid, "start"].sort_values()
+    x["segment_starts"] = ";".join(str(t) for t in starts)
+    x["hour_utc"] = pd.to_datetime(x["hour_utc"], utc=True).dt.tz_localize(None)
+    x["implausible"] = x["implausible"].fillna(False).astype(bool)
+    return x.reset_index(drop=True)
+
+
+def _log_model(model: Any, sel: pd.DataFrame, example: pd.DataFrame | None = None) -> Any:
     def body() -> None:
         import tempfile
         from pathlib import Path
@@ -707,6 +719,10 @@ def _log_model(model: Any, sel: pd.DataFrame) -> Any:
                 "code_paths": [str(Path(pdm.__file__).parent)],
                 "pip_requirements": ["numpy", "pandas", "scipy", "scikit-learn", "pyyaml", "pyarrow"],
             }
+            if example is not None:
+                from mlflow.models import infer_signature
+
+                kwargs["signature"] = infer_signature(example, model.predict(None, example))
             try:
                 mlflow.pyfunc.log_model(name="model", **kwargs)
             except TypeError:
