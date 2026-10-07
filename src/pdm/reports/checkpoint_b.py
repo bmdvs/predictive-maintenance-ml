@@ -372,6 +372,8 @@ def gates_local(store: Store, cfg: dict[str, Any], model: Any) -> pd.DataFrame:
         "points": tasks._points(store),
     }
     tables["ml_train_scores"]["hour_utc"] = tasks._utc(tables["ml_train_scores"]["hour_utc"])
+    if getattr(model, "healthy_stats", None) is None:
+        model.healthy_stats = store.read_pd("gold", "point_healthy_stats")
     tags = {
         "challenger": "true",
         "settings": model.settings_key,
