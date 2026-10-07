@@ -313,7 +313,7 @@ def test_condition_scope_affected_point():
     conds = pd.DataFrame(
         {
             "asset_id": ["CMP-01", "HMC-01-SP", "HMC-02-SP", "HMC-03-X"],
-            "failure_code": ["CMP-BRG-AIREND", "coolant_ingress", "BRG-SPALL", None],
+            "failure_code": ["CMP-BRG-AIREND", "SP-COOLANT-INGRESS", "BRG-SPALL", None],
         }
     )
     pts = {
@@ -460,7 +460,7 @@ def test_lives_register_date_on_preventive_work_order_day_is_that_replacement():
             {
                 "asset_id": "HMC-09-CP",
                 "wo_type": "condition_based",
-                "failure_code": "imbalance",
+                "failure_code": "VIB-IMBAL",
                 "opened": ts("2025-09-01 11:00"),
                 "closed": ts("2025-09-02 08:00"),
                 "downtime_hours": 3.0,

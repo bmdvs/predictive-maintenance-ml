@@ -442,8 +442,9 @@ def check_lube_trend(
     found = wo[
         wo["asset_id"].str.match(r"HMC-\d+-SP$")
         & (
-            ((wo["wo_type"] == "inspection") & (wo["failure_code"] == "lubrication"))
-            | ((wo["wo_type"] == "pm") & (wo["failure_code"] == "lubrication"))
+            wo["wo_type"].isin(["inspection", "pm"])
+            & (wo["failure_code"] == "BRG-LUBE")
+            & ~wo["wo_id"].isin(wo["source_wo_id"].dropna())
         )
     ]
     t = pd.to_datetime(found["opened"], utc=True)

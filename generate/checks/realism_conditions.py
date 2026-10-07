@@ -692,13 +692,13 @@ def spindle_cooling_outcomes(events: pd.DataFrame, wo_truth: pd.DataFrame) -> di
 
 _BEARING_CODES = {"BRG-WEAR", "BRG-SPALL", "BRG-LUBE", "PMP-BRG", "CMP-BRG-MOTOR", "CMP-BRG-AIREND"}
 _TYPE_BY_CODE = {
-    "imbalance": "imbalance",
-    "misalignment": "misalignment",
-    "looseness": "looseness",
-    "rotary_union_leak": "rotary union",
-    "coolant_ingress": "rotary union",
-    "oil_cooler_fouled": "cooler (compressor)",
-    "spindle_cooler_fault": "spindle cooling",
+    "VIB-IMBAL": "imbalance",
+    "VIB-MISALIGN": "misalignment",
+    "VIB-LOOSE": "looseness",
+    "RU-LEAK": "rotary union",
+    "SP-COOLANT-INGRESS": "rotary union",
+    "CMP-OILCOOL-FOUL": "cooler (compressor)",
+    "SP-COOLER": "spindle cooling",
     "CRASH-DMG": "crash",
     "PMP-SEAL": "pump seal or impeller",
     "PMP-IMP": "pump seal or impeller",
@@ -707,13 +707,16 @@ _TYPE_BY_CODE = {
 }
 
 
-def _condition_type(r: Any) -> str | None:
+_LUBE_CODES = {"BRG-LUBE", "CMP-LUBE"}
+
+
+def _condition_type(r: Any, followed: set[str]) -> str | None:
     code = r.failure_code if isinstance(r.failure_code, str) else None
+    if r.wo_type in ("inspection", "pm") and code in _LUBE_CODES and r.wo_id not in followed:
+        return "lubrication"
     if r.wo_type == "inspection":
-        return "lubrication" if code == "lubrication" else None
+        return None
     if r.wo_type == "pm":
-        if code == "lubrication":
-            return "lubrication"
         return _TYPE_BY_CODE.get(code) if code else None
     if r.wo_type not in ("unplanned_repair", "condition_based", "corrective"):
         return None
@@ -731,7 +734,8 @@ def confirmed_conditions(
 ) -> dict[str, Any]:
     """Confirmed conditions by type and evaluation period from bronze CMMS work orders only."""
     wo = pd.read_parquet(bronze_root / "cmms" / "work_orders.parquet")
-    wo = wo.assign(ctype=[_condition_type(r) for r in wo.itertuples()]).dropna(subset=["ctype"])
+    followed = set(wo["source_wo_id"].dropna())
+    wo = wo.assign(ctype=[_condition_type(r, followed) for r in wo.itertuples()]).dropna(subset=["ctype"])
     sp = cfg["splits"]
     local_day = wo["opened"].dt.tz_convert(TZ).dt.date.astype(str)
     period = np.select(

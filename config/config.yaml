@@ -6,7 +6,7 @@
 
 meta:                                     # [fixed]
   config_version: 12                      # rev2 2026-10-29 (was 11, run-06)
-  generator_version: 0.4.1                # run08: CMMS export and register export only (was 0.4.0 for run07; 0.3.0 before rev2)
+  generator_version: 0.4.2                # run09: CMMS failure codes in one convention (was 0.4.1 for run08; 0.4.0 for run07; 0.3.0 before rev2)
   run_seed: 20230701
   record: {start: 2023-07-01, end: 2026-06-30}
   shadow: {start: 2025-07-01, end: 2026-06-30}   # rev2: shadow year (was 2026-04-01 to 2026-06-30, the shadow quarter)
@@ -453,11 +453,11 @@ cmms:                                     # [plant] CMMS rendering; approved 202
   inspection_labor_h: [0.5, 2.0]
   pm_labor_h: [0.25, 2.0]
   failure_codes:
-    SPINDLE: [BRG-WEAR, BRG-SPALL, BRG-LUBE, CRASH-DMG, coolant_ingress, spindle_cooler_fault, lubrication]   # 5.3 codes added before run-05; lubrication added 2026-10-29 (run07 checkpoint (a)) as an inspection and PM finding code
-    ROTARY_UNION: [rotary_union_leak]
-    TSC_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness, cavitation]   # cavitation added 2026-10-29 as an inspection finding code
-    COOLANT_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness, cavitation]   # cavitation added 2026-10-29 as an inspection finding code
-    COMPRESSOR: [CMP-BRG-MOTOR, CMP-BRG-AIREND, CMP-TRIP, CMP-VALVE, imbalance, misalignment, looseness, oil_cooler_fouled, lubrication]   # lubrication added 2026-10-29 as an inspection finding code
+    SPINDLE: [BRG-WEAR, BRG-SPALL, BRG-LUBE, CRASH-DMG, SP-COOLANT-INGRESS, SP-COOLER]   # 2026-10-30 run08 checkpoint (a): one code convention; lubrication findings coded BRG-LUBE; was [BRG-WEAR, BRG-SPALL, BRG-LUBE, CRASH-DMG, coolant_ingress, spindle_cooler_fault, lubrication]
+    ROTARY_UNION: [RU-LEAK]   # was [rotary_union_leak]
+    TSC_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, VIB-IMBAL, VIB-LOOSE, PMP-CAV]   # was [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness, cavitation]
+    COOLANT_PUMP: [PMP-SEAL, PMP-BRG, PMP-IMP, VIB-IMBAL, VIB-LOOSE, PMP-CAV]   # was [PMP-SEAL, PMP-BRG, PMP-IMP, imbalance, looseness, cavitation]
+    COMPRESSOR: [CMP-BRG-MOTOR, CMP-BRG-AIREND, CMP-TRIP, CMP-VALVE, VIB-IMBAL, VIB-MISALIGN, VIB-LOOSE, CMP-OILCOOL-FOUL, CMP-LUBE]   # was [CMP-BRG-MOTOR, CMP-BRG-AIREND, CMP-TRIP, CMP-VALVE, imbalance, misalignment, looseness, oil_cooler_fouled, lubrication]
     ATC: [ATC-ARM, ATC-SENSOR]
     HYDRAULIC: [HYD-LEAK, HYD-PUMP]
     SERVO: [SRV-DRIVE, SRV-ENCODER]
@@ -466,7 +466,7 @@ cmms:                                     # [plant] CMMS rendering; approved 202
     WAY_COVER: [WAY-COVER]
     CHIP_CONVEYOR: [CHIP-JAM]
     AXIS: [AX-SCREW, AX-GUIDE]
-  finding_only_codes: [lubrication, cavitation]   # 2026-10-29: recorded only on inspection and PM findings; never drawn as a wrong code on unplanned repairs
+  finding_only_codes: [CMP-LUBE, PMP-CAV]   # recorded only on inspection and PM findings; never drawn as a wrong code on unplanned repairs; was [lubrication, cavitation] (2026-10-29)
 
 erp:                                      # [plant] ERP rendering; approved 2026-10-21; frozen at checkpoint (a)
   cycle_time_min_by_material: {aluminum: [4, 20], steel: [8, 35], stainless: [10, 40], cast_iron: [8, 30], titanium: [20, 60]}

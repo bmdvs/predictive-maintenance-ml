@@ -18,28 +18,35 @@ from pyspark.sql import functions as F
 LOCAL_TZ = "America/Chicago"
 BEARING_CODES = ("BRG-WEAR", "BRG-SPALL", "BRG-LUBE", "PMP-BRG", "CMP-BRG-MOTOR", "CMP-BRG-AIREND")
 TYPE_BY_CODE = {
-    "imbalance": "imbalance",
-    "misalignment": "misalignment",
-    "looseness": "looseness",
-    "rotary_union_leak": "rotary union",
-    "coolant_ingress": "rotary union",
-    "oil_cooler_fouled": "cooler (compressor)",
-    "spindle_cooler_fault": "spindle cooling",
+    "VIB-IMBAL": "imbalance",
+    "VIB-MISALIGN": "misalignment",
+    "VIB-LOOSE": "looseness",
+    "RU-LEAK": "rotary union",
+    "SP-COOLANT-INGRESS": "rotary union",
+    "CMP-OILCOOL-FOUL": "cooler (compressor)",
+    "SP-COOLER": "spindle cooling",
     "CRASH-DMG": "crash",
     "PMP-SEAL": "pump seal or impeller",
     "PMP-IMP": "pump seal or impeller",
     "CMP-TRIP": "compressor trip",
     "CMP-VALVE": "compressor trip",
-    "lubrication": "lubrication",
 }
+LUBE_CODES = ("BRG-LUBE", "CMP-LUBE")
 
 
-def condition_type() -> F.Column:
+def condition_type(followed: F.Column) -> F.Column:
+    """Condition type of a work order. An inspection or PM coded with a lubrication code is a
+    lubrication finding unless a repair follows from it (`followed`), which then carries the condition.
+
+    Args:
+        followed: true when another work order names this one in `source_wo_id`.
+    """
     code, wt = F.col("failure_code"), F.col("wo_type")
     mapped = F.create_map(*[F.lit(x) for kv in TYPE_BY_CODE.items() for x in kv])[code]
     repair = wt.isin("unplanned_repair", "condition_based", "corrective")
+    lube = wt.isin("inspection", "pm") & code.isin(*LUBE_CODES) & ~followed
     return (
-        F.when((wt == "inspection") & (code == "lubrication"), F.lit("lubrication"))
+        F.when(lube, F.lit("lubrication"))
         .when(wt == "inspection", F.lit(None))
         .when((wt == "pm") & code.isNotNull(), mapped)
         .when(repair & code.isNull() & (wt == "unplanned_repair"), F.lit("unplanned, no code"))
@@ -62,7 +69,17 @@ def period_expr(cfg: dict[str, Any], ts_col: str) -> F.Column:
 
 
 def confirmed_conditions(work_orders: DataFrame, cfg: dict[str, Any]) -> DataFrame:
-    wo = work_orders.withColumn("condition_type", condition_type()).where(F.col("condition_type").isNotNull())
+    sources = (
+        work_orders.where(F.col("source_wo_id").isNotNull())
+        .select(F.col("source_wo_id").alias("_source"))
+        .distinct()
+        .withColumn("_followed", F.lit(True))
+    )
+    wo = (
+        work_orders.join(sources, work_orders["wo_id"] == sources["_source"], "left")
+        .withColumn("condition_type", condition_type(F.coalesce(F.col("_followed"), F.lit(False))))
+        .where(F.col("condition_type").isNotNull())
+    )
     return wo.select(
         "wo_id",
         "asset_id",
@@ -79,7 +96,7 @@ def confirmed_conditions(work_orders: DataFrame, cfg: dict[str, Any]) -> DataFra
             (F.col("wo_type") == "pm")
             | (
                 F.coalesce(F.col("source_wo_id"), F.lit("")).startswith("PM-")
-                & (F.col("failure_code") == "spindle_cooler_fault")
+                & (F.col("failure_code") == "SP-COOLER")
             )
         ).alias("pm_finding"),
         period_expr(cfg, "opened").alias("period"),

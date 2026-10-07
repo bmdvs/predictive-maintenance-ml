@@ -222,7 +222,7 @@ class Data:
         """Per rotary-union leak work order: the pump-on low span (daily pump-on median below 95% of the median
         45 to 135 days before the work order, contiguous within 3 days, the span starting by the opening),
         its drop and lead, and the advisory series over the same span."""
-        w = self.wo[self.wo["failure_code"] == "rotary_union_leak"].copy()
+        w = self.wo[self.wo["failure_code"] == "RU-LEAK"].copy()
         p = self.pressure
         period = self.conds.set_index("wo_id")["period"].to_dict()
         rows = []

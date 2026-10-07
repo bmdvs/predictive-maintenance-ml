@@ -84,6 +84,29 @@ _FINDING_TEXT = {
     "rotary_union_leak": "rotary union leak",
 }
 _WEAR_TEXT = {"PMP-SEAL": "seal wear", "PMP-IMP": "impeller wear"}
+_EXPORT_CODE = {
+    "imbalance": "VIB-IMBAL",
+    "misalignment": "VIB-MISALIGN",
+    "looseness": "VIB-LOOSE",
+    "cavitation": "PMP-CAV",
+    "oil_cooler_fouled": "CMP-OILCOOL-FOUL",
+    "spindle_cooler_fault": "SP-COOLER",
+    "coolant_ingress": "SP-COOLANT-INGRESS",
+    "rotary_union_leak": "RU-LEAK",
+}
+_LUBE_CODE = {"SPINDLE": "BRG-LUBE", "COMPRESSOR": "CMP-LUBE"}
+
+
+def export_code(component: str | None, code: str | None) -> str | None:
+    """The CMMS failure code for an engine condition or finding name; codes already in the CMMS
+    convention pass through."""
+    if not isinstance(code, str):
+        return None
+    if code == "lubrication":
+        return _LUBE_CODE[str(component)]
+    return _EXPORT_CODE.get(code, code)
+
+
 _FALLBACK_BEARING_CODE = {
     "SP-F": "BRG-WEAR",
     "SP-R": "BRG-WEAR",
@@ -399,6 +422,8 @@ def build_work_orders(
                 "true_failure_code": None,
             }
         )
+    for r in rows:
+        r["failure_code"] = r["true_failure_code"] = export_code(r["true_component"], r["true_failure_code"])
     df = pd.DataFrame(rows).sort_values("opened").reset_index(drop=True)
     unplanned = df.index[df["wo_type"] == "unplanned_repair"].to_numpy()
     draw = rng.random(unplanned.size)

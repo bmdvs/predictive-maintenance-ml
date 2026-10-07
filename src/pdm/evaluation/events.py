@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 DAY = pd.Timedelta(days=1)
-AFFECTED_POINT = {"CMP-BRG-MOTOR": "-MDE", "CMP-BRG-AIREND": "-AE", "coolant_ingress": "-F"}
+AFFECTED_POINT = {"CMP-BRG-MOTOR": "-MDE", "CMP-BRG-AIREND": "-AE", "SP-COOLANT-INGRESS": "-F"}
 INSTRUMENTED = r"^(HMC-\d+-(SP|TSC|CP)|CMP-\d+)$"
 
 
