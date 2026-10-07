@@ -30,6 +30,15 @@ def test_episodes_merge_points_of_one_asset_within_the_gap():
     assert len(e[e["asset_id"] == "B"]) == 1
 
 
+def test_escalation_day_needs_half_of_its_hours():
+    opened = _ts("2025-09-01 14:00")
+    hours = pd.date_range("2025-09-01 14:00", periods=24 * 30, freq="h", tz=UTC)
+    half = pd.DataFrame({"ts": hours, "met": (np.arange(len(hours)) % 2 == 0)})
+    third = pd.DataFrame({"ts": hours, "met": (np.arange(len(hours)) % 3 == 0)})
+    assert severity.escalation_time(opened, _ts("2025-12-01"), half, 14) is not None
+    assert severity.escalation_time(opened, _ts("2025-12-01"), third, 14) is None
+
+
 def test_escalation_counts_operating_days_and_skips_idle_days():
     opened = _ts("2025-09-01 14:00")
     days = pd.date_range("2025-09-01 14:00", periods=30, freq="D", tz=UTC)
@@ -104,11 +113,20 @@ def test_temperature_residual_fit_per_point():
     rng = np.random.default_rng(0)
     n = 500
     speed = rng.uniform(3000, 12000, n)
+    hours = pd.date_range("2024-01-01", periods=n, freq="17h", tz=UTC)
+    doy = hours.tz_convert("America/Chicago").dayofyear.to_numpy(float)
+    season = 1.5 * np.sin(2 * np.pi * doy / 365.25)
     rows = pd.DataFrame(
-        {"temp_c": 20 + 0.001 * speed + rng.normal(0, 0.1, n), "speed_rpm_at_measurement": speed}
+        {
+            "hour_utc": hours,
+            "temp_c": 20 + 0.001 * speed + season + rng.normal(0, 0.1, n),
+            "speed_rpm_at_measurement": speed,
+        }
     )
     f = temperature.fit(rows, "spindle_front")
-    assert abs(f.coef[1] - 0.001) < 1e-4 and abs(np.median(f.residual(rows))) < 0.05
+    assert abs(f.coef[1] - 0.001) < 1e-4 and abs(f.coef[2] - 1.5) < 0.05 and np.std(f.residual(rows)) < 0.15
+    plain = temperature.fit(rows, "spindle_front", seasonal=False)
+    assert np.std(plain.residual(rows)) > 0.8
     pump = temperature.fit(rows.assign(load_pct_at_measurement=np.nan), "flood_pump")
     assert pump.columns == [] and abs(pump.coef[0] - rows["temp_c"].mean()) < 1e-6
 

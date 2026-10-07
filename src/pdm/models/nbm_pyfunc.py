@@ -45,6 +45,7 @@ class NBMPointModels(mlflow.pyfunc.PythonModel):
                         "recenter_min_hours",
                         "recenter_floor_hours",
                         "sweep_percentiles",
+                        "sweep_extension_percentiles",
                         "threshold_percentile",
                         "top_contributors",
                     )

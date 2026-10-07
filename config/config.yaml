@@ -593,7 +593,8 @@ splits:                                   # [fixed] 11
 models:                                   # [fixed]
   seed: 7
   nbm:
-    candidates: [pca_t2_spe, mahalanobis, isolation_forest, autoencoder_third_octave, autoencoder_extended]   # rev2 R3.3.4: fifth candidate, third-octave plus envelope fault bands, HF RMS and temperature residual
+    candidates: [pca_t2_spe, mahalanobis, isolation_forest, autoencoder_third_octave, autoencoder_extended, pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended]   # step 6 design freeze 2026-10-30: extended variants of PCA, Mahalanobis and isolation forest on the autoencoder_extended inputs (was the first five; rev2 R3.3.4 added autoencoder_extended)
+    selection_candidates: [pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended, autoencoder_extended]   # step 6 design freeze: selection between model types on the shared extended input set; the summary-input candidates and the band-only autoencoder are ablations (was all candidates)
     model_scope: per_point_all_segments     # rev2 R3.3.1: one model per point over every training segment, segment-relative features (was per segment)
     recenter_days: [3, 7]                   # rev2 R3.3.2: new level from the first days after a repair or remount; no model alerts meanwhile
     recenter_min_hours: 24                  # step 6: the level window ends after recenter_days[0] once this many measured hours have accumulated, at most recenter_days[1]
@@ -613,6 +614,7 @@ models:                                   # [fixed]
     rebaseline_days: 21                     # vendor rules re-baseline window; the vibration model re-centers on recenter_days (rev2)
     coverage_months: {summer: [6, 8], winter: [12, 2]}   # step 5 review: both seasons required before a point's model is used
     sweep_percentiles: [99.0, 99.5, 99.8, 99.9, 99.95, 99.99]   # operating curve
+    sweep_extension_percentiles: [98.0, 97.0, 96.0, 95.0, 94.0, 93.0, 92.0, 91.0, 90.0, 88.0, 86.0, 84.0, 82.0, 80.0, 75.0, 70.0]   # step 6 design freeze 2026-10-30: the curve extends below the 99th percentile down to the highest of these at which every candidate's pooled fold curve reaches the Vendor Rules' pooled budget (recorded in gold.ml_settings as curve_floor_percentile); curve definition only, the operating threshold rule is unchanged (was the six percentiles above only)
     top_contributors: 3
     pca_variance_kept: 0.95
     isolation_forest: {n_estimators: 200}

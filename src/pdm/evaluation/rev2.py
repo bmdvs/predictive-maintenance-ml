@@ -45,9 +45,11 @@ def alert_view(lev: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def alarm_view(lev: pd.DataFrame, escalation: bool = True) -> pd.DataFrame:
-    """ALARM periods: from the ALARM start to the episode's close (with or without the 14-day rule)."""
-    start = lev["alarm_ts"] if escalation else lev["alarm_criterion_ts"]
+def alarm_view(lev: pd.DataFrame, escalation: bool = True, sensor_only: bool = False) -> pd.DataFrame:
+    """ALARM periods: from the ALARM start to the episode's close, with or without the 14-day rule, on the
+    full criteria or on the sensor criteria only."""
+    pre = "alarm_sensor_" if sensor_only else "alarm_"
+    start = lev[f"{pre}ts"] if escalation else lev[f"{pre}criterion_ts"]
     a = lev[start.notna()].assign(opened=start[start.notna()], point_id="")
     return a[["asset_id", "point_id", "opened", "last", "closed"]].reset_index(drop=True)
 

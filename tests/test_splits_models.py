@@ -174,10 +174,11 @@ def test_nbm_settings_grid_and_complexity():
     grid = nbm.settings_grid(CFG)
     g = CFG["models"]["nbm"]["selection_grid"]
     n_ae = len(g["autoencoder_hidden"]) * len(g["autoencoder_epochs"])
-    assert len(grid) == len(g["threshold_mode"]) * (3 + 2 * n_ae)
+    assert len(grid) == len(g["threshold_mode"]) * (6 + 2 * n_ae)
     order = sorted(grid, key=nbm.complexity)
-    assert order[0].candidate == "pca_t2_spe" and order[0].threshold_mode == "single"
-    assert order[-1].candidate == "autoencoder_extended"
+    assert nbm.model_type(order[0].candidate) == "pca" and order[0].threshold_mode == "single"
+    assert nbm.model_type(order[-1].candidate) == "autoencoder"
+    assert all(nbm.input_set(c) == "extended" for c in CFG["models"]["nbm"]["selection_candidates"])
 
 
 def test_nbm_refuses_leaked_rows():

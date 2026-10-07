@@ -7,9 +7,11 @@ hours across every segment and frozen; thresholds are percentiles of its trainin
 spindle speed band or one for the point, as chosen in selection. A segment that starts after the
 training cutoff is re-centered only: when its level on velocity, HF acceleration or an envelope fault
 band is above the point's highest earlier level by more than the plausibility factor, the segment is
-flagged (WATCH) and the model stays silent on it. Candidates: PCA with T-squared and SPE, Mahalanobis
-distance, isolation forest, an autoencoder on the one-third-octave summary, and an autoencoder on the
-one-third-octave summary with the envelope fault bands, HF acceleration and the temperature residual.
+flagged (WATCH) and the model stays silent on it. Model types: PCA with T-squared and SPE, Mahalanobis
+distance, isolation forest and an autoencoder. Input sets: the indicator summary (RMS values, crest
+factor, kurtosis, 1x and 2x orders, summed envelope fault energy), the one-third-octave bands alone, and
+the extended set (one-third-octave bands, each envelope fault band, HF acceleration and the temperature
+residual). Selection is between model types on the extended set; the other input sets are ablations.
 (Revision 2. Originally one model per segment, refit on the 21-day re-baseline window after each
 repair and updated monthly until it had seasonal coverage.)
 """
@@ -58,8 +60,37 @@ CANDIDATES = (
     "isolation_forest",
     "autoencoder_third_octave",
     "autoencoder_extended",
+    "pca_t2_spe_extended",
+    "mahalanobis_extended",
+    "isolation_forest_extended",
 )
 AUTOENCODERS = ("autoencoder_third_octave", "autoencoder_extended")
+EXTENDED = (
+    "autoencoder_extended",
+    "pca_t2_spe_extended",
+    "mahalanobis_extended",
+    "isolation_forest_extended",
+)
+MODEL_TYPES = ("pca", "mahalanobis", "isolation_forest", "autoencoder")
+
+
+def model_type(candidate: str) -> str:
+    """The model family of a candidate, whatever its input set."""
+    if candidate.startswith("pca"):
+        return "pca"
+    if candidate.startswith("mahalanobis"):
+        return "mahalanobis"
+    if candidate.startswith("isolation_forest"):
+        return "isolation_forest"
+    return "autoencoder"
+
+
+def input_set(candidate: str) -> str:
+    if candidate in EXTENDED:
+        return "extended"
+    return "third_octave" if candidate == "autoencoder_third_octave" else "summary"
+
+
 TEMP_RESID = "temp_resid_c"
 EPS = 1e-12
 
@@ -83,10 +114,10 @@ def _log(v: np.ndarray) -> np.ndarray:
 def features(df: pd.DataFrame, candidate: str) -> tuple[np.ndarray, list[str]]:
     """Feature matrix for a candidate: energies and RMS values on a log scale, the temperature
     residual in degrees C."""
-    if candidate in AUTOENCODERS:
+    if candidate in AUTOENCODERS or candidate in EXTENDED:
         cols = toct_columns(df)
         parts = [_log(df[c].to_numpy(dtype=float)) for c in cols]
-        if candidate == "autoencoder_extended":
+        if candidate in EXTENDED:
             extra = [*ENV_BANDS, "hf_rms_g"]
             parts += [_log(df[c].to_numpy(dtype=float)) for c in extra]
             parts.append(df[TEMP_RESID].to_numpy(dtype=float))
@@ -146,6 +177,17 @@ class Settings:
         return f"{self.candidate}, {self.threshold_mode}"
 
 
+def sweep_percentiles(cfg: dict[str, Any]) -> list[float]:
+    """Every percentile a model keeps a threshold for: the operating-curve sweep, its extension below the
+    99th percentile and the operating percentile."""
+    nb = cfg["models"]["nbm"]
+    return sorted(
+        {float(p) for p in nb["sweep_percentiles"]}
+        | {float(p) for p in nb.get("sweep_extension_percentiles", [])}
+        | {float(nb["threshold_percentile"])}
+    )
+
+
 def settings_grid(cfg: dict[str, Any]) -> list[Settings]:
     """Every candidate with each autoencoder network size and training length in the selection grid and
     each threshold mode, simplest first."""
@@ -165,7 +207,7 @@ def settings_grid(cfg: dict[str, Any]) -> list[Settings]:
 
 def complexity(s: Settings) -> tuple[int, int, int, int]:
     return (
-        CANDIDATES.index(s.candidate),
+        MODEL_TYPES.index(model_type(s.candidate)),
         sum(s.hidden),
         s.epochs,
         0 if s.threshold_mode == "single" else 1,
@@ -297,8 +339,8 @@ class PointModel:
     info: dict[str, Any] = field(default_factory=dict)
 
     def raw_scores(self, z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        cand = self.settings.candidate
-        if cand == "pca_t2_spe":
+        cand = model_type(self.settings.candidate)
+        if cand == "pca":
             p = self.model
             t = p.transform(z)
             t2 = np.sum(t**2 / p.explained_variance_, axis=1)
@@ -366,15 +408,16 @@ def check_training_rows(
 def _fit_estimator(z: np.ndarray, s: Settings, cfg: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     m = cfg["models"]
     seed = m["seed"]
-    if s.candidate == "pca_t2_spe":
+    kind = model_type(s.candidate)
+    if kind == "pca":
         model = PCA(n_components=m["nbm"]["pca_variance_kept"], svd_solver="full", random_state=seed).fit(z)
         t = model.transform(z)
         t2 = np.sum(t**2 / model.explained_variance_, axis=1)
         spe = np.sum((z - model.inverse_transform(t)) ** 2, axis=1)
         return model, {"t2_med": float(np.median(t2)) or 1.0, "spe_med": float(np.median(spe)) or 1.0}
-    if s.candidate == "mahalanobis":
+    if kind == "mahalanobis":
         return LedoitWolf().fit(z).precision_, {}
-    if s.candidate == "isolation_forest":
+    if kind == "isolation_forest":
         return IsolationForest(
             n_estimators=m["nbm"]["isolation_forest"]["n_estimators"], random_state=seed
         ).fit(z), {}
@@ -464,7 +507,7 @@ def fit_point(
             "temp_fit": tf.to_dict(),
         }
     )
-    pcts = sorted(set(nb["sweep_percentiles"]) | {nb["threshold_percentile"]})
+    pcts = sweep_percentiles(cfg)
     oh = _one_hot(clean, bands)
     fitted: dict[tuple[str, tuple[int, ...], int], tuple[Scaler, Any, dict[str, Any], np.ndarray]] = {}
     for s in settings_list:
@@ -630,7 +673,7 @@ def score_point(
             "top_contributors": contrib_txt,
         }
     )[span]
-    pcts = sorted(set(nb["sweep_percentiles"]) | {nb["threshold_percentile"]})
+    pcts = sweep_percentiles(cfg)
     b = out["speed_band"].to_numpy()
     for p in pcts:
         out[f"thr_{p:g}"] = model.threshold_for(b, p)

@@ -298,6 +298,23 @@ def combine(curves: list[pd.DataFrame]) -> pd.DataFrame:
     return g.drop(columns=["chance_x"])
 
 
+def curve_floor(
+    curves: dict[str, pd.DataFrame], budget: float, sweep: list[float], extension: list[float]
+) -> float:
+    """The operating curve's lowest percentile: the configured sweep's lowest, extended down the extension
+    list until every candidate's pooled curve reaches the budget (its highest false-episode rate at or
+    above the floor is at least the budget); the extension's last value if none does."""
+    floor = min(sweep)
+    for p in sorted(extension, reverse=True):
+        if all(
+            float(c.loc[c["percentile"] >= floor, "false_per_asset_month"].max()) >= budget
+            for c in curves.values()
+        ):
+            return floor
+        floor = p
+    return floor
+
+
 def select_champion(sel: pd.DataFrame, n_conditions: int, margin_conditions: int) -> str:
     """Highest skill (catch share minus chance at the Vendor Rules' false-episode budget, both folds
     combined); among settings within margin_conditions of it, the simplest."""
@@ -425,7 +442,7 @@ def train_task(
     ctx = tasks._context(store)
     grid = nbm.settings_grid(cfg)
     op_p = float(nb["threshold_percentile"])
-    pcts = sorted({float(p) for p in nb["sweep_percentiles"]} | {op_p})
+    pcts = nbm.sweep_percentiles(cfg)
     n_assets = inp["pts"]["asset_id"].nunique()
     persist = int(cfg["models"]["severity"]["alert_persistence_hours"])
     fold_rows: list[dict[str, Any]] = []
@@ -452,17 +469,30 @@ def train_task(
             for pk in PERSISTENCES:
                 c = _curve(results, s.key, pcts, pk, conds_f, inp["conds"], f["score"], n_assets, cfg, ctx)
                 curves.setdefault((s.key, pk), []).append(c.assign(fold=k))
-            c6 = curves[(s.key, persist)][-1]
-            at = ev.at_budget(c6, vrow["false_per_asset_month"])
-            op = c6[c6["percentile"] == op_p].iloc[0]
-            fold_rows.append(_fold_row(k, s, op, at, vrow, factor))
         fold_models[k], fold_args[k] = models, args
         LOG.info("fold_done fold=%s factor=%.3f", k, factor)
     vend = pd.DataFrame(vendor_rows)
     budget = float(vend["false_episodes"].sum() / vend["asset_months"].sum())
+    floor = curve_floor(
+        {s.key: combine(curves[(s.key, persist)]) for s in grid},
+        budget,
+        [float(p) for p in nb["sweep_percentiles"]],
+        [float(p) for p in nb.get("sweep_extension_percentiles", [])],
+    )
+    LOG.info("curve floor percentile %s for budget %.4f", floor, budget)
+    for s in grid:
+        for c in curves[(s.key, persist)]:
+            k = int(c["fold"].iat[0])
+            cc = c[c["percentile"] >= floor]
+            vrow = vend[vend["fold"] == k].iloc[0].to_dict()
+            at = ev.at_budget(cc, vrow["false_per_asset_month"])
+            op = cc[cc["percentile"] == op_p].iloc[0]
+            fold_rows.append(_fold_row(k, s, op, at, vrow, factors[k][0]))
+    pool = set(nb.get("selection_candidates") or nb["candidates"])
     sel_rows = []
     for s in grid:
         comb = combine(curves[(s.key, persist)])
+        comb = comb[comb["percentile"] >= floor]
         at = ev.at_budget(comb, budget)
         op = comb[comb["percentile"] == op_p].iloc[0]
         sel_rows.append(
@@ -481,12 +511,19 @@ def train_task(
                 "false_per_asset_month_operating": float(op["false_per_asset_month"]),
                 "vendor_false_per_asset_month": budget,
                 "vendor_caught_share": float(vend["caught"].sum() / max(vend["conditions"].sum(), 1)),
+                "input_set": nbm.input_set(s.candidate),
+                "pool": "selection" if s.candidate in pool else "ablation",
+                "curve_false_max": float(comb["false_per_asset_month"].max()),
+                "curve_floor_percentile": floor,
             }
         )
     sel = pd.DataFrame(sel_rows)
     order = sorted(grid, key=nbm.complexity)
     sel["complexity_rank"] = sel["settings"].map({s.key: i for i, s in enumerate(order)})
-    champion_key = select_champion(sel, int(sel["conditions"].max()), nb["champion_margin_conditions"])
+    in_pool = sel[sel["pool"] == "selection"]
+    champion_key = select_champion(
+        in_pool, int(in_pool["conditions"].max()), nb["champion_margin_conditions"]
+    )
     sel["champion"] = sel["settings"] == champion_key
     champ = next(s for s in grid if s.key == champion_key)
     LOG.info("champion settings=%s", champion_key)
@@ -545,6 +582,8 @@ def train_task(
                 "epochs": champ.epochs,
                 "plausibility_factor": factor,
                 "plausibility_ratios": n_ratios,
+                "curve_floor_percentile": floor,
+                "selection_candidates": ",".join(sorted(pool)),
                 "fold1_plausibility_factor": factors.get(1, (np.nan, 0))[0],
                 "fold2_plausibility_factor": factors.get(2, (np.nan, 0))[0],
                 "vendor_budget_false_per_asset_month": budget,
@@ -678,6 +717,12 @@ def _log_model(model: Any, sel: pd.DataFrame) -> Any:
 
 # ---------------------------------------------------------------- scoring run and levels
 
+CONTROLLER_CRITERIA = (
+    "TSC pump-on pressure low",
+    "thermistor at limit",
+    "sustained cavitation",
+    "discharge temperature",
+)
 ALARM_CRITERIA = {
     "spindle": {
         "temperature residual",
@@ -709,14 +754,13 @@ def score_task(store: Store, cfg: dict[str, Any], model: Any, model_version: str
     with its re-centering and plausibility outcome) and the shadow-year segment stats for the advisory."""
     if cfg["evaluation"].get("holdout_shadow", True):
         raise ValueError("scoring the shadow year needs evaluation.holdout_shadow false")
-    nb = cfg["models"]["nbm"]
     b = splits.boundaries(cfg)
     inp = load_inputs(store, cfg, b["shadow"][1])
     sc, segs = model.score_span(inp["ind"], inp["win"], b["shadow"][0], b["shadow"][1], inp["ambient"])
     assets = inp["pts"].set_index("point_id")["asset_id"]
     sc["asset_id"] = sc["point_id"].map(assets)
     segs["asset_id"] = segs["point_id"].map(assets)
-    pcts = sorted({float(p) for p in nb["sweep_percentiles"]} | {float(nb["threshold_percentile"])})
+    pcts = nbm.sweep_percentiles(cfg)
     parts = []
     for p in pcts:
         for k in PERSISTENCES:
@@ -871,7 +915,9 @@ def ml_levels(
     thr_col: str = "threshold",
     persistence: int | None = None,
 ) -> pd.DataFrame:
-    """The ML Model's ALERT episodes per asset with their ALARM start (criterion and 14-day escalation)."""
+    """The ML Model's ALERT episodes per asset with their ALARM start (criterion and 14-day escalation), on
+    the full criteria (the operating result) and on the sensor criteria only (alarm_sensor_*: without the
+    criteria that read controller signals, for the comparison with the Vendor Rules)."""
     sv = cfg["models"]["severity"]
     k = persistence or int(sv["alert_persistence_hours"])
     eps = persisted_episodes(scores, thr_col, k, cfg)
@@ -886,9 +932,27 @@ def ml_levels(
         )
         for a, g in s.groupby("asset_id")
     }
-    return severity.alarm_starts(eps, criteria, operating, int(sv["escalation_days"])).assign(
-        method="ml_model"
+    days = int(sv["escalation_days"])
+    full = severity.alarm_starts(eps, criteria, operating, days)
+    sensor = severity.alarm_starts(
+        eps, criteria[~criteria["criterion"].isin(CONTROLLER_CRITERIA)], operating, days
     )
+    return _with_sensor(full, sensor).assign(method="ml_model")
+
+
+def _with_sensor(full: pd.DataFrame, sensor: pd.DataFrame) -> pd.DataFrame:
+    cols = ["alarm_criterion_ts", "alarm_criterion", "alarm_ts", "alarm_cause"]
+    out = full.copy()
+    for c in cols:
+        v = (
+            sensor[c].reset_index(drop=True).set_axis(out.index)
+            if len(sensor)
+            else pd.Series(index=out.index, dtype=object)
+        )
+        out[c.replace("alarm_", "alarm_sensor_", 1)] = v
+    for c in ("alarm_sensor_criterion_ts", "alarm_sensor_ts"):
+        out[c] = pd.to_datetime(out[c], utc=True)
+    return out
 
 
 def vendor_levels(vendor: pd.DataFrame, ind: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
@@ -923,9 +987,8 @@ def vendor_levels(vendor: pd.DataFrame, ind: pd.DataFrame, cfg: dict[str, Any]) 
         )
         for a, g in meas.groupby("asset_id")
     }
-    return severity.alarm_starts(eps, crit, operating, int(sv["escalation_days"])).assign(
-        method="vendor_rules"
-    )
+    full = severity.alarm_starts(eps, crit, operating, int(sv["escalation_days"]))
+    return _with_sensor(full, full).assign(method="vendor_rules")
 
 
 def _scores_for_levels(store: Store, held_out: bool) -> pd.DataFrame:
@@ -1030,7 +1093,17 @@ def _quarters(span: tuple[pd.Timestamp, pd.Timestamp]) -> list[tuple[str, tuple[
 def _levels(store: Store) -> pd.DataFrame:
     lev = store.read_pd("gold", "level_episodes")
     return tasks._utc_cols(
-        lev, ["opened", "last", "closed", "alarm_ts", "alarm_criterion_ts", "alarm_escalation_ts"]
+        lev,
+        [
+            "opened",
+            "last",
+            "closed",
+            "alarm_ts",
+            "alarm_criterion_ts",
+            "alarm_escalation_ts",
+            "alarm_sensor_ts",
+            "alarm_sensor_criterion_ts",
+        ],
     )
 
 
@@ -1051,6 +1124,8 @@ def _ml_curve_eps(
     ex["ts"] = _utc(ex["ts"])
     ex = ex[(ex["persistence_hours"] == k) & (ex["ts"] >= span[0]) & (ex["ts"] < span[1])]
     gap = cfg["evaluation"]["catch"]["episode_gap_days"]
+    floor = float(store.read_pd("gold", "ml_settings")["curve_floor_percentile"].iat[0])
+    ex = ex[ex["sweep"] >= floor]
     return {
         float(p): severity.episodes(g[["asset_id", "point_id", "ts"]], gap) for p, g in ex.groupby("sweep")
     }
@@ -1076,6 +1151,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     gap = cfg["evaluation"]["catch"]["episode_gap_days"]
     ch = _ch_episodes(store, cfg)
     periods = [(f"fold {f['fold']}", f["score"]) for f in splits.folds(cfg)]
+    periods.append(("training", (b["train"][0], splits.training_cutoff(cfg))))
     if not held:
         periods += [("shadow", b["shadow"]), *_quarters(b["shadow"])]
     rows, by_type, ch_rows = [], [], []
@@ -1092,11 +1168,21 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
             )
             rows.append({**r, "period": name})
             by_type.append(caught.assign(period=name))
-            for esc, lvl in ((True, "ALARM"), (False, "ALARM without the 14-day rule")):
-                av = r2.alarm_view(e, esc)
+            for esc, sensor, lvl in (
+                (True, False, "ALARM"),
+                (False, False, "ALARM without the 14-day rule"),
+                (True, True, "ALARM on sensor criteria"),
+                (False, True, "ALARM on sensor criteria without the 14-day rule"),
+            ):
+                av = r2.alarm_view(e, esc, sensor)
                 ra, _ = r2.method_row(label, lvl, av, fails, conds, span, n_assets, window, ctx, cfg)
                 only14 = (
-                    int((e["alarm_escalation_ts"].notna() & e["alarm_criterion_ts"].isna()).sum())
+                    int(
+                        (
+                            e["alarm_escalation_ts"].notna()
+                            & e["alarm_sensor_criterion_ts" if sensor else "alarm_criterion_ts"].isna()
+                        ).sum()
+                    )
                     if esc
                     else 0
                 )
@@ -1113,6 +1199,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     methods = pd.DataFrame(rows)
     store.write_pd(methods, "gold", "eval_methods")
+    store.write_pd(false_alarms_by_criterion(lev, conds, periods), "gold", "eval_false_alarms_by_criterion")
     store.write_pd(pd.concat(by_type, ignore_index=True), "gold", "eval_catch_by_condition")
     store.write_pd(pd.DataFrame(ch_rows), "gold", "eval_controller_health")
     out["methods"] = methods[
@@ -1593,3 +1680,42 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         "scoring_log_rows": len(log),
         "profiles": profiles,
     }
+
+
+def false_alarms_by_criterion(
+    lev: pd.DataFrame, conds: pd.DataFrame, periods: list[tuple[str, tuple[pd.Timestamp, pd.Timestamp]]]
+) -> pd.DataFrame:
+    """False ALARMs (no confirmed condition on the asset while the ALARM was open) by the criterion that
+    started them, per period and method, on the full criteria and on the sensor criteria only."""
+    rows = []
+    for name, span in periods:
+        lev_name = "shadow" if name.startswith("shadow") else name
+        L = lev[lev["period"] == lev_name]
+        for method, e in L.groupby("method"):
+            for basis, pre in (("full criteria", "alarm_"), ("sensor criteria", "alarm_sensor_")):
+                a = e[e[f"{pre}ts"].notna()]
+                a = a[(a[f"{pre}ts"] >= span[0]) & (a[f"{pre}ts"] < span[1])]
+                if a.empty:
+                    continue
+                view = a.assign(opened=a[f"{pre}ts"], point_id="")[
+                    ["asset_id", "point_id", "opened", "last", "closed"]
+                ]
+                false = r2.false_mask(view.reset_index(drop=True), conds).to_numpy()
+                cause = (
+                    a[f"{pre}cause"]
+                    .fillna("criterion")
+                    .astype(str)
+                    .str.replace(r"^vendor .*", "vendor alarm level", regex=True)
+                )
+                for c, g in pd.DataFrame({"cause": cause.to_numpy(), "false": false}).groupby("cause"):
+                    rows.append(
+                        {
+                            "period": name,
+                            "method": "ML Model" if method == "ml_model" else "Vendor Rules",
+                            "basis": basis,
+                            "criterion": c,
+                            "alarms": len(g),
+                            "false_alarms": int(g["false"].sum()),
+                        }
+                    )
+    return pd.DataFrame(rows)

@@ -23,6 +23,7 @@ from scipy.stats import theilslopes
 
 LOCAL_TZ = "America/Chicago"
 DAY = pd.Timedelta(days=1)
+MET_SHARE = 0.5
 STAGE_BANDS = {"bpfo": "env_bpfo", "bpfi": "env_bpfi", "bsf": "env_bsf"}
 
 
@@ -98,8 +99,9 @@ def escalation_time(
     """When an open ALERT escalates by persistence: the first hour at which the triggering condition has
     been met on `days` operating days in a row, counted from the opening day. `operating` holds one row
     per measured hour in the episode (ts, met); a day is operating when it has a measured hour and met
-    when any of its hours meets the condition; days without operation are skipped, and an operating day
-    without the condition restarts the count."""
+    when at least half of its measured hours meet the condition (step 6 design freeze 2026-10-30; was any
+    hour); days without operation are skipped, and an operating day without the condition restarts the
+    count."""
     if operating.empty:
         return None
     o = operating[(operating["ts"] >= opened) & (operating["ts"] < closed)]
@@ -108,7 +110,7 @@ def escalation_time(
     o = o.assign(day=_local_day(o["ts"]).to_numpy())
     run = 0
     for _, g in o.groupby("day", sort=True):
-        if g["met"].any():
+        if g["met"].astype(bool).mean() >= MET_SHARE:
             run += 1
             if run >= days:
                 return pd.Timestamp(g.loc[g["met"], "ts"].min())
