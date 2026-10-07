@@ -1155,6 +1155,8 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     if not held:
         periods += [("shadow", b["shadow"]), *_quarters(b["shadow"])]
     rows, by_type, ch_rows = [], [], []
+    outcomes: list[pd.DataFrame] = []
+    conf = r2.confirmations(conds, wo)
     for name, span in periods:
         lev_name = "shadow" if name.startswith("shadow") else name
         L = lev[lev["period"] == lev_name]
@@ -1186,7 +1188,18 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
                     if esc
                     else 0
                 )
+                ao = r2.alarm_outcomes(e, conf, wo, span, b["shadow"][1], esc, sensor)
+                n_false = int(ao["false_alarm"].sum())
+                ra.update(
+                    {
+                        "episodes": len(ao),
+                        "false_episodes": n_false,
+                        "false_per_asset_month": n_false / r2.asset_months(span, n_assets),
+                        "pending": int((ao["outcome"] == r2.ALARM_OUTCOMES[4]).sum()),
+                    }
+                )
                 rows.append({**ra, "period": name, "alarms_from_14_day_rule_alone": only14})
+                outcomes.append(ao.assign(period=name, method=label, level=lvl))
         r, _ = r2.method_row(
             "Controller Health", "ALERT", ch.assign(point_id=""), cp, conds, span, n_assets, window, ctx, cfg
         )
@@ -1199,7 +1212,9 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     methods = pd.DataFrame(rows)
     store.write_pd(methods, "gold", "eval_methods")
-    store.write_pd(false_alarms_by_criterion(lev, conds, periods), "gold", "eval_false_alarms_by_criterion")
+    ao_all = pd.concat(outcomes, ignore_index=True) if outcomes else pd.DataFrame()
+    store.write_pd(ao_all, "gold", "eval_alarm_outcomes")
+    store.write_pd(false_alarms_by_criterion(ao_all), "gold", "eval_false_alarms_by_criterion")
     store.write_pd(pd.concat(by_type, ignore_index=True), "gold", "eval_catch_by_condition")
     store.write_pd(pd.DataFrame(ch_rows), "gold", "eval_controller_health")
     out["methods"] = methods[
@@ -1682,40 +1697,17 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def false_alarms_by_criterion(
-    lev: pd.DataFrame, conds: pd.DataFrame, periods: list[tuple[str, tuple[pd.Timestamp, pd.Timestamp]]]
-) -> pd.DataFrame:
-    """False ALARMs (no confirmed condition on the asset while the ALARM was open) by the criterion that
-    started them, per period and method, on the full criteria and on the sensor criteria only."""
-    rows = []
-    for name, span in periods:
-        lev_name = "shadow" if name.startswith("shadow") else name
-        L = lev[lev["period"] == lev_name]
-        for method, e in L.groupby("method"):
-            for basis, pre in (("full criteria", "alarm_"), ("sensor criteria", "alarm_sensor_")):
-                a = e[e[f"{pre}ts"].notna()]
-                a = a[(a[f"{pre}ts"] >= span[0]) & (a[f"{pre}ts"] < span[1])]
-                if a.empty:
-                    continue
-                view = a.assign(opened=a[f"{pre}ts"], point_id="")[
-                    ["asset_id", "point_id", "opened", "last", "closed"]
-                ]
-                false = r2.false_mask(view.reset_index(drop=True), conds).to_numpy()
-                cause = (
-                    a[f"{pre}cause"]
-                    .fillna("criterion")
-                    .astype(str)
-                    .str.replace(r"^vendor .*", "vendor alarm level", regex=True)
-                )
-                for c, g in pd.DataFrame({"cause": cause.to_numpy(), "false": false}).groupby("cause"):
-                    rows.append(
-                        {
-                            "period": name,
-                            "method": "ML Model" if method == "ml_model" else "Vendor Rules",
-                            "basis": basis,
-                            "criterion": c,
-                            "alarms": len(g),
-                            "false_alarms": int(g["false"].sum()),
-                        }
-                    )
-    return pd.DataFrame(rows)
+def false_alarms_by_criterion(outcomes: pd.DataFrame) -> pd.DataFrame:
+    """False ALARMs by the criterion that started them, per period, method and level, from the ALARM
+    outcome table (vendor alarm-level rules grouped as one criterion)."""
+    if outcomes.empty:
+        return outcomes
+    o = outcomes.copy()
+    o["criterion"] = (
+        o["cause"]
+        .fillna("criterion")
+        .astype(str)
+        .str.replace(r"^vendor .*", "vendor alarm level", regex=True)
+    )
+    g = o.groupby(["period", "method", "level", "criterion"])
+    return g.agg(alarms=("false_alarm", "size"), false_alarms=("false_alarm", "sum")).reset_index()

@@ -357,3 +357,100 @@ def miss_reason(
         if bool(s.get("vendor_over", pd.Series(False)).any())
         else "no precursor in the inputs"
     )
+
+
+ALARM_OUTCOMES = (
+    "failure followed",
+    "condition confirmed and repaired before failure",
+    "repair or PM reached the asset first for an unrelated reason",
+    "nothing found",
+    "pending at the record end",
+)
+
+
+def confirmations(conds: pd.DataFrame, wo: pd.DataFrame) -> pd.DataFrame:
+    """Every confirmation on an asset, any condition type and any work order type: the confirmed conditions
+    (unplanned failures marked), inspections that found a condition and PM findings (asset_key, ts,
+    failure, wo_id)."""
+    c = pd.DataFrame(
+        {
+            "asset_key": conds["asset_key"],
+            "ts": conds["credit_ts"],
+            "failure": conds["unplanned"].astype(bool),
+            "wo_id": conds["wo_id"],
+        }
+    )
+    nff = wo["no_fault_found"]
+    found = wo[(wo["wo_type"] == "inspection") & nff.notna() & ~nff.fillna(True).astype(bool)]
+    pm = wo[(wo["wo_type"] == "pm") & wo["failure_code"].notna()]
+    extra = pd.concat([found, pm], ignore_index=True)
+    e = pd.DataFrame(
+        {"asset_key": extra["asset_id"], "ts": extra["opened"], "failure": False, "wo_id": extra["wo_id"]}
+    )
+    out = pd.concat([c, e[~e["wo_id"].isin(set(c["wo_id"]))]], ignore_index=True)
+    out["ts"] = pd.to_datetime(out["ts"], utc=True)
+    return out
+
+
+def alarm_outcomes(
+    lev: pd.DataFrame,
+    conf: pd.DataFrame,
+    wo: pd.DataFrame,
+    span: tuple[pd.Timestamp, pd.Timestamp],
+    record_end: pd.Timestamp,
+    escalation: bool = True,
+    sensor_only: bool = False,
+) -> pd.DataFrame:
+    """Each ALARM episode starting in the span with its outcome over the episode's open interval (from the
+    ALERT opening to its close): failure followed (an unplanned failure on the asset); condition confirmed
+    and repaired before failure (any other confirmation); repair or PM reached the asset first for an
+    unrelated reason (a repair or PM work order on the asset with nothing confirmed); nothing found;
+    pending at the record end (still open at the end with nothing confirmed). A false ALARM is one with no
+    confirmation that is not pending."""
+    pre = "alarm_sensor_" if sensor_only else "alarm_"
+    col = f"{pre}ts" if escalation else f"{pre}criterion_ts"
+    a = lev[lev[col].notna()]
+    a = a[(a[col] >= span[0]) & (a[col] < span[1])]
+    work = wo[wo["wo_type"].isin((*REPAIRS, "pm", "rebuild_order"))]
+    rows = []
+    for r in a.itertuples():
+        c = conf[(conf["asset_key"] == r.asset_id) & (conf["ts"] >= r.opened) & (conf["ts"] < r.closed)]
+        if c["failure"].any():
+            out = ALARM_OUTCOMES[0]
+        elif len(c):
+            out = ALARM_OUTCOMES[1]
+        elif r.closed > record_end:
+            out = ALARM_OUTCOMES[4]
+        elif (
+            work["asset_id"].str.startswith(r.asset_id)
+            & (work["opened"] >= r.opened)
+            & (work["opened"] < r.closed)
+        ).any():
+            out = ALARM_OUTCOMES[2]
+        else:
+            out = ALARM_OUTCOMES[3]
+        rows.append(
+            {
+                "asset_id": r.asset_id,
+                "alert_opened": r.opened,
+                "alarm_ts": getattr(r, col),
+                "closed": r.closed,
+                "cause": getattr(r, f"{pre}cause", None),
+                "outcome": out,
+                "false_alarm": out in (ALARM_OUTCOMES[2], ALARM_OUTCOMES[3]),
+                "work_orders": ",".join(c["wo_id"].astype(str)),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "asset_id",
+            "alert_opened",
+            "alarm_ts",
+            "closed",
+            "cause",
+            "outcome",
+            "false_alarm",
+            "work_orders",
+        ],
+    )

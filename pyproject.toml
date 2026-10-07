@@ -1,6 +1,6 @@
 [project]
 name = "pdm"
-version = "0.2.0"
+version = "0.2.1"
 description = "Condition monitoring and predictive maintenance for a CNC machining fleet"
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "Brian Davis" }]

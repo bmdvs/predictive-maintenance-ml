@@ -209,3 +209,37 @@ def test_bootstrap_intervals_resample_whole_conditions():
     out = r2.bootstrap(vend_caught, cover_v, ml_caught, cover_ml, 99.5, idx, n_all, 10.0, 200, 1)
     assert out["catch_diff_lo"] <= out["catch_diff_hi"] and out["false_diff_lo"] <= out["false_diff_hi"]
     assert out["draws"] == 200
+
+
+def test_alarm_outcomes_and_false_alarms():
+    t = _ts("2025-09-01")
+    lev = pd.DataFrame(
+        {
+            "asset_id": ["A", "B", "C", "D", "E"],
+            "opened": [t] * 5,
+            "closed": [t + pd.Timedelta(days=20)] * 4 + [_ts("2026-07-10")],
+            "alarm_ts": [t + pd.Timedelta(days=2)] * 5,
+            "alarm_cause": ["temperature residual"] * 5,
+        }
+    )
+    conf = pd.DataFrame(
+        {
+            "asset_key": ["A", "B"],
+            "ts": [t + pd.Timedelta(days=5), t + pd.Timedelta(days=1)],
+            "failure": [True, False],
+            "wo_id": ["W1", "I2"],
+        }
+    )
+    wo = pd.DataFrame({"wo_type": ["corrective"], "asset_id": ["C"], "opened": [t + pd.Timedelta(days=3)]})
+    o = r2.alarm_outcomes(lev, conf, wo, (t, _ts("2026-07-01")), _ts("2026-07-01")).set_index("asset_id")[
+        "outcome"
+    ]
+    assert list(o) == [
+        "failure followed",
+        "condition confirmed and repaired before failure",
+        "repair or PM reached the asset first for an unrelated reason",
+        "nothing found",
+        "pending at the record end",
+    ]
+    f = r2.alarm_outcomes(lev, conf, wo, (t, _ts("2026-07-01")), _ts("2026-07-01"))
+    assert list(f["false_alarm"]) == [False, False, True, True, False]
