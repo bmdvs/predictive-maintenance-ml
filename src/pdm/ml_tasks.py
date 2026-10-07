@@ -735,7 +735,6 @@ ALARM_CRITERIA = {
         "velocity zone D",
         "stage 4 bearing signature",
         "temperature residual",
-        "TSC pump-on pressure low",
         "sustained cavitation",
     },
     "flood_pump": {"velocity zone D", "stage 4 bearing signature", "temperature residual"},
@@ -905,6 +904,11 @@ def ml_alarm_criteria(
         [p.reindex(columns=["asset_id", "hour_utc", "criterion"]) for p in parts], ignore_index=True
     )
     out["hour_utc"] = pd.to_datetime(out["hour_utc"], utc=True)
+    allowed = [
+        c in ALARM_CRITERIA[severity.asset_class(a)]
+        for a, c in zip(out["asset_id"], out["criterion"], strict=True)
+    ]
+    out = out[np.asarray(allowed, dtype=bool)]
     return out.drop_duplicates().sort_values(["asset_id", "hour_utc", "criterion"]).reset_index(drop=True)
 
 
@@ -941,7 +945,14 @@ def ml_levels(
 
 
 def _with_sensor(full: pd.DataFrame, sensor: pd.DataFrame) -> pd.DataFrame:
-    cols = ["alarm_criterion_ts", "alarm_criterion", "alarm_ts", "alarm_cause"]
+    cols = [
+        "alarm_criterion_ts",
+        "alarm_criterion",
+        "alarm_ts",
+        "alarm_cause",
+        "alarm_with14_ts",
+        "alarm_with14_cause",
+    ]
     out = full.copy()
     for c in cols:
         v = (
@@ -950,7 +961,7 @@ def _with_sensor(full: pd.DataFrame, sensor: pd.DataFrame) -> pd.DataFrame:
             else pd.Series(index=out.index, dtype=object)
         )
         out[c.replace("alarm_", "alarm_sensor_", 1)] = v
-    for c in ("alarm_sensor_criterion_ts", "alarm_sensor_ts"):
+    for c in ("alarm_sensor_criterion_ts", "alarm_sensor_ts", "alarm_sensor_with14_ts"):
         out[c] = pd.to_datetime(out[c], utc=True)
     return out
 
@@ -1103,6 +1114,8 @@ def _levels(store: Store) -> pd.DataFrame:
             "alarm_escalation_ts",
             "alarm_sensor_ts",
             "alarm_sensor_criterion_ts",
+            "alarm_with14_ts",
+            "alarm_sensor_with14_ts",
         ],
     )
 
@@ -1168,13 +1181,15 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
             r, caught = r2.method_row(
                 label, "ALERT", r2.alert_view(e), cp, conds, span, n_assets, window, ctx, cfg
             )
-            rows.append({**r, "period": name})
+            rows.append(
+                {**r, **r2.false_two_ways(r2.alert_view(e), conds, wo, span, n_assets), "period": name}
+            )
             by_type.append(caught.assign(period=name))
             for esc, sensor, lvl in (
-                (True, False, "ALARM"),
-                (False, False, "ALARM without the 14-day rule"),
-                (True, True, "ALARM on sensor criteria"),
-                (False, True, "ALARM on sensor criteria without the 14-day rule"),
+                (False, False, "ALARM"),
+                (True, False, "ALARM with the 14-day rule (tested variant)"),
+                (False, True, "ALARM on sensor criteria"),
+                (True, True, "ALARM on sensor criteria with the 14-day rule (tested variant)"),
             ):
                 av = r2.alarm_view(e, esc, sensor)
                 ra, _ = r2.method_row(label, lvl, av, fails, conds, span, n_assets, window, ctx, cfg)
@@ -1190,11 +1205,15 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
                 )
                 ao = r2.alarm_outcomes(e, conf, wo, span, b["shadow"][1], esc, sensor)
                 n_false = int(ao["false_alarm"].sum())
+                n_nothing = int((ao["outcome"] == r2.ALARM_OUTCOMES[3]).sum())
                 ra.update(
                     {
                         "episodes": len(ao),
                         "false_episodes": n_false,
                         "false_per_asset_month": n_false / r2.asset_months(span, n_assets),
+                        "unrelated_first": n_false - n_nothing,
+                        "false_excl_unrelated": n_nothing,
+                        "false_excl_unrelated_per_asset_month": n_nothing / r2.asset_months(span, n_assets),
                         "pending": int((ao["outcome"] == r2.ALARM_OUTCOMES[4]).sum()),
                     }
                 )

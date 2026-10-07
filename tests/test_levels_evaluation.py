@@ -75,8 +75,10 @@ def test_alarm_needs_an_open_alert_and_reports_the_14_day_rule_apart():
     op = {"A": pd.DataFrame({"ts": hours, "point_id": "P", "met": True})}
     out = severity.alarm_starts(eps, crit, op, 14)
     assert out.at[0, "alarm_ts"] == _ts("2025-09-02") and out.at[0, "alarm_cause"] == "velocity zone D"
-    assert pd.isna(out.at[1, "alarm_criterion_ts"]) and out.at[1, "alarm_cause"] == "14-day persistence"
-    assert out.at[1, "alarm_ts"] < _ts("2025-11-20")
+    assert pd.isna(out.at[1, "alarm_ts"]) and pd.isna(out.at[1, "alarm_criterion_ts"])
+    assert out.at[1, "alarm_with14_cause"] == "14-day persistence" and out.at[1, "alarm_with14_ts"] < _ts(
+        "2025-11-20"
+    )
 
 
 def test_vendor_escalation_follows_the_rule_that_fired():
@@ -94,8 +96,9 @@ def test_vendor_escalation_follows_the_rule_that_fired():
     other = {"A": pd.DataFrame({"ts": hours, "point_id": "P", "rules": "vel_alert"})}
     same = {"A": pd.DataFrame({"ts": hours, "point_id": "P", "rules": "hf_alert,vel_alert"})}
     none = pd.DataFrame(columns=["asset_id", "hour_utc", "criterion"])
-    assert severity.alarm_starts(eps, none, other, 14)["alarm_ts"].isna().all()
-    assert severity.alarm_starts(eps, none, same, 14)["alarm_ts"].notna().all()
+    assert severity.alarm_starts(eps, none, other, 14)["alarm_with14_ts"].isna().all()
+    assert severity.alarm_starts(eps, none, same, 14)["alarm_with14_ts"].notna().all()
+    assert severity.alarm_starts(eps, none, same, 14)["alarm_ts"].isna().all()
 
 
 def test_thermistor_hours_need_consecutive_minutes():
@@ -165,6 +168,7 @@ def _eps(assets: list[str], opened: str) -> pd.DataFrame:
             "alarm_ts": pd.Series([pd.NaT] * len(assets), dtype="datetime64[ns, UTC]"),
             "alarm_criterion_ts": pd.Series([pd.NaT] * len(assets), dtype="datetime64[ns, UTC]"),
             "alarm_escalation_ts": pd.Series([pd.NaT] * len(assets), dtype="datetime64[ns, UTC]"),
+            "alarm_with14_ts": pd.Series([pd.NaT] * len(assets), dtype="datetime64[ns, UTC]"),
         }
     )
 

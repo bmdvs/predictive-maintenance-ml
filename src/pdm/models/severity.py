@@ -7,6 +7,9 @@ Model at the first hour an ALARM criterion for the asset class holds (config `se
 Vendor Rules at the first vendor alarm; for both, also when the condition that triggered the ALERT is
 met on 14 operating days in a row (days without operation are skipped, an inspection that finds
 nothing does not reset the count). WATCH is any unpersisted ML exceedance or a plausibility flag.
+The 14-day persistence escalation was removed from ALARM for both methods at the design freeze
+(2026-10-30) and is kept as a tested variant (alarm_with14_*): out of sample on the training folds it added
+13 false ALARMs for 1 confirmed condition and no failures (Vendor Rules 9 of 9 false).
 (Revision 2, renamed 2026-10-30: was WATCH, ALARM and CRITICAL for the model and WATCH and ALARM for
 the vendor rules.)
 Inputs: persisted exceedances, scored hours, hourly indicators, controller and compressor hourly
@@ -388,7 +391,15 @@ def alarm_starts(
     condition is per point)."""
     out = eps.copy()
     if out.empty:
-        for c in ("alarm_criterion_ts", "alarm_criterion", "alarm_escalation_ts", "alarm_ts", "alarm_cause"):
+        for c in (
+            "alarm_criterion_ts",
+            "alarm_criterion",
+            "alarm_escalation_ts",
+            "alarm_ts",
+            "alarm_cause",
+            "alarm_with14_ts",
+            "alarm_with14_cause",
+        ):
             out[c] = pd.Series(dtype=object)
         return out
     crit = (
@@ -422,8 +433,10 @@ def alarm_starts(
     out["alarm_criterion"] = c_name
     out["alarm_escalation_ts"] = pd.to_datetime(pd.Series(e_ts, index=out.index, dtype=object), utc=True)
     both = out[["alarm_criterion_ts", "alarm_escalation_ts"]]
-    out["alarm_ts"] = both.min(axis=1)
-    out["alarm_cause"] = np.select(
+    out["alarm_ts"] = out["alarm_criterion_ts"]
+    out["alarm_cause"] = out["alarm_criterion"]
+    out["alarm_with14_ts"] = both.min(axis=1)
+    out["alarm_with14_cause"] = np.select(
         [
             out["alarm_criterion_ts"].notna()
             & (

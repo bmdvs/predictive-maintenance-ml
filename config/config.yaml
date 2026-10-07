@@ -633,14 +633,14 @@ models:                                   # [fixed]
     watch: unpersisted_or_plausibility_flag
     alert_persistence_hours: 6              # ALERT, the action level, opens a case (was alarm_persistence_hours 6)
     alarm_persistence_hours: 3              # ALARM criteria on sensor rows, consecutive measured hours (was critical_persistence_hours 3)
-    escalation_days: 14                     # step 6 item 2: an open ALERT escalates to ALARM when its triggering condition is met on every operating day for 14 consecutive calendar days, both methods
+    escalation_days: 14                     # tested variant only (design freeze round 3, 2026-10-30: removed from ALARM for both methods on the fold evidence; reported beside the primary results); was the step 6 item 2 escalation to ALARM
     thermistor_alarm_c: 44.0                # was thermistor_critical_c
     thermistor_critical_c: 44.0             # the same limit under its original name, read only by the frozen generator's run report (generate/checks/realism_rev2.py); the package reads thermistor_alarm_c
     thermistor_persistence_minutes: 10
     temp_residual_c: {spindle: 6.0, pump: 8.0, compressor: 8.0}
     spindle_temp_slope_window_h: 24
     velocity_mm_s: {spindle: 4.5, pump: 8.5, compressor: 7.1}   # ISO 20816-3 group 2 rigid zone D (spindle, pending maker figure); ISO 10816-7 cat II zone D; ISO 20816-3 group 2 flexible zone D
-    tsc_pump_on_bar_min: 55.0
+    tsc_pump_on_bar_min: 55.0               # not an ALARM criterion since design freeze round 3 (2026-10-30: 19 of 22 false across training and both folds); stays in the advisory diagnosis
     cavitation: {hf_z: 3.0, hours: 6, pressure_drop_frac: 0.05}
     stage3: {ratio_to_floor: 3.0, harmonic: 2, of_last_hours: [2, 3]}
     stage4: {broadband_ratio: 2.0, hf_or_envelope_fall_frac: 0.30, peak_window_days: 30, velocity_slope_days: 7}

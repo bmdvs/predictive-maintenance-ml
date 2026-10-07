@@ -45,11 +45,11 @@ def alert_view(lev: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def alarm_view(lev: pd.DataFrame, escalation: bool = True, sensor_only: bool = False) -> pd.DataFrame:
-    """ALARM periods: from the ALARM start to the episode's close, with or without the 14-day rule, on the
-    full criteria or on the sensor criteria only."""
+def alarm_view(lev: pd.DataFrame, escalation: bool = False, sensor_only: bool = False) -> pd.DataFrame:
+    """ALARM periods: from the ALARM start to the episode's close, on the criteria (the primary result) or
+    with the 14-day rule (the tested variant), on the full criteria or on the sensor criteria only."""
     pre = "alarm_sensor_" if sensor_only else "alarm_"
-    start = lev[f"{pre}ts"] if escalation else lev[f"{pre}criterion_ts"]
+    start = lev[f"{pre}with14_ts"] if escalation else lev[f"{pre}ts"]
     a = lev[start.notna()].assign(opened=start[start.notna()], point_id="")
     return a[["asset_id", "point_id", "opened", "last", "closed"]].reset_index(drop=True)
 
@@ -220,14 +220,14 @@ def condition_table(
             .rename(columns={f"{name}_alert_wo_id": "wo_id"})
         )
         b = (
-            catch(alarm_view(lev, True))
+            catch(alarm_view(lev, False))
             .add_prefix(f"{name}_alarm_")
             .rename(columns={f"{name}_alarm_wo_id": "wo_id"})
         )
         c = (
-            catch(alarm_view(lev, False))
-            .add_prefix(f"{name}_alarm_no14_")
-            .rename(columns={f"{name}_alarm_no14_wo_id": "wo_id"})
+            catch(alarm_view(lev, True))
+            .add_prefix(f"{name}_alarm_with14_")
+            .rename(columns={f"{name}_alarm_with14_wo_id": "wo_id"})
         )
         out = out.merge(a, on="wo_id").merge(b, on="wo_id").merge(c, on="wo_id")
     chc = catch(ch.assign(point_id="") if len(ch) else ch).rename(
@@ -398,7 +398,7 @@ def alarm_outcomes(
     wo: pd.DataFrame,
     span: tuple[pd.Timestamp, pd.Timestamp],
     record_end: pd.Timestamp,
-    escalation: bool = True,
+    escalation: bool = False,
     sensor_only: bool = False,
 ) -> pd.DataFrame:
     """Each ALARM episode starting in the span with its outcome over the episode's open interval (from the
@@ -408,7 +408,8 @@ def alarm_outcomes(
     pending at the record end (still open at the end with nothing confirmed). A false ALARM is one with no
     confirmation that is not pending."""
     pre = "alarm_sensor_" if sensor_only else "alarm_"
-    col = f"{pre}ts" if escalation else f"{pre}criterion_ts"
+    col = f"{pre}with14_ts" if escalation else f"{pre}ts"
+    cause_col = f"{pre}with14_cause" if escalation else f"{pre}cause"
     a = lev[lev[col].notna()]
     a = a[(a[col] >= span[0]) & (a[col] < span[1])]
     work = wo[wo["wo_type"].isin((*REPAIRS, "pm", "rebuild_order"))]
@@ -435,7 +436,7 @@ def alarm_outcomes(
                 "alert_opened": r.opened,
                 "alarm_ts": getattr(r, col),
                 "closed": r.closed,
-                "cause": getattr(r, f"{pre}cause", None),
+                "cause": getattr(r, cause_col, None),
                 "outcome": out,
                 "false_alarm": out in (ALARM_OUTCOMES[2], ALARM_OUTCOMES[3]),
                 "work_orders": ",".join(c["wo_id"].astype(str)),
@@ -454,3 +455,43 @@ def alarm_outcomes(
             "work_orders",
         ],
     )
+
+
+def unrelated_work(eps: pd.DataFrame, wo: pd.DataFrame) -> np.ndarray:
+    """True where a repair, rebuild or PM work order reached the episode's asset while it was open (the
+    episode's outcome is then indeterminate when nothing was confirmed)."""
+    work = wo[wo["wo_type"].isin((*REPAIRS, "pm", "rebuild_order"))]
+    out = []
+    for r in eps.itertuples():
+        out.append(
+            bool(
+                (
+                    work["asset_id"].str.startswith(r.asset_id)
+                    & (work["opened"] >= r.opened)
+                    & (work["opened"] < r.closed)
+                ).any()
+            )
+        )
+    return np.asarray(out, dtype=bool)
+
+
+def false_two_ways(
+    eps: pd.DataFrame,
+    conds_all: pd.DataFrame,
+    wo: pd.DataFrame,
+    period: tuple[pd.Timestamp, pd.Timestamp],
+    n_assets: int,
+) -> dict[str, float]:
+    """False ALERT episodes opened in the period counted two ways: every episode with no confirmed
+    condition while open, and excluding those a repair or PM reached first (indeterminate)."""
+    e = eps[(eps["opened"] >= period[0]) & (eps["opened"] < period[1])].reset_index(drop=True)
+    if e.empty:
+        return {"unrelated_first": 0, "false_excl_unrelated": 0, "false_excl_unrelated_per_asset_month": 0.0}
+    f = false_mask(e.assign(point_id=""), conds_all).to_numpy()
+    u = unrelated_work(e, wo)
+    n = int((f & ~u).sum())
+    return {
+        "unrelated_first": int((f & u).sum()),
+        "false_excl_unrelated": n,
+        "false_excl_unrelated_per_asset_month": n / asset_months(period, n_assets),
+    }
