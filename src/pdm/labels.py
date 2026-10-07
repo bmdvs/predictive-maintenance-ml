@@ -62,7 +62,6 @@ def period_expr(cfg: dict[str, Any], ts_col: str) -> F.Column:
     d = F.to_date(F.from_utc_timestamp(F.col(ts_col), LOCAL_TZ))
     return (
         F.when(d.between(F.lit(str(s["train"][0])), F.lit(str(s["train"][1]))), "training")
-        .when(d.between(F.lit(str(s["validation"][0])), F.lit(str(s["validation"][1]))), "validation")
         .when(d.between(F.lit(str(s["shadow"][0])), F.lit(str(s["shadow"][1]))), "shadow")
         .otherwise("outside")
     )

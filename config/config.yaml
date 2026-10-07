@@ -596,6 +596,14 @@ models:                                   # [fixed]
     candidates: [pca_t2_spe, mahalanobis, isolation_forest, autoencoder_third_octave, autoencoder_extended]   # rev2 R3.3.4: fifth candidate, third-octave plus envelope fault bands, HF RMS and temperature residual
     model_scope: per_point_all_segments     # rev2 R3.3.1: one model per point over every training segment, segment-relative features (was per segment)
     recenter_days: [3, 7]                   # rev2 R3.3.2: new level from the first days after a repair or remount; no model alerts meanwhile
+    recenter_min_hours: 24                  # step 6: the level window ends after recenter_days[0] once this many measured hours have accumulated, at most recenter_days[1]
+    recenter_floor_hours: 6                 # step 6: a segment with fewer measured hours by recenter_days[1] has no level and is not scored
+    min_key_hours: 20                       # step 6: operating-key (load regime and speed band) offsets need this many training hours, otherwise the pooled offset
+    selection_grid:                         # step 6, R3.1: settings chosen on both folds combined
+      threshold_mode: [single, speed_band]  # R3.3.6: one threshold per point, or one per spindle speed band
+      autoencoder_hidden: [[16, 6, 16], [32, 12, 32]]   # network size (the step 5 design used [16, 6, 16])
+      autoencoder_epochs: [200, 400]        # training length (the step 5 design used 200)
+    selection_n_jobs: -1                    # points fit in parallel processes
     plausibility: {indicators: [vel_rms_mm_s, hf_rms_g, envelope_fault_bands], side: high, factor: null, factor_quantile: 0.95}   # rev2 R3.3.3: factor from training consecutive-segment ratios, reported before scoring (placeholder 1.45)
     regime_thresholds: spindle_speed_band   # rev2 R3.3.6: bands chosen in the fold selection
     min_regime_healthy_hours: 200
@@ -608,7 +616,7 @@ models:                                   # [fixed]
     top_contributors: 3
     pca_variance_kept: 0.95
     isolation_forest: {n_estimators: 200}
-    autoencoder: {hidden: [16, 6, 16], epochs: 200}
+    autoencoder: {hidden: [16, 6, 16], epochs: 200}   # step 5 design; rev2 selects from selection_grid
     min_train_hours: 50                     # minimum measured hours for a base fit or a post-repair refit
     champion_margin_conditions: 2           # step 5 review 2: within this many conditions of the best skill, the simpler candidate wins
   controller_health:
@@ -619,11 +627,13 @@ models:                                   # [fixed]
     sweep_scale: [0.5, 0.75, 1.0, 1.5, 2.0, 3.0]   # operating curve: thresholds scaled
   cases:                                  # rev2 R3.8: fusion removed; vibration-model cases use the case builder (was fusion: status_map, rate_of_change_window_h 72)
     case_quiet_close_days: 7                # a case closes 7 days after its last signal, or at a repair work order
-  severity:                                 # rev2 R3.4 and build plan 7.2
+  severity:                                 # rev2 R3.4 and build plan 7.2; levels renamed by role 2026-10-30 (step 6 item 1): WATCH, ALERT, ALARM (was WATCH, ALARM, CRITICAL)
     watch: unpersisted_or_plausibility_flag
-    alarm_persistence_hours: 6
-    critical_persistence_hours: 3
-    thermistor_critical_c: 44.0
+    alert_persistence_hours: 6              # ALERT, the action level, opens a case (was alarm_persistence_hours 6)
+    alarm_persistence_hours: 3              # ALARM criteria on sensor rows, consecutive measured hours (was critical_persistence_hours 3)
+    escalation_days: 14                     # step 6 item 2: an open ALERT escalates to ALARM when its triggering condition is met on every operating day for 14 consecutive calendar days, both methods
+    thermistor_alarm_c: 44.0                # was thermistor_critical_c
+    thermistor_critical_c: 44.0             # the same limit under its original name, read only by the frozen generator's run report (generate/checks/realism_rev2.py); the package reads thermistor_alarm_c
     thermistor_persistence_minutes: 10
     temp_residual_c: {spindle: 6.0, pump: 8.0, compressor: 8.0}
     spindle_temp_slope_window_h: 24

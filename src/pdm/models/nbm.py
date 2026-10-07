@@ -1,19 +1,17 @@
-"""Per-point normal-behavior models, one model per segment of a point (install, then each repair or remount).
+"""ML Model: one normal-behavior model per sensor point over all of the point's training segments.
 
-A segment that starts before the training cutoff is fit on all its eligible hours before the cutoff (less
-the 30 days before confirmed conditions, open inspection and repair work, re-baseline windows and flagged
-baselines); a later segment starts from its 21-day post-repair re-baseline window. A segment without
-summer and winter coverage at the cutoff, or starting after it, is updated monthly on hours that were not
-inside an open work order or an alert episode at the time, using only information available then, until
-it has coverage. A segment whose re-baseline window is flagged, incomplete or not usable, and a pre-cutoff
-segment that ends without coverage, is left to the rule floor. Re-baseline windows are not scored.
-
-Candidates: PCA with T-squared and SPE, Mahalanobis distance, isolation forest, and an autoencoder on the
-one-third-octave summary; a separate model per regime with the configured hours, otherwise the regime as
-a feature. Thresholds are percentiles of each model's training scores: the configured percentile is the
-operating point and the sweep percentiles form the operating curve. Each segment keeps its version
-history (initial fit, then each monthly update with the hours it applies to), so scoring reproduces the
-causal scores.
+Each segment (install, then each repair or remount) is expressed relative to its own level, set from
+its first days (between recenter_days[0] and recenter_days[1], at least recenter_min_hours measured
+hours); the model cannot alert while a level forms. One model per point is fit on its healthy training
+hours across every segment and frozen; thresholds are percentiles of its training scores, one per
+spindle speed band or one for the point, as chosen in selection. A segment that starts after the
+training cutoff is re-centered only: when its level on velocity, HF acceleration or an envelope fault
+band is above the point's highest earlier level by more than the plausibility factor, the segment is
+flagged (WATCH) and the model stays silent on it. Candidates: PCA with T-squared and SPE, Mahalanobis
+distance, isolation forest, an autoencoder on the one-third-octave summary, and an autoencoder on the
+one-third-octave summary with the envelope fault bands, HF acceleration and the temperature residual.
+(Revision 2. Originally one model per segment, refit on the 21-day re-baseline window after each
+repair and updated monthly until it had seasonal coverage.)
 """
 
 from __future__ import annotations
@@ -28,6 +26,8 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest
 from sklearn.neural_network import MLPRegressor
 
+from pdm.models import temperature
+
 VECTOR = [
     "accel_rms_g",
     "vel_rms_mm_s",
@@ -38,14 +38,30 @@ VECTOR = [
     "ord_02_g2",
     "env_fault_g2",
 ]
-VECTOR_SOURCE = [c for c in VECTOR if c != "env_fault_g2"] + [
-    "env_bpfo_1_g2",
-    "env_bpfi_1_g2",
-    "env_bsf_1_g2",
-]
-LOG_COLUMNS = {"accel_rms_g", "vel_rms_mm_s", "hf_rms_g", "ord_01_g2", "ord_02_g2", "env_fault_g2"}
-REGIMES = ["light", "medium", "heavy"]
-CANDIDATES = ("pca_t2_spe", "mahalanobis", "isolation_forest", "autoencoder_third_octave")
+ENV_BANDS = ["env_bpfo_1_g2", "env_bpfi_1_g2", "env_bsf_1_g2"]
+VECTOR_SOURCE = [c for c in VECTOR if c != "env_fault_g2"] + ENV_BANDS
+LOG_COLUMNS = {
+    "accel_rms_g",
+    "vel_rms_mm_s",
+    "hf_rms_g",
+    "ord_01_g2",
+    "ord_02_g2",
+    "env_fault_g2",
+    *ENV_BANDS,
+}
+PLAUSIBILITY = ["vel_rms_mm_s", "hf_rms_g", *ENV_BANDS]
+REGIMES = ["light", "medium", "heavy", "running"]
+BANDS = ["low", "mid", "high"]
+CANDIDATES = (
+    "pca_t2_spe",
+    "mahalanobis",
+    "isolation_forest",
+    "autoencoder_third_octave",
+    "autoencoder_extended",
+)
+AUTOENCODERS = ("autoencoder_third_octave", "autoencoder_extended")
+TEMP_RESID = "temp_resid_c"
+EPS = 1e-12
 
 
 class LeakedWindowError(ValueError):
@@ -53,59 +69,47 @@ class LeakedWindowError(ValueError):
 
 
 def env_fault(df: pd.DataFrame) -> pd.Series:
-    return df[["env_bpfo_1_g2", "env_bpfi_1_g2", "env_bsf_1_g2"]].fillna(0.0).sum(axis=1)
+    return df[ENV_BANDS].fillna(0.0).sum(axis=1)
 
 
 def toct_columns(df: pd.DataFrame) -> list[str]:
     return sorted(c for c in df.columns if c.startswith("toct_"))
 
 
+def _log(v: np.ndarray) -> np.ndarray:
+    return np.log10(np.where(np.isfinite(v), v, 0.0) + EPS)
+
+
 def features(df: pd.DataFrame, candidate: str) -> tuple[np.ndarray, list[str]]:
-    """Log-scaled feature matrix for a candidate (regime columns are added at fit time)."""
-    if candidate == "autoencoder_third_octave":
+    """Feature matrix for a candidate: energies and RMS values on a log scale, the temperature
+    residual in degrees C."""
+    if candidate in AUTOENCODERS:
         cols = toct_columns(df)
-        return np.log10(df[cols].to_numpy(dtype=float) + 1e-12), cols
+        parts = [_log(df[c].to_numpy(dtype=float)) for c in cols]
+        if candidate == "autoencoder_extended":
+            extra = [*ENV_BANDS, "hf_rms_g"]
+            parts += [_log(df[c].to_numpy(dtype=float)) for c in extra]
+            parts.append(df[TEMP_RESID].to_numpy(dtype=float))
+            cols = [*cols, *extra, TEMP_RESID]
+        return np.column_stack(parts), cols
     d = df.assign(env_fault_g2=env_fault(df))
     x = np.column_stack(
-        [
-            np.log10(d[c].to_numpy(dtype=float) + 1e-12) if c in LOG_COLUMNS else d[c].to_numpy(dtype=float)
-            for c in VECTOR
-        ]
+        [_log(d[c].to_numpy(dtype=float)) if c in LOG_COLUMNS else d[c].to_numpy(dtype=float) for c in VECTOR]
     )
     return x, list(VECTOR)
 
 
-def segment_ids(hours: pd.Series, segment_starts: list[pd.Timestamp]) -> np.ndarray:
-    starts = np.sort(np.asarray(pd.to_datetime(pd.Series(segment_starts), utc=True), dtype="datetime64[ns]"))
-    t = np.asarray(pd.to_datetime(hours, utc=True), dtype="datetime64[ns]")
-    return np.searchsorted(starts, t, side="right") - 1
-
-
-def centered(
-    df: pd.DataFrame, x: np.ndarray, segment_starts: list[pd.Timestamp], rebaseline: pd.Timedelta
-) -> tuple[np.ndarray, np.ndarray]:
-    """Features less the median of the segment's first window, per regime where the window has that
-    regime, otherwise pooled. Returns the centered matrix and a mask of rows inside a first window."""
-    seg = segment_ids(df["hour_utc"], segment_starts)
-    starts = pd.to_datetime(pd.Series(segment_starts), utc=True).sort_values().reset_index(drop=True)
-    t = np.asarray(pd.to_datetime(df["hour_utc"], utc=True).dt.tz_localize(None), dtype="datetime64[ns]")
-    out = np.full_like(x, np.nan)
-    in_first = np.zeros(len(df), dtype=bool)
-    reg = df["regime"].to_numpy()
-    for s in np.unique(seg):
-        if s < 0:
-            continue
-        rows = seg == s
-        a = starts.iloc[s].tz_localize(None)
-        first = rows & (t >= a.to_datetime64()) & (t < (a + rebaseline).to_datetime64())
-        in_first |= first
-        pooled = np.nanmedian(x[first], axis=0) if first.any() else np.nanmedian(x[rows], axis=0)
-        for r in np.unique(reg[rows]):
-            rr = rows & (reg == r)
-            fr = first & (reg == r)
-            c = np.nanmedian(x[fr], axis=0) if fr.sum() >= 5 else pooled
-            out[rr] = x[rr] - c
-    return out, in_first
+def speed_band(rows: pd.DataFrame, rated_rpm: float | None, cfg: dict[str, Any]) -> np.ndarray:
+    """Spindle speed band (low, mid, high) from the configured fractions of rated speed; 'all' on points
+    without a spindle speed."""
+    if not rated_rpm or not str(rows["point_class"].iat[0]).startswith("spindle"):
+        return np.full(len(rows), "all", dtype=object)
+    edges = cfg["regime"]["speed_bands_frac_rated"]
+    f = rows["speed_rpm_at_measurement"].to_numpy(dtype=float) / float(rated_rpm)
+    out = np.full(len(rows), BANDS[0], dtype=object)
+    for i, e in enumerate(edges[1:-1], start=1):
+        out[f >= e] = BANDS[i]
+    return out
 
 
 @dataclass
@@ -126,82 +130,225 @@ class Scaler:
 
 
 @dataclass
-class FittedModel:
+class Settings:
+    """Candidate settings chosen in selection."""
+
     candidate: str
+    hidden: tuple[int, ...] = ()
+    epochs: int = 0
+    threshold_mode: str = "single"
+
+    @property
+    def key(self) -> str:
+        if self.candidate in AUTOENCODERS:
+            net = "-".join(str(h) for h in self.hidden)
+            return f"{self.candidate} [{net}] {self.epochs} ep, {self.threshold_mode}"
+        return f"{self.candidate}, {self.threshold_mode}"
+
+
+def settings_grid(cfg: dict[str, Any]) -> list[Settings]:
+    """Every candidate with each autoencoder network size and training length in the selection grid and
+    each threshold mode, simplest first."""
+    nb = cfg["models"]["nbm"]
+    grid = nb["selection_grid"]
+    out = []
+    for cand in nb["candidates"]:
+        for mode in grid["threshold_mode"]:
+            if cand in AUTOENCODERS:
+                for h in grid["autoencoder_hidden"]:
+                    for e in grid["autoencoder_epochs"]:
+                        out.append(Settings(cand, tuple(h), int(e), mode))
+            else:
+                out.append(Settings(cand, (), 0, mode))
+    return out
+
+
+def complexity(s: Settings) -> tuple[int, int, int, int]:
+    return (
+        CANDIDATES.index(s.candidate),
+        sum(s.hidden),
+        s.epochs,
+        0 if s.threshold_mode == "single" else 1,
+    )
+
+
+@dataclass
+class Segment:
+    start: pd.Timestamp
+    reason: str
+    ready: pd.Timestamp | None
+    level: np.ndarray | None
+    plaus: dict[str, float]
+    n_level_hours: int
+    flagged: bool = False
+
+
+def _naive(ts: Any) -> np.ndarray:
+    s = pd.to_datetime(pd.Series(ts), utc=True).dt.tz_localize(None)
+    return np.asarray(s, dtype="datetime64[ns]")
+
+
+def segment_ids(hours: Any, starts: list[pd.Timestamp]) -> np.ndarray:
+    st = np.sort(_naive(starts))
+    return np.searchsorted(st, _naive(hours), side="right") - 1
+
+
+def _plaus_levels(rows: pd.DataFrame, m: np.ndarray) -> dict[str, float]:
+    out = {}
+    for c in PLAUSIBILITY:
+        v = rows.loc[m, c].to_numpy(dtype=float)
+        v = v[np.isfinite(v)]
+        out[c] = float(np.log10(np.median(v) + EPS)) if len(v) else np.nan
+    return out
+
+
+def segment_levels(
+    rows: pd.DataFrame,
+    x: np.ndarray,
+    keys: np.ndarray,
+    windows: pd.DataFrame,
+    offsets: dict[str, np.ndarray],
+    cfg: dict[str, Any],
+) -> list[Segment]:
+    """Each segment's level: the median over its re-centering window of the features less the point's
+    operating-key offsets. The window ends once recenter_days[0] have passed and recenter_min_hours
+    measured hours have accumulated, at most recenter_days[1] after the start; a segment with fewer than
+    recenter_floor_hours by then has no level and is not scored."""
+    nb = cfg["models"]["nbm"]
+    lo, hi = (pd.Timedelta(days=d) for d in nb["recenter_days"])
+    t = _naive(rows["hour_utc"])
+    w = windows.sort_values("start").reset_index(drop=True)
+    seg = segment_ids(rows["hour_utc"], list(w["start"]))
+    adj = (
+        x - np.vstack([offsets.get(k, offsets.get("_all", np.zeros(x.shape[1]))) for k in keys])
+        if len(x)
+        else x
+    )
+    out = []
+    for k, r in w.iterrows():
+        a = _naive([r["start"]])[0]
+        mine = np.flatnonzero((seg == k) & (t >= a) & (t < a + np.timedelta64(hi)))
+        ready = None
+        if len(mine) >= nb["recenter_min_hours"]:
+            nth = t[mine[nb["recenter_min_hours"] - 1]]
+            ready = max(a + np.timedelta64(lo), nth + np.timedelta64(1, "h"))
+        if ready is None or ready > a + np.timedelta64(hi):
+            ready = a + np.timedelta64(hi) if len(mine) >= nb["recenter_floor_hours"] else None
+        if ready is None:
+            out.append(Segment(r["start"], r["reason"], None, None, {}, len(mine)))
+            continue
+        m = (seg == k) & (t >= a) & (t < ready)
+        out.append(
+            Segment(
+                r["start"],
+                r["reason"],
+                pd.Timestamp(ready).tz_localize("UTC"),
+                np.nanmedian(adj[m], axis=0),
+                _plaus_levels(rows, m),
+                int(m.sum()),
+            )
+        )
+    return out
+
+
+def operating_key(rows: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
+    return np.asarray(
+        [f"{r}|{b}" for r, b in zip(rows["regime"].to_numpy(), bands, strict=True)], dtype=object
+    )
+
+
+def key_offsets(
+    x: np.ndarray, keys: np.ndarray, seg_first: np.ndarray, min_rows: int
+) -> dict[str, np.ndarray]:
+    """Median of features less each row's segment first-window median, per operating key (load regime and
+    speed band); '_all' pools every key."""
+    d = x - seg_first
+    out = {"_all": np.nanmedian(d, axis=0)}
+    for k in np.unique(keys):
+        m = keys == k
+        if m.sum() >= min_rows:
+            out[str(k)] = np.nanmedian(d[m], axis=0)
+    return out
+
+
+def _one_hot(rows: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
+    reg = rows["regime"].to_numpy()
+    return np.column_stack(
+        [(reg == r).astype(float) for r in REGIMES] + [(bands == b).astype(float) for b in BANDS]
+    )
+
+
+@dataclass
+class PointModel:
+    point_id: str
+    point_class: str
+    settings: Settings
     columns: list[str]
+    rated_rpm: float | None
+    temp_fit: temperature.TempFit
+    offsets: dict[str, np.ndarray]
     scaler: Scaler
     model: Any
-    thresholds: dict[float, float]
-    regime: str | None
-    regime_feature: bool
+    extra: dict[str, Any]
+    thresholds: dict[str, dict[str, dict[float, float]]]
+    train_levels: list[dict[str, float]]
     n_train: int
-    extra: dict[str, Any] = field(default_factory=dict)
+    segments_trained: int
+    info: dict[str, Any] = field(default_factory=dict)
 
-    def design(self, xc: np.ndarray, regimes: np.ndarray) -> np.ndarray:
-        if self.regime_feature:
-            xc = np.column_stack([xc, *[(regimes == r).astype(float) for r in REGIMES]])
-        return self.scaler.transform(xc)
-
-    def raw_scores(self, xc: np.ndarray, regimes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        z = self.design(xc, regimes)
-        if self.candidate == "pca_t2_spe":
+    def raw_scores(self, z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        cand = self.settings.candidate
+        if cand == "pca_t2_spe":
             p = self.model
             t = p.transform(z)
             t2 = np.sum(t**2 / p.explained_variance_, axis=1)
             spe = np.sum((z - p.inverse_transform(t)) ** 2, axis=1)
             return t2 / self.extra["t2_med"] + spe / self.extra["spe_med"], z**2
-        if self.candidate == "mahalanobis":
+        if cand == "mahalanobis":
             return np.einsum("ij,jk,ik->i", z, self.model, z), z**2
-        if self.candidate == "isolation_forest":
+        if cand == "isolation_forest":
             return -self.model.score_samples(z), z**2
         rec = self.model.predict(z)
         return np.mean((z - rec) ** 2, axis=1), (z - rec) ** 2
 
-    def top_contributors(self, contrib: np.ndarray, k: int) -> list[str]:
-        names = self.columns + ([f"regime_{r}" for r in REGIMES] if self.regime_feature else [])
+    def contributors(self, contrib: np.ndarray, k: int) -> list[str]:
+        names = self.columns + [f"regime_{r}" for r in REGIMES] + [f"band_{b}" for b in BANDS]
         idx = np.argsort(-contrib, axis=1)[:, :k]
         return [",".join(names[j] for j in row) for row in idx]
 
+    def threshold_for(self, bands: np.ndarray, pct: float, mode: str | None = None) -> np.ndarray:
+        mode = mode or self.settings.threshold_mode
+        tb = self.thresholds[mode]
+        return np.asarray([tb.get(b, tb["_point"])[float(pct)] for b in bands], dtype=float)
 
-def fit_candidate(
-    xc: np.ndarray,
-    regimes: np.ndarray,
-    cols: list[str],
-    candidate: str,
-    cfg: dict[str, Any],
-    regime: str | None,
-    regime_feature: bool,
-) -> FittedModel:
-    m = cfg["models"]
-    seed = m["seed"]
-    fm = FittedModel(
-        candidate, cols, Scaler(np.zeros(1), np.ones(1)), None, {}, regime, regime_feature, len(xc)
+
+def prepare(rows: pd.DataFrame, ambient: pd.Series | None) -> pd.DataFrame:
+    """Measured, plausible rows in time order, with the compressor-room ambient joined by hour."""
+    clean = (
+        rows[~rows["implausible"].fillna(False).astype(bool)]
+        .dropna(subset=["vel_rms_mm_s"])
+        .sort_values("hour_utc", kind="stable")
+        .reset_index(drop=True)
     )
-    raw = np.column_stack([xc, *[(regimes == r).astype(float) for r in REGIMES]]) if regime_feature else xc
-    fm.scaler = Scaler.fit(raw)
-    z = fm.scaler.transform(raw)
-    if candidate == "pca_t2_spe":
-        model = PCA(n_components=m["nbm"]["pca_variance_kept"], svd_solver="full", random_state=seed).fit(z)
-        t = model.transform(z)
-        t2 = np.sum(t**2 / model.explained_variance_, axis=1)
-        spe = np.sum((z - model.inverse_transform(t)) ** 2, axis=1)
-        fm.extra = {"t2_med": float(np.median(t2)) or 1.0, "spe_med": float(np.median(spe)) or 1.0}
-    elif candidate == "mahalanobis":
-        model = LedoitWolf().fit(z).precision_
-    elif candidate == "isolation_forest":
-        model = IsolationForest(
-            n_estimators=m["nbm"]["isolation_forest"]["n_estimators"], random_state=seed
-        ).fit(z)
-    else:
-        ae = m["nbm"]["autoencoder"]
-        model = MLPRegressor(
-            hidden_layer_sizes=tuple(ae["hidden"]), max_iter=ae["epochs"], random_state=seed
-        ).fit(z, z)
-    fm.model = model
-    s, _ = fm.raw_scores(xc, regimes)
-    pcts = sorted(set(m["nbm"]["sweep_percentiles"]) | {m["nbm"]["threshold_percentile"]})
-    fm.thresholds = {float(p): float(np.percentile(s, p)) for p in pcts}
-    return fm
+    if ambient is not None and len(clean):
+        h = pd.to_datetime(clean["hour_utc"], utc=True)
+        clean[temperature.AMBIENT] = h.map(ambient).to_numpy(dtype=float)
+    return clean
+
+
+def training_mask(
+    hours: pd.Series,
+    cutoff: pd.Timestamp,
+    excluded: list[tuple[pd.Timestamp, pd.Timestamp]],
+    start: pd.Timestamp | None = None,
+) -> np.ndarray:
+    t = pd.to_datetime(hours, utc=True)
+    keep = (t < cutoff).to_numpy()
+    if start is not None:
+        keep &= (t >= start).to_numpy()
+    for a, b in excluded:
+        keep &= ~((t >= a) & (t < b)).to_numpy()
+    return keep
 
 
 def check_training_rows(
@@ -216,401 +363,288 @@ def check_training_rows(
             raise LeakedWindowError("training rows inside an excluded interval")
 
 
-def seasonal_coverage(hours: pd.Series, cfg: dict[str, Any]) -> dict[str, bool]:
-    m = pd.to_datetime(hours, utc=True).dt.tz_convert("America/Chicago").dt.month
-    cov = cfg["models"]["nbm"]["coverage_months"]
-    out = {}
-    for season, (a, b) in cov.items():
-        months = list(range(a, b + 1)) if a <= b else list(range(a, 13)) + list(range(1, b + 1))
-        out[season] = bool(m.isin(months).any())
-    return out
+def _fit_estimator(z: np.ndarray, s: Settings, cfg: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    m = cfg["models"]
+    seed = m["seed"]
+    if s.candidate == "pca_t2_spe":
+        model = PCA(n_components=m["nbm"]["pca_variance_kept"], svd_solver="full", random_state=seed).fit(z)
+        t = model.transform(z)
+        t2 = np.sum(t**2 / model.explained_variance_, axis=1)
+        spe = np.sum((z - model.inverse_transform(t)) ** 2, axis=1)
+        return model, {"t2_med": float(np.median(t2)) or 1.0, "spe_med": float(np.median(spe)) or 1.0}
+    if s.candidate == "mahalanobis":
+        return LedoitWolf().fit(z).precision_, {}
+    if s.candidate == "isolation_forest":
+        return IsolationForest(
+            n_estimators=m["nbm"]["isolation_forest"]["n_estimators"], random_state=seed
+        ).fit(z), {}
+    return MLPRegressor(hidden_layer_sizes=tuple(s.hidden), max_iter=int(s.epochs), random_state=seed).fit(
+        z, z
+    ), {}
 
 
-def training_mask(
-    hours: pd.Series, cutoff: pd.Timestamp, excluded: list[tuple[pd.Timestamp, pd.Timestamp]]
-) -> np.ndarray:
-    t = pd.to_datetime(hours, utc=True)
-    keep = (t < cutoff).to_numpy()
-    for a, b in excluded:
-        keep &= ~((t >= a) & (t < b)).to_numpy()
-    return keep
+def _thresholds(
+    scores: np.ndarray, bands: np.ndarray, pcts: list[float], min_hours: int
+) -> dict[str, dict[str, dict[float, float]]]:
+    point = {float(p): float(np.percentile(scores, p)) for p in pcts}
+    by_band: dict[str, dict[float, float]] = {"_point": point}
+    for b in np.unique(bands):
+        m = bands == b
+        if m.sum() >= min_hours:
+            by_band[str(b)] = {float(p): float(np.percentile(scores[m], p)) for p in pcts}
+    return {"single": {"_point": point}, "speed_band": by_band}
 
 
 def fit_point(
     rows: pd.DataFrame,
-    candidate: str,
+    windows: pd.DataFrame,
+    settings_list: list[Settings],
     cfg: dict[str, Any],
+    fit_start: pd.Timestamp,
     cutoff: pd.Timestamp,
     excluded: list[tuple[pd.Timestamp, pd.Timestamp]],
-    segment_starts: list[pd.Timestamp],
-) -> tuple[dict[str, FittedModel], dict[str, Any]]:
-    """Models for one point keyed by regime ('all' when the regime is a feature), and training info."""
+    rated_rpm: float | None,
+    ambient: pd.Series | None,
+) -> tuple[dict[str, PointModel], dict[str, Any]]:
+    """One frozen model per settings for a point, fit on its healthy hours from fit_start to the cutoff
+    across every segment that starts before the cutoff. Returns models keyed by Settings.key and the
+    point's training information."""
     nb = cfg["models"]["nbm"]
-    clean = (
-        rows[~rows["implausible"].fillna(False).astype(bool)]
-        .dropna(subset=["vel_rms_mm_s"])
+    pid = str(rows["point_id"].iat[0])
+    pclass = str(rows["point_class"].iat[0])
+    clean = prepare(rows, ambient)
+    info: dict[str, Any] = {"point_id": pid, "point_class": pclass}
+    if clean.empty:
+        return {}, {**info, "n_train": 0, "reason": "no measured hours"}
+    win = (
+        windows[pd.to_datetime(windows["start"], utc=True) < cutoff]
+        .sort_values("start")
         .reset_index(drop=True)
     )
-    x, cols = features(clean, candidate)
-    xc, _ = centered(clean, x, segment_starts, pd.Timedelta(days=nb["rebaseline_days"]))
-    keep = training_mask(clean["hour_utc"], cutoff, excluded) & np.isfinite(xc).all(axis=1)
-    train_hours = clean.loc[keep, "hour_utc"]
-    check_training_rows(train_hours, cutoff, excluded)
-    cov = seasonal_coverage(train_hours, cfg)
-    info = {"n_train": int(keep.sum()), **{f"covers_{k}": v for k, v in cov.items()}}
-    if not all(cov.values()) or keep.sum() < nb["min_train_hours"]:
-        return {}, info
-    reg = clean["regime"].to_numpy()
-    return fit_models(xc[keep], reg[keep], cols, candidate, cfg), info
+    if win.empty:
+        return {}, {**info, "n_train": 0, "reason": "no segment before the cutoff"}
+    eligible = training_mask(clean["hour_utc"], cutoff, excluded, fit_start)
+    tf = temperature.fit(clean[eligible], pclass)
+    clean[TEMP_RESID] = tf.residual(clean)
+    bands = speed_band(clean, rated_rpm, cfg)
+    keys = operating_key(clean, bands)
+    seg = segment_ids(clean["hour_utc"], list(win["start"]))
+    t = _naive(clean["hour_utc"])
+    models: dict[str, PointModel] = {}
+    by_candidate: dict[str, tuple[np.ndarray, list[str]]] = {}
+    for s in settings_list:
+        if s.candidate not in by_candidate:
+            by_candidate[s.candidate] = features(clean, s.candidate)
+    shared: dict[str, Any] = {}
+    for cand, (x, cols) in by_candidate.items():
+        first = np.full_like(x, np.nan)
+        zero = {"_all": np.zeros(x.shape[1])}
+        segs0 = segment_levels(clean, x, keys, win, zero, cfg)
+        for k, sg in enumerate(segs0):
+            if sg.level is not None:
+                first[seg == k] = sg.level
+        in_win = np.zeros(len(clean), dtype=bool)
+        for k, sg in enumerate(segs0):
+            a = _naive([sg.start])[0]
+            b = _naive([sg.ready])[0] if sg.ready is not None else np.datetime64("NaT")
+            in_win |= (seg == k) & (t >= a) & ((t < b) if sg.ready is not None else True)
+        ok = eligible & ~in_win & np.isfinite(first).all(axis=1) & np.isfinite(x).all(axis=1) & (seg >= 0)
+        offsets = key_offsets(x[ok], keys[ok], first[ok], nb["min_key_hours"]) if ok.any() else zero
+        segs = segment_levels(clean, x, keys, win, offsets, cfg)
+        lev = np.full_like(x, np.nan)
+        for k, sg in enumerate(segs):
+            if sg.level is not None:
+                lev[seg == k] = sg.level
+        xc = x - lev
+        train = ok & np.isfinite(xc).all(axis=1)
+        shared[cand] = (xc, train, offsets, segs, cols)
+    info.update(
+        {
+            "segments_before_cutoff": len(win),
+            "temp_fit": tf.to_dict(),
+        }
+    )
+    pcts = sorted(set(nb["sweep_percentiles"]) | {nb["threshold_percentile"]})
+    oh = _one_hot(clean, bands)
+    fitted: dict[tuple[str, tuple[int, ...], int], tuple[Scaler, Any, dict[str, Any], np.ndarray]] = {}
+    for s in settings_list:
+        xc, train, offsets, segs, cols = shared[s.candidate]
+        n = int(train.sum())
+        if n < nb["min_train_hours"]:
+            info.setdefault("too_few", []).append(s.key)
+            continue
+        arch = (s.candidate, tuple(s.hidden), int(s.epochs))
+        if arch not in fitted:
+            check_training_rows(clean.loc[train, "hour_utc"], cutoff, excluded)
+            raw = np.column_stack([xc[train], oh[train]])
+            sc0 = Scaler.fit(raw)
+            z0 = sc0.transform(raw)
+            est0, extra0 = _fit_estimator(z0, s, cfg)
+            fitted[arch] = (sc0, est0, extra0, z0)
+        sc, est, extra, z = fitted[arch]
+        pm = PointModel(
+            pid,
+            pclass,
+            s,
+            cols,
+            rated_rpm,
+            tf,
+            offsets,
+            sc,
+            est,
+            extra,
+            {},
+            [g.plaus for g in segs if g.level is not None],
+            n,
+            sum(g.level is not None for g in segs),
+        )
+        scores, _ = pm.raw_scores(z)
+        pm.thresholds = _thresholds(scores, bands[train], pcts, nb["min_regime_healthy_hours"])
+        pm.info = {
+            "n_train": n,
+            "cutoff": cutoff,
+            "fit_start": fit_start,
+            "train_bands": pd.Series(bands[train]).value_counts().to_dict(),
+        }
+        models[s.key] = pm
+    info["n_train"] = max((m.n_train for m in models.values()), default=0)
+    return models, info
 
 
-def fit_models(
-    x: np.ndarray, reg: np.ndarray, cols: list[str], candidate: str, cfg: dict[str, Any]
-) -> dict[str, FittedModel]:
-    """One model per regime when every regime has the configured hours, otherwise one model with the
-    regime as a feature."""
-    counts = pd.Series(reg).value_counts()
-    big = [r for r, n in counts.items() if n >= cfg["models"]["nbm"]["min_regime_healthy_hours"]]
-    if len(big) == len(counts):
-        return {r: fit_candidate(x[reg == r], reg[reg == r], cols, candidate, cfg, r, False) for r in big}
-    return {"all": fit_candidate(x, reg, cols, candidate, cfg, None, len(counts) > 1)}
+def plausibility_factor(models: list[PointModel], quantile: float, fallback: float) -> tuple[float, int]:
+    """The quantile of the high-side ratio between consecutive healthy segment levels across all points
+    in training, on velocity, HF acceleration and the envelope fault bands. Returns the factor and the
+    number of ratios it rests on; with fewer than 5 ratios the fallback is used."""
+    ratios = []
+    for m in models:
+        lv = m.train_levels
+        for a, b in zip(lv[:-1], lv[1:], strict=False):
+            for c in PLAUSIBILITY:
+                if np.isfinite(a.get(c, np.nan)) and np.isfinite(b.get(c, np.nan)):
+                    ratios.append(10 ** (b[c] - a[c]))
+    if len(ratios) < 5:
+        return fallback, len(ratios)
+    return float(np.quantile(ratios, quantile)), len(ratios)
 
 
 def score_point(
+    model: PointModel,
     rows: pd.DataFrame,
-    models: dict[str, FittedModel],
+    windows: pd.DataFrame,
     cfg: dict[str, Any],
-    segment_starts: list[pd.Timestamp],
-    top_k: int,
-) -> pd.DataFrame:
-    """Scores for every measured hour outside re-baseline windows (install window included)."""
-    nb = cfg["models"]["nbm"]
-    clean = (
-        rows[~rows["implausible"].fillna(False).astype(bool)]
-        .dropna(subset=["vel_rms_mm_s"])
-        .reset_index(drop=True)
-    )
-    if clean.empty or not models:
-        return pd.DataFrame()
-    cand = next(iter(models.values())).candidate
-    x, _ = features(clean, cand)
-    xc, in_first = centered(clean, x, segment_starts, pd.Timedelta(days=nb["rebaseline_days"]))
-    seg = segment_ids(clean["hour_utc"], segment_starts)
-    scoreable = ~in_first | (seg == 0)
-    reg = clean["regime"].to_numpy()
-    out = []
-    for key, fm in models.items():
-        sel = scoreable & np.isfinite(xc).all(axis=1) & ((reg == key) if key != "all" else True)
-        if not sel.any():
-            continue
-        s, contrib = fm.raw_scores(xc[sel], reg[sel])
-        d = pd.DataFrame(
-            {
-                "point_id": clean.loc[sel, "point_id"].to_numpy(),
-                "hour_utc": clean.loc[sel, "hour_utc"].to_numpy(),
-                "regime": reg[sel],
-                "model_regime": key,
-                "score": s,
-                "top_contributors": fm.top_contributors(contrib, top_k),
-            }
-        )
-        for p, thr in fm.thresholds.items():
-            d[f"thr_{p:g}"] = thr
-        out.append(d)
-    return (
-        pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
-        if out
-        else pd.DataFrame()
-    )
-
-
-def _clean(rows: pd.DataFrame) -> pd.DataFrame:
-    return (
-        rows[~rows["implausible"].fillna(False).astype(bool)]
-        .dropna(subset=["vel_rms_mm_s"])
-        .reset_index(drop=True)
-    )
-
-
-def _score(
-    clean: pd.DataFrame,
-    x: np.ndarray,
-    sel: np.ndarray,
-    models: dict[str, FittedModel],
-    top_k: int,
-    label: str,
-    update: int = 0,
-    carry: tuple[str, ...] = (),
-) -> list[pd.DataFrame]:
-    reg = clean["regime"].to_numpy()
-    out = []
-    for key, fm in models.items():
-        m = sel & np.isfinite(x).all(axis=1) & ((reg == key) if key != "all" else True)
-        if not m.any():
-            continue
-        s, contrib = fm.raw_scores(x[m], reg[m])
-        d = pd.DataFrame(
-            {
-                "point_id": clean.loc[m, "point_id"].to_numpy(),
-                "hour_utc": clean.loc[m, "hour_utc"].to_numpy(),
-                "regime": reg[m],
-                "model_regime": key,
-                "model_segment": label,
-                "model_update": update,
-                "score": s,
-                "top_contributors": fm.top_contributors(contrib, top_k),
-            }
-        )
-        for p, thr in fm.thresholds.items():
-            d[f"thr_{p:g}"] = thr
-        for c in carry:
-            d[c] = clean.loc[m, c].to_numpy()
-        out.append(d)
-    return out
-
-
-def _utc_ts(v: Any) -> pd.Timestamp:
-    ts = pd.Timestamp(v)
-    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-
-
-def score_versions(
-    rows: pd.DataFrame,
-    segments: list[dict[str, Any]],
-    candidate: str,
-    top_k: int,
+    start: pd.Timestamp,
     end: pd.Timestamp,
-    carry: tuple[str, ...] = (),
-) -> pd.DataFrame:
-    """Scores for one point from its segments' version histories, each version on the hours it applied
-    to; the same rows, batches and order as fit_score_segments, so the scores are identical."""
-    rows = rows.sort_values("hour_utc", kind="stable").reset_index(drop=True)
-    clean = _clean(rows)
-    clean = clean[pd.to_datetime(clean["hour_utc"], utc=True) < end].reset_index(drop=True)
-    if clean.empty or not segments:
-        return pd.DataFrame()
-    t = _naive(clean["hour_utc"])
-    x, _ = features(clean, candidate)
-    out: list[pd.DataFrame] = []
-    for s in segments:
-        for v in s["versions"]:
-            a, b = _naive([v["effective_from"]])[0], _naive([v["effective_to"]])[0]
-            out += _score(
-                clean,
-                x,
-                (t >= a) & (t < b),
-                v["models"],
-                top_k,
-                f"segment {s['segment']}",
-                v["update"],
-                carry,
-            )
-    return (
-        pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
-        if out
-        else pd.DataFrame()
-    )
-
-
-def segment_plan(
-    windows: pd.DataFrame, flagged_ids: set[str], end: pd.Timestamp, rebaseline: pd.Timedelta
-) -> pd.DataFrame:
-    """Per segment of a point (install, then each repair or remount): whether its re-baseline window is
-    usable for a refit. A window is usable when it completed before end, is not excluded for a nearby
-    failure and is not flagged by the sanity check."""
-    w = windows.sort_values("start").reset_index(drop=True)
-    w["window_end"] = w["start"] + rebaseline
-    w["complete"] = w["window_end"] <= end
-    w["flagged"] = w["window_id"].isin(flagged_ids)
-    w["refit"] = w["complete"] & w["usable"].astype(bool) & ~w["flagged"]
-    return w
-
-
-def _recent(t: np.ndarray, events: np.ndarray, gap: np.timedelta64) -> np.ndarray:
-    """True where an event occurred in (t - gap, t]."""
-    if events.size == 0:
-        return np.zeros(t.size, dtype=bool)
-    ev = np.sort(events)
-    i = np.searchsorted(ev, t, side="right")
-    prev = np.where(i > 0, ev[np.clip(i - 1, 0, ev.size - 1)], np.datetime64("NaT"))
-    return (i > 0) & (t - prev < gap)
-
-
-def _naive(ts: Any) -> np.ndarray:
-    s = pd.to_datetime(pd.Series(ts), utc=True).dt.tz_localize(None)
-    return np.asarray(s, dtype="datetime64[ns]")
-
-
-def month_starts(a: pd.Timestamp, b: pd.Timestamp) -> list[pd.Timestamp]:
-    """Local calendar month starts strictly after a and before b, in UTC."""
-    la = a.tz_convert("America/Chicago").tz_localize(None).normalize()
-    lb = b.tz_convert("America/Chicago").tz_localize(None)
-    ms = pd.date_range(la + pd.offsets.MonthBegin(1), lb, freq="MS")
-    return [
-        m.tz_localize("America/Chicago").tz_convert("UTC")
-        for m in ms
-        if a < m.tz_localize("America/Chicago").tz_convert("UTC") < b
-    ]
-
-
-def fit_score_segments(
-    rows: pd.DataFrame,
-    candidate: str,
-    cfg: dict[str, Any],
-    cutoff: pd.Timestamp,
-    excluded: list[tuple[pd.Timestamp, pd.Timestamp]],
-    plan: pd.DataFrame,
-    end: pd.Timestamp,
+    plaus_factor: float,
     top_k: int,
-    open_work: list[tuple[pd.Timestamp, pd.Timestamp]],
-    rule_alerts: list[pd.Timestamp],
-) -> tuple[pd.DataFrame, list[dict[str, Any]], pd.DataFrame, list[dict[str, Any]]]:
-    """Scores before end with one model per segment (install, then each repair or remount).
-
-    A segment that starts before the cutoff is fit on its eligible hours before the cutoff (the base
-    rule, with its exclusions); a later segment starts from its 21-day re-baseline window. A segment
-    that lacks seasonal coverage at the cutoff, or starts after it, is updated monthly on hours that
-    were not inside an open work order, a rule-floor alert episode or its own alert episode at the
-    time, until it has coverage. A segment whose re-baseline window is flagged, incomplete or not
-    usable is left to the rule floor. Returns scores, per-segment information, training rows and each
-    fitted segment's version history (models with the hours each version applied to) and final models.
-    """
+    ambient: pd.Series | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Scores from start to end with the frozen model. Every segment is re-centered on its own window
+    (no score while the level forms); a segment starting at or after the model's training cutoff is
+    checked for plausibility and, when flagged, left silent. Returns hourly rows (state 'scored',
+    'recentering', 'plausibility' or 'no level') and one row per segment."""
     nb = cfg["models"]["nbm"]
-    gap = np.timedelta64(int(cfg["evaluation"]["catch"]["episode_gap_days"] * 86400), "s")
-    op = nb["threshold_percentile"]
-    clean = _clean(rows)
-    clean = clean[pd.to_datetime(clean["hour_utc"], utc=True) < end].reset_index(drop=True)
+    clean = prepare(rows, ambient)
     if clean.empty:
-        return pd.DataFrame(), [], pd.DataFrame(), []
+        return pd.DataFrame(), pd.DataFrame()
+    clean[TEMP_RESID] = model.temp_fit.residual(clean)
+    win = windows.sort_values("start").reset_index(drop=True)
+    win = win[pd.to_datetime(win["start"], utc=True) < end].reset_index(drop=True)
+    if win.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    bands = speed_band(clean, model.rated_rpm, cfg)
+    keys = operating_key(clean, bands)
+    x, _ = features(clean, model.settings.candidate)
+    segs = segment_levels(clean, x, keys, win, model.offsets, cfg)
+    seg = segment_ids(clean["hour_utc"], list(win["start"]))
     t = _naive(clean["hour_utc"])
-    seg = segment_ids(clean["hour_utc"], list(plan["start"]))
-    reg = clean["regime"].to_numpy()
-    x, cols = features(clean, candidate)
-    finite = np.isfinite(x).all(axis=1)
-    eligible = training_mask(clean["hour_utc"], cutoff, excluded) & finite
-    blocked_work = np.zeros(t.size, dtype=bool)
-    for wa, wb in open_work:
-        blocked_work |= (t >= _naive([wa])[0]) & (t < _naive([wb])[0])
-    rule_recent = _recent(
-        t, _naive(rule_alerts) if len(rule_alerts) else np.array([], dtype="datetime64[ns]"), gap
-    )
-    cut = _naive([cutoff])[0]
-    out: list[pd.DataFrame] = []
-    infos: list[dict[str, Any]] = []
-    train_rows: list[pd.DataFrame] = []
-    seg_models: list[dict[str, Any]] = []
-    for k, w in plan.iterrows():
+    cutoff = model.info.get("cutoff")
+    lvl = np.full_like(x, np.nan)
+    state = np.full(len(clean), "no level", dtype=object)
+    log_factor = float(np.log10(plaus_factor))
+    hist = list(model.train_levels)
+    seg_rows = []
+    for k, sg in enumerate(segs):
         rows_k = seg == k
-        seg_end = plan["start"].iat[k + 1] if k + 1 < len(plan) else end
-        seg_end = min(seg_end, end)
-        info = {
-            "point_id": w["point_id"],
-            "segment": int(k),
-            "segment_start": w["start"],
-            "reason": w["reason"],
-        }
-        if k > 0 and not w["refit"]:
-            why = (
-                "flagged"
-                if w["flagged"]
-                else ("window incomplete" if not w["complete"] else "window not usable")
-            )
-            infos.append({**info, "model": f"rule floor only ({why})", "n_train": 0})
-            continue
-        ws, we = _naive([w["start"]])[0], _naive([w["window_end"]])[0]
-        win = rows_k & finite & (t >= ws) & (t < we)
-        if w["start"] < cutoff:
-            train = rows_k & eligible & (t < min(cut, _naive([seg_end])[0]))
-            if train.sum() < nb["min_train_hours"] and k > 0:
-                train = win
-            kind = "segment fit"
+        trained = cutoff is not None and sg.start < cutoff
+        if sg.level is not None and not trained:
+            prior = [h for h in hist if h]
+            highs = {
+                c: max((h[c] for h in prior if np.isfinite(h.get(c, np.nan))), default=np.nan)
+                for c in PLAUSIBILITY
+            }
+            over = [
+                c
+                for c in PLAUSIBILITY
+                if np.isfinite(sg.plaus.get(c, np.nan))
+                and np.isfinite(highs[c])
+                and sg.plaus[c] - highs[c] > log_factor
+            ]
+            sg.flagged = bool(over)
+            if not sg.flagged:
+                hist.append(sg.plaus)
         else:
-            train = win
-            kind = "window refit"
-        if train.sum() < nb["min_train_hours"]:
-            infos.append({**info, "model": "rule floor only (too few hours)", "n_train": int(train.sum())})
-            continue
-        covered = all(seasonal_coverage(clean.loc[train, "hour_utc"], cfg).values())
-        if w["start"] < cutoff and not covered and seg_end <= cutoff:
-            infos.append(
-                {**info, "model": "rule floor only (no seasonal coverage)", "n_train": int(train.sum())}
-            )
-            continue
-        n0 = int(train.sum())
-        models = fit_models(x[train], reg[train], cols, candidate, cfg)
-        score_from = we
-        updates = month_starts(max(cutoff, w["window_end"]), seg_end) if not covered else []
-        bounds = [score_from, *[_naive([m])[0] for m in updates], _naive([seg_end])[0]]
-        seg_scores: list[pd.DataFrame] = []
-        versions: list[dict[str, Any]] = []
-        n_updates = 0
-        last = max(cut, we)
-        for i in range(len(bounds) - 1):
-            a, b = bounds[i], bounds[i + 1]
-            if versions and versions[-1]["update"] == n_updates:
-                versions[-1]["effective_to"] = _utc_ts(b)
-            else:
-                versions.append(
-                    {
-                        "update": n_updates,
-                        "effective_from": _utc_ts(a),
-                        "effective_to": _utc_ts(b),
-                        "models": models,
-                    }
-                )
-            part = _score(clean, x, rows_k & (t >= a) & (t < b), models, top_k, f"segment {k}", n_updates)
-            seg_scores += part
-            if i == len(bounds) - 2 or covered:
-                continue
-            done = pd.concat(seg_scores, ignore_index=True) if seg_scores else pd.DataFrame()
-            own = exceedance_hours(done, op, nb["persistence_hours"]) if len(done) else pd.DataFrame()
-            own_recent = _recent(
-                t, _naive(own["ts"]) if len(own) else np.array([], dtype="datetime64[ns]"), gap
-            )
-            add = rows_k & finite & (t >= last) & (t < b) & ~blocked_work & ~rule_recent & ~own_recent
-            train = train | add
-            last = b
-            models = fit_models(x[train], reg[train], cols, candidate, cfg)
-            n_updates += 1
-            covered = all(seasonal_coverage(clean.loc[train, "hour_utc"], cfg).values())
-        out += seg_scores
-        infos.append(
+            over = []
+        a = _naive([sg.start])[0]
+        if sg.level is None:
+            state[rows_k] = "no level"
+        else:
+            r = _naive([sg.ready])[0]
+            state[rows_k & (t >= a) & (t < r)] = "recentering"
+            after = rows_k & (t >= r)
+            state[after] = "plausibility" if sg.flagged else "scored"
+            lvl[after] = sg.level
+        seg_rows.append(
             {
-                **info,
-                "model": kind,
-                "n_train": n0,
-                "n_train_final": int(train.sum()),
-                "monthly_updates": n_updates,
-                "seasonal_coverage": covered,
-                "models": ",".join(models),
+                "point_id": model.point_id,
+                "segment": k,
+                "segment_start": sg.start,
+                "reason": sg.reason,
+                "level_ready": sg.ready,
+                "level_hours": sg.n_level_hours,
+                "trained": bool(trained),
+                "plausibility_flag": bool(sg.flagged),
+                "plausibility_over": ",".join(over),
+                **{f"level_log10_{c}": sg.plaus.get(c, np.nan) for c in PLAUSIBILITY},
             }
         )
-        train_rows.append(clean[train].assign(segment=int(k), segment_start=w["start"]))
-        seg_models.append(
-            {
-                "segment": int(k),
-                "start": w["start"],
-                "reason": w["reason"],
-                "models": models,
-                "versions": versions,
-            }
-        )
-    scores = (
-        pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
-        if out
-        else pd.DataFrame()
-    )
-    tr = pd.concat(train_rows, ignore_index=True) if train_rows else pd.DataFrame()
-    return scores, infos, tr, seg_models
+    hr = pd.to_datetime(clean["hour_utc"], utc=True)
+    span = ((hr >= start) & (hr < end)).to_numpy()
+    sc = (state == "scored") & span & np.isfinite(lvl).all(axis=1) & np.isfinite(x).all(axis=1)
+    score = np.full(len(clean), np.nan)
+    contrib_txt = np.full(len(clean), "", dtype=object)
+    if sc.any():
+        raw = np.column_stack([x[sc] - lvl[sc], _one_hot(clean[sc], bands[sc])])
+        s, contrib = model.raw_scores(model.scaler.transform(raw))
+        score[sc] = s
+        contrib_txt[sc] = model.contributors(contrib, top_k)
+    out = pd.DataFrame(
+        {
+            "point_id": model.point_id,
+            "hour_utc": hr.to_numpy(),
+            "segment": seg,
+            "regime": clean["regime"].to_numpy(),
+            "speed_band": bands,
+            "state": state,
+            "score": score,
+            "temp_resid_c": clean[TEMP_RESID].to_numpy(dtype=float),
+            "top_contributors": contrib_txt,
+        }
+    )[span]
+    pcts = sorted(set(nb["sweep_percentiles"]) | {nb["threshold_percentile"]})
+    b = out["speed_band"].to_numpy()
+    for p in pcts:
+        out[f"thr_{p:g}"] = model.threshold_for(b, p)
+    out["threshold"] = model.threshold_for(b, nb["threshold_percentile"])
+    return out.reset_index(drop=True), pd.DataFrame(seg_rows)
 
 
-def exceedance_hours(scores: pd.DataFrame, percentile: float, persistence: int) -> pd.DataFrame:
-    """Hours at which the score has exceeded the percentile threshold on persistence consecutive
-    measured hours (the persisted exceedances that alert episodes are built from)."""
-    col = f"thr_{percentile:g}"
+def exceedance_hours(scores: pd.DataFrame, threshold_col: str, persistence: int) -> pd.DataFrame:
+    """Hours at which the score has exceeded the threshold column on persistence consecutive scored hours
+    (the persisted exceedances that ALERT episodes are built from)."""
     rows = []
-    for pid, g in scores.sort_values("hour_utc").groupby("point_id"):
-        over = (g["score"] > g[col]).to_numpy()
+    s = scores[scores["state"] == "scored"] if "state" in scores else scores
+    for pid, g in s.sort_values("hour_utc").groupby("point_id"):
+        over = (g["score"] > g[threshold_col]).to_numpy()
         run = np.zeros(len(over), dtype=int)
         c = 0
         for i, o in enumerate(over):
@@ -623,7 +657,7 @@ def exceedance_hours(scores: pd.DataFrame, percentile: float, persistence: int) 
                     {
                         "point_id": pid,
                         "ts": g["hour_utc"].to_numpy()[hit],
-                        "ratio": (g["score"] / g[col]).to_numpy()[hit],
+                        "ratio": (g["score"] / g[threshold_col]).to_numpy()[hit],
                         "top_contributors": g["top_contributors"].to_numpy()[hit],
                     }
                 )
@@ -633,46 +667,3 @@ def exceedance_hours(scores: pd.DataFrame, percentile: float, persistence: int) 
         if rows
         else pd.DataFrame(columns=["point_id", "ts", "ratio", "top_contributors"])
     )
-
-
-def season_of(hours: pd.Series, cfg: dict[str, Any]) -> pd.Series:
-    m = pd.to_datetime(hours, utc=True).dt.tz_convert("America/Chicago").dt.month
-    out = pd.Series("shoulder", index=hours.index, dtype=object)
-    for season, (a, b) in cfg["models"]["nbm"]["coverage_months"].items():
-        months = list(range(a, b + 1)) if a <= b else list(range(a, 13)) + list(range(1, b + 1))
-        out[m.isin(months).to_numpy()] = season
-    return out
-
-
-def exceedance_diagnosis(
-    scores: pd.DataFrame,
-    segments: pd.DataFrame,
-    percentile: float,
-    periods: dict[str, tuple[pd.Timestamp, pd.Timestamp]],
-    cfg: dict[str, Any],
-) -> pd.DataFrame:
-    """Share of scored hours above the percentile threshold per point, segment (install, then each
-    repair or remount), period, regime and season."""
-    col = f"thr_{percentile:g}"
-    s = scores.copy()
-    s["hour_utc"] = pd.to_datetime(s["hour_utc"], utc=True)
-    s["over"] = s["score"] > s[col]
-    s["season"] = season_of(s["hour_utc"], cfg).to_numpy()
-    s["period"] = "other"
-    for name, (a, b) in periods.items():
-        s.loc[(s["hour_utc"] >= a) & (s["hour_utc"] < b), "period"] = name
-    parts = []
-    for pid, g in s.groupby("point_id"):
-        seg = segments[segments["point_id"] == pid].sort_values("start").reset_index(drop=True)
-        idx = segment_ids(g["hour_utc"], list(seg["start"]))
-        g = g.assign(segment=idx)
-        g["segment_start"] = [seg["start"].iat[i] if i >= 0 else pd.NaT for i in idx]
-        g["segment_reason"] = [seg["reason"].iat[i] if i >= 0 else "" for i in idx]
-        parts.append(
-            g.groupby(
-                ["point_id", "segment", "segment_start", "segment_reason", "period", "regime", "season"]
-            )
-            .agg(hours=("over", "size"), exceed_share=("over", "mean"))
-            .reset_index()
-        )
-    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()

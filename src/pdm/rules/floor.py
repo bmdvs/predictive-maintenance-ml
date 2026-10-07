@@ -122,7 +122,7 @@ def rule_floor_alerts(
     return vendor_alerts(scalars, pts, sensor_events, cfg).unionByName(iso_alerts(indicators, cfg))
 
 
-EXCEED_SCHEMA = "method string, sweep double, point_id string, ts timestamp, level string"
+EXCEED_SCHEMA = "method string, sweep double, point_id string, ts timestamp, level string, rules string"
 
 
 def rule_floor_exceedances(
@@ -135,7 +135,8 @@ def rule_floor_exceedances(
     until: pd.Timestamp | None = None,
 ) -> DataFrame:
     """Persisted exceedances without re-alert suppression, for alert episodes: the vendor rules at each
-    alert offset (alarm offset at twice it, as configured) and the ISO zone rule, before until (UTC)."""
+    alert offset (alarm offset at twice it, as configured) and the ISO zone rule, before until (UTC),
+    with the rules met at each hour (the criteria the persistence escalation follows)."""
     res = scalars.where(F.col("axis") == "res").join(pts.select("point_id", "point_class"), "point_id")
     cols = [c for c in res.columns if not c.startswith("_")]
     se = sensor_events.select("point_id", "ts", "event")
@@ -145,7 +146,7 @@ def rule_floor_exceedances(
 
     def vendor_fn(pdf: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
         if pdf.empty:
-            return pd.DataFrame(columns=["method", "sweep", "point_id", "ts", "level"])
+            return pd.DataFrame(columns=["method", "sweep", "point_id", "ts", "level", "rules"])
         pid = pdf["point_id"].iat[0]
         base = VendorRuleSettings.for_point(cfg, pdf["point_class"].iat[0])
         pdf = pdf.copy()
@@ -165,18 +166,19 @@ def rule_floor_exceedances(
                             "point_id": pid,
                             "ts": pd.to_datetime(a["alert_ts"]).dt.tz_convert("UTC").dt.tz_localize(None),
                             "level": a["level"],
+                            "rules": a["rules"],
                         }
                     )
                 )
         return (
             pd.concat(parts, ignore_index=True)
             if parts
-            else pd.DataFrame(columns=["method", "sweep", "point_id", "ts", "level"])
+            else pd.DataFrame(columns=["method", "sweep", "point_id", "ts", "level", "rules"])
         )
 
     iso_cfg = {**cfg, "rules": {**cfg["rules"], "suppression_days": 0.0}}
     iso = iso_alerts(indicators, iso_cfg).select(
-        "method", F.lit(0.0).alias("sweep"), "point_id", F.col("alert_ts").alias("ts"), "level"
+        "method", F.lit(0.0).alias("sweep"), "point_id", F.col("alert_ts").alias("ts"), "level", "rules"
     )
     out = (
         res.select(*cols)

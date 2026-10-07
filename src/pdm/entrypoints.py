@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from pdm import log, registry, tasks
+from pdm import log, ml_tasks, registry, tasks
 from pdm.config import load_config
 from pdm.store import Store
 
@@ -60,7 +60,7 @@ def setup(prog: str, argv: list[str] | None = None) -> tuple[Store, dict[str, An
     return Store(spark, catalog=args.catalog), cfg, args
 
 
-TRAIN_STAGES = ("rule_floor", "nbm", "controller_health", "survival", "supervised")
+TRAIN_STAGES = ("rule_floor", "ml_model", "controller_health", "survival", "supervised")
 
 
 MONITOR_STAGES = ("evaluation", "monitoring")
@@ -82,16 +82,17 @@ def train_stages(value: str) -> list[str]:
 
 
 def train_models(argv: list[str] | None = None) -> None:
-    """Rule-floor comparison runs, per-point model challengers, controller health, survival and the
-    supervised gate; --train-stages runs a subset (a survival-only run logs no per-point challenger)."""
+    """Rule-floor comparison runs, the ML Model's training run (expanding-window selection on two folds,
+    the champion refit on all of training), controller health, survival and the supervised gate;
+    --train-stages runs a subset."""
     store, cfg, args = setup("pdm-train-models", argv)
     root = args.experiment_root.rstrip("/")
     stages = train_stages(args.train_stages)
     LOG.info("training stages %s", stages)
     if "rule_floor" in stages:
         tasks.rule_floor_task(store, cfg, f"{root}/rule_floor")
-    if "nbm" in stages:
-        tasks.nbm_task(store, cfg, f"{root}/nbm", job_run_id=args.job_run_id)
+    if "ml_model" in stages:
+        ml_tasks.train_task(store, cfg, f"{root}/ml_model", job_run_id=args.job_run_id)
     if "controller_health" in stages:
         tasks.controller_health_task(store, cfg, f"{root}/controller_health")
     if "survival" in stages:
@@ -101,7 +102,8 @@ def train_models(argv: list[str] | None = None) -> None:
 
 
 def promote(argv: list[str] | None = None) -> None:
-    """Register the challenger, evaluate the gates and move the champion alias when allowed."""
+    """Register the training run's champion, evaluate the gates once and move the champion alias when
+    allowed."""
     store, cfg, args = setup("pdm-promote", argv)
     out = registry.promote(
         store,
@@ -116,7 +118,7 @@ def promote(argv: list[str] | None = None) -> None:
 
 
 def champion(catalog: str) -> tuple[Any, str]:
-    """The champion per-point models from the Unity Catalog registry and their version label."""
+    """The frozen ML Model from the Unity Catalog registry and its version label."""
     import mlflow
     from mlflow import MlflowClient
 
@@ -128,21 +130,22 @@ def champion(catalog: str) -> tuple[Any, str]:
 
 
 def score(argv: list[str] | None = None) -> None:
-    """Per-point model scores from the champion, then prognosis, fusion and advisory."""
+    """The shadow year scored with the frozen ML Model, then prognosis, and the levels of both methods
+    (ALERT episodes and ALARM starts) with the ML Model's cases and work requests."""
     store, cfg, args = setup("pdm-score", argv)
     model, version = champion(args.catalog)
-    tasks.nbm_score_task(store, cfg, model, version)
+    ml_tasks.score_task(store, cfg, model, version)
     tasks.prognosis_task(store, cfg)
-    tasks.fusion_advisory_task(store, cfg)
+    ml_tasks.levels_task(store, cfg)
 
 
 def monitor(argv: list[str] | None = None) -> None:
-    """Evaluation, then monitoring (skipped while the shadow quarter is held out); --monitor-stages monitoring
-    recomputes monitoring as of a month without rewriting that month's published evaluation."""
+    """Evaluation, then monitoring over the twelve shadow-year months (skipped while the shadow year is held
+    out); --monitor-stages runs one of them."""
     store, cfg, args = setup("pdm-monitor", argv)
     run = stages(args.monitor_stages, MONITOR_STAGES)
     LOG.info("monitor stages %s", run)
     if "evaluation" in run:
-        tasks.evaluation_task(store, cfg)
+        ml_tasks.evaluation_task(store, cfg)
     if "monitoring" in run:
-        tasks.monitoring_task(store, cfg)
+        ml_tasks.monitoring_task(store, cfg)

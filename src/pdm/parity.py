@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 import time
 from typing import Any
 
 import pandas as pd
 
-from pdm import log, paths, tasks
+from pdm import log, ml_tasks, paths, tasks
 from pdm.config import load_config
 from pdm.features import baselines, controller, indicators, points, rolling, windows
 from pdm.ingest.bronze import BRONZE_TABLES, read_batch
@@ -28,8 +29,9 @@ from pdm.store import Store
 
 LOG = log.get_logger("pdm.parity")
 SKIP_BRONZE_COPY = {"ctrl_hz1"}
-MODEL_STAGES = ("nbm", "controller_health", "survival", "supervised", "prognosis")
-STAGES = ("bronze", "silver", "gold", *MODEL_STAGES, "fusion", "evaluation", "monitoring")
+MODEL_STAGES = ("ml_train", "controller_health", "survival", "supervised", "prognosis")
+STAGES = ("bronze", "silver", "gold", *MODEL_STAGES, "ml_score", "levels", "evaluation", "monitoring")
+MODEL_FILE = "ml_model.pkl"
 
 
 def run(stages: tuple[str, ...] = STAGES, as_of: str | None = None) -> dict[str, Any]:
@@ -169,37 +171,45 @@ def run(stages: tuple[str, ...] = STAGES, as_of: str | None = None) -> dict[str,
         done("gold", t0)
 
     model_tasks = {
-        "nbm": tasks.nbm_task,
+        "ml_train": ml_tasks.train_task,
         "controller_health": tasks.controller_health_task,
         "survival": tasks.survival_task,
         "supervised": tasks.supervised_task,
         "prognosis": tasks.prognosis_task,
     }
+    model_path = paths.LOCAL_GOLD_DIR / MODEL_FILE
     for name, fn in model_tasks.items():
         if name in stages:
             t0 = stage(name)
             r = fn(store, cfg)
-            if name == "nbm":
-                model = r.pop("model")
-                r["scoring"] = tasks.nbm_score_task(store, cfg, model, f"{r['challenger']}/{r['version']}")
+            if name == "ml_train":
+                with model_path.open("wb") as fh:
+                    pickle.dump({"model": r.pop("model"), "version": r["version"]}, fh)
             summary["tasks"][name] = _jsonable(r)
             done(name, t0)
 
-    if "fusion" in stages:
-        t0 = stage("fusion")
-        summary["tasks"]["fusion"] = tasks.fusion_advisory_task(store, cfg)
-        done("fusion", t0)
+    if "ml_score" in stages:
+        t0 = stage("ml_score")
+        with model_path.open("rb") as fh:
+            saved = pickle.load(fh)  # noqa: S301 (the local run's own model file)
+        summary["tasks"]["ml_score"] = ml_tasks.score_task(store, cfg, saved["model"], saved["version"])
+        done("ml_score", t0)
+
+    if "levels" in stages:
+        t0 = stage("levels")
+        summary["tasks"]["levels"] = _jsonable(ml_tasks.levels_task(store, cfg))
+        done("levels", t0)
 
     if "evaluation" in stages:
         t0 = stage("evaluation")
-        r = tasks.evaluation_task(store, cfg)
+        r = ml_tasks.evaluation_task(store, cfg)
         keys = ("matched", "headline", "conditions", "sensor_conditions", "periods")
         summary["tasks"]["evaluation"] = _jsonable({k: r[k] for k in keys if k in r})
         done("evaluation", t0)
 
     if "monitoring" in stages:
         t0 = stage("monitoring")
-        r = tasks.monitoring_task(store, cfg)
+        r = ml_tasks.monitoring_task(store, cfg)
         summary["tasks"]["monitoring"] = _jsonable(r)
         done("monitoring", t0)
 

@@ -5,11 +5,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pdm import splits, tasks
+from pdm import splits
 from pdm.advisory.requests import asset_kind, family_of, suspected
 from pdm.config import load_config
 from pdm.evaluation import events as ev
-from pdm.fusion.status import cases, status_changes
 from pdm.models import controller_health as ch
 from pdm.models import nbm, prognosis
 
@@ -22,8 +21,20 @@ def test_chronological_split_and_gap():
         pd.to_datetime(["2023-08-01", "2025-06-25", "2025-08-01", "2026-03-25", "2026-05-01"], utc=True)
     )
     lab = splits.chronological(ts, CFG)
-    assert list(lab) == ["training", "gap", "validation", "gap", "shadow"]
+    assert list(lab) == ["training", "gap", "shadow", "shadow", "shadow"]
     assert splits.training_cutoff(CFG) < pd.Timestamp("2025-07-01", tz=UTC)
+
+
+def test_expanding_folds_inside_training():
+    fs = splits.folds(CFG)
+    cutoff = splits.training_cutoff(CFG)
+    assert [f["fold"] for f in fs] == [1, 2]
+    for f in fs:
+        assert f["cutoff"] <= f["score"][0] - pd.Timedelta(days=CFG["splits"]["gap_days"])
+        assert f["score"][1] <= splits.boundaries(CFG)["train"][1] and f["cutoff"] < cutoff
+    assert fs[0]["fit_start"] == fs[1]["fit_start"] and fs[0]["cutoff"] < fs[1]["cutoff"]
+    a, b = splits.reference_window(CFG)
+    assert b == cutoff and (b - a).days in range(181, 185)
 
 
 def test_leave_one_asset_out():
@@ -37,6 +48,8 @@ def _healthy(n: int, start: str, seed: int) -> pd.DataFrame:
     d = pd.DataFrame(
         {
             "point_id": "P",
+            "asset_id": "A",
+            "point_class": "flood_pump",
             "hour_utc": t,
             "regime": "running",
             "implausible": False,
@@ -50,6 +63,9 @@ def _healthy(n: int, start: str, seed: int) -> pd.DataFrame:
             "env_bpfo_1_g2": rng.lognormal(-9, 0.1, n),
             "env_bpfi_1_g2": rng.lognormal(-9, 0.1, n),
             "env_bsf_1_g2": rng.lognormal(-9, 0.1, n),
+            "temp_c": rng.normal(35, 0.3, n),
+            "speed_rpm_at_measurement": 3450.0,
+            "load_pct_at_measurement": np.nan,
         }
     )
     for b in range(1, 9):
@@ -61,31 +77,107 @@ def _year(seed: int) -> pd.DataFrame:
     return _healthy(24 * 400, "2023-07-05", seed)
 
 
+def _windows(*starts: pd.Timestamp) -> pd.DataFrame:
+    return pd.DataFrame(
+        {"point_id": "P", "start": list(starts), "reason": ["install"] + ["repair W"] * (len(starts) - 1)}
+    )
+
+
+def _settings(cand: str, mode: str = "single") -> nbm.Settings:
+    if cand in nbm.AUTOENCODERS:
+        return nbm.Settings(cand, (8, 4, 8), 50, mode)
+    return nbm.Settings(cand, (), 0, mode)
+
+
 @pytest.mark.parametrize("cand", nbm.CANDIDATES)
 def test_nbm_shape_determinism_and_anomaly(cand):
     rows = _year(1)
     cutoff = pd.Timestamp("2024-07-01", tz=UTC)
-    starts = [rows["hour_utc"].min()]
-    m1, info = nbm.fit_point(rows, cand, CFG, cutoff, [], starts)
-    m2, _ = nbm.fit_point(rows, cand, CFG, cutoff, [], starts)
-    assert info["covers_summer"] and info["covers_winter"] and set(m1) == {"running"}
-    test = rows[rows["hour_utc"] >= cutoff].head(50)
-    s1, s2 = nbm.score_point(test, m1, CFG, starts, 3), nbm.score_point(test, m2, CFG, starts, 3)
-    assert len(s1) == len(test) and np.allclose(s1["score"], s2["score"])
+    win = _windows(rows["hour_utc"].min())
+    st = _settings(cand)
+    m1, info = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    m2, _ = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    assert set(m1) == {st.key} and info["n_train"] > 1000
+    end = cutoff + pd.Timedelta(hours=50)
+    s1, _ = nbm.score_point(m1[st.key], rows, win, CFG, cutoff, end, 1.45, 3)
+    s2, _ = nbm.score_point(m2[st.key], rows, win, CFG, cutoff, end, 1.45, 3)
+    assert len(s1) == 50 and (s1["state"] == "scored").all() and np.allclose(s1["score"], s2["score"])
     assert {f"thr_{p:g}" for p in CFG["models"]["nbm"]["sweep_percentiles"]} <= set(s1.columns)
-    bad = test.copy()
-    bad["hf_rms_g"] *= 4
-    bad["env_bpfo_1_g2"] *= 50
-    bad[[c for c in bad.columns if c.startswith("toct_")]] *= 20
-    assert nbm.score_point(bad, m1, CFG, starts, 3)["score"].median() > s1["score"].median()
+    bad = rows.copy()
+    late = bad["hour_utc"] >= cutoff
+    bad.loc[late, "hf_rms_g"] *= 4
+    bad.loc[late, "env_bpfo_1_g2"] *= 50
+    bad.loc[late, [c for c in bad.columns if c.startswith("toct_")]] *= 20
+    s3, _ = nbm.score_point(m1[st.key], bad, win, CFG, cutoff, end, 1.45, 3)
+    assert s3["score"].median() > s1["score"].median()
 
 
-def test_nbm_seasonal_coverage_required():
-    rows = _healthy(24 * 60, "2023-07-05", 2)
-    models, info = nbm.fit_point(
-        rows, "mahalanobis", CFG, pd.Timestamp("2024-07-01", tz=UTC), [], [rows["hour_utc"].min()]
+def _shifted(factor: float, repair: pd.Timestamp, seed: int) -> pd.DataFrame:
+    rows = _year(seed)
+    shift = rows["hour_utc"] >= repair
+    for c in ("hf_rms_g", "vel_rms_mm_s", "accel_rms_g", *[c for c in rows.columns if c.startswith("toct_")]):
+        rows.loc[shift, c] *= factor
+    return rows
+
+
+def test_nbm_recentering_absorbs_a_plausible_level_shift():
+    repair = pd.Timestamp("2024-07-15", tz=UTC)
+    rows = _shifted(1.2, repair, 5)
+    cutoff = pd.Timestamp("2024-07-01", tz=UTC)
+    win = _windows(rows["hour_utc"].min(), repair)
+    st = _settings("mahalanobis")
+    m, _ = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    s, segs = nbm.score_point(m[st.key], rows, win, CFG, cutoff, pd.Timestamp("2024-09-01", tz=UTC), 1.45, 3)
+    lo = pd.Timedelta(days=CFG["models"]["nbm"]["recenter_days"][0])
+    forming = s[(s["hour_utc"] >= repair) & (s["hour_utc"] < repair + lo)]
+    assert len(forming) and (forming["state"] == "recentering").all() and forming["score"].isna().all()
+    after = s[(s["hour_utc"] >= repair + pd.Timedelta(days=8)) & (s["state"] == "scored")]
+    assert len(after) and (after["score"] > after["threshold"]).mean() < 0.05
+    assert not segs["plausibility_flag"].any() and list(segs["trained"]) == [True, False]
+
+
+def test_nbm_plausibility_flags_a_high_level_after_the_cutoff():
+    repair = pd.Timestamp("2024-07-15", tz=UTC)
+    rows = _shifted(3.0, repair, 6)
+    cutoff = pd.Timestamp("2024-07-01", tz=UTC)
+    win = _windows(rows["hour_utc"].min(), repair)
+    st = _settings("mahalanobis")
+    m, _ = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    s, segs = nbm.score_point(m[st.key], rows, win, CFG, cutoff, pd.Timestamp("2024-09-01", tz=UTC), 1.45, 3)
+    assert bool(segs["plausibility_flag"].iat[1]) and "hf_rms_g" in segs["plausibility_over"].iat[1]
+    after = s[s["hour_utc"] >= repair + pd.Timedelta(days=8)]
+    assert len(after) and (after["state"] == "plausibility").all() and after["score"].isna().all()
+    low = _shifted(0.4, repair, 6)
+    _, segs_low = nbm.score_point(
+        m[st.key], low, win, CFG, cutoff, pd.Timestamp("2024-09-01", tz=UTC), 1.45, 3
     )
-    assert models == {} and info["covers_summer"] and not info["covers_winter"]
+    assert not segs_low["plausibility_flag"].any()
+
+
+def test_nbm_trains_across_segments_before_the_cutoff():
+    repair = pd.Timestamp("2024-01-15", tz=UTC)
+    rows = _shifted(3.0, repair, 7)
+    cutoff = pd.Timestamp("2024-07-01", tz=UTC)
+    win = _windows(rows["hour_utc"].min(), repair)
+    st = _settings("mahalanobis")
+    m, _ = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    pm = m[st.key]
+    assert pm.segments_trained == 2 and len(pm.train_levels) == 2
+    s, segs = nbm.score_point(pm, rows, win, CFG, rows["hour_utc"].min(), cutoff, 1.45, 3)
+    sc = s[s["state"] == "scored"]
+    pre, post = sc[sc["hour_utc"] < repair], sc[sc["hour_utc"] >= repair]
+    assert len(pre) and len(post) and (post["score"] > post["threshold"]).mean() < 0.05
+    assert segs["trained"].all() and not segs["plausibility_flag"].any()
+
+
+def test_nbm_settings_grid_and_complexity():
+    grid = nbm.settings_grid(CFG)
+    g = CFG["models"]["nbm"]["selection_grid"]
+    n_ae = len(g["autoencoder_hidden"]) * len(g["autoencoder_epochs"])
+    assert len(grid) == len(g["threshold_mode"]) * (3 + 2 * n_ae)
+    order = sorted(grid, key=nbm.complexity)
+    assert order[0].candidate == "pca_t2_spe" and order[0].threshold_mode == "single"
+    assert order[-1].candidate == "autoencoder_extended"
 
 
 def test_nbm_refuses_leaked_rows():
@@ -113,8 +205,10 @@ def test_nbm_exceedance_persistence():
             "top_contributors": "x",
         }
     )
-    ex = nbm.exceedance_hours(s, 99.5, 6)
+    ex = nbm.exceedance_hours(s, "thr_99.5", 6)
     assert list(ex["ts"]) == [s["hour_utc"].iat[7]]
+    s["state"] = ["scored"] * 7 + ["recentering"]
+    assert nbm.exceedance_hours(s, "thr_99.5", 6).empty
 
 
 def test_controller_drift_and_thermistor():
@@ -154,56 +248,41 @@ def test_prognosis_bayesian_intervals_and_alpha_lambda():
     assert (p["pi_low"] <= p["pred_rul_days"]).all() and (p["pred_rul_days"] <= p["pi_high"]).all()
 
 
-def test_fusion_rule_floor_watch_then_model_alarm_and_case():
-    t = pd.Timestamp("2024-03-01", tz=UTC)
-    sig = pd.DataFrame(
+def test_ml_cases_and_status_from_episodes():
+    from pdm import ml_tasks
+
+    t = pd.Timestamp("2025-09-01", tz=UTC)
+    eps = pd.DataFrame(
         {
-            "method": ["vendor", "nbm"],
-            "asset_id": "A",
-            "machine_id": "M",
-            "point_id": "P",
-            "ts": [t, t + pd.Timedelta(hours=2)],
-            "level": "alert",
-            "rules": "r",
+            "asset_id": ["A", "A"],
+            "opened": [t, t + pd.Timedelta(days=40)],
+            "last": [t + pd.Timedelta(days=2), t + pd.Timedelta(days=41)],
+            "closed": [t + pd.Timedelta(days=9), t + pd.Timedelta(days=48)],
+            "trigger_points": ["A-F", "A-R"],
+            "trigger_rules": ["", ""],
+            "alarm_ts": [t + pd.Timedelta(days=1), pd.NaT],
         }
     )
-    ch_ = status_changes(sig, CFG)
-    assert list(ch_["status"])[:2] == ["WATCH", "ALARM"]
-    wo = pd.DataFrame(
-        {"asset_id": ["A"], "wo_id": ["W1"], "wo_type": ["corrective"], "closed": [t + pd.Timedelta(days=3)]}
-    )
-    c = cases(ch_, sig, wo, 7)
-    assert len(c) == 1 and c["closing_wo"].iat[0] == "W1" and c["closed_by"].iat[0] == "work order"
-    late = wo.assign(closed=[t + pd.Timedelta(days=30)])
-    c2 = cases(ch_, sig, late, 7)
-    assert c2["closed_by"].iat[0] == "quiet" and c2["closed"].iat[0] == t + pd.Timedelta(hours=2, days=7)
-    sig3 = pd.concat(
-        [
-            sig,
-            sig.iloc[[1]].assign(ts=t + pd.Timedelta(days=4)),
-            sig.iloc[[1]].assign(ts=t + pd.Timedelta(days=5)),
-        ],
-        ignore_index=True,
-    )
-    c3 = cases(status_changes(sig3, CFG), sig3, wo, 7)
-    assert len(c3) == 2 and c3["opened"].iat[1] == t + pd.Timedelta(days=4)
-    assert c3["chain_opened"].iat[1] == c3["opened"].iat[0]
-    insp = wo.assign(wo_type="inspection")
-    c4 = cases(status_changes(sig3, CFG), sig3, insp, 7)
-    assert len(c4) == 1 and c4["closed_by"].iat[0] == "quiet"
+    c = ml_tasks.ml_cases(eps)
+    assert list(c["level"]) == ["ALARM", "ALERT"] and c["case_id"].iat[0] == "A|2025090100"
+    st = ml_tasks.status_changes(eps)
+    assert list(st["status"]) == ["ALERT", "ALARM", "OK", "ALERT", "OK"]
 
 
 def test_advisory_rules():
     z = 3.0
-    assert suspected({"env_bpfi": 5.0, "hf": 40.0}, "flood_pump", z)[0] == "cavitation or wear"
-    assert suspected({"env_bpfi": 5.0, "hf": 40.0}, "tsc_pump", z)[0] == "bearing"
-    assert suspected({"env_bpfi": 5.0, "hf": 40.0, "tsc_drop": 4.0}, "tsc_pump", z)[0] == "cavitation or wear"
-    assert suspected({"ord_01": 5.0}, "flood_pump", z)[0] == "imbalance"
+    assert suspected({"env_bpfi": 5.0, "hf": 40.0}, "flood_pump", z)[0] == "bearing"
+    assert suspected({"hf": 40.0}, "flood_pump", z)[0] == "cavitation or wear"
+    assert suspected({"env_bpfi": 5.0, "hf": 40.0, "tsc_drop": 4.0}, "tsc_pump", z)[0] == "bearing"
+    assert suspected({"hf": 40.0, "tsc_drop": 4.0}, "tsc_pump", z)[0] == "cavitation or wear"
+    assert suspected({"ord_01": 5.0, "hf": 9.0}, "flood_pump", z)[0] == "imbalance"
     assert suspected({"ord_01": 5.0}, "spindle", z)[0] == "unclassified"
     assert suspected({"hf": 4.0, "tsc_drop": 6.0, "thermistor": 50.0}, "spindle", z)[0] == "rotary union"
     assert suspected({"tsc_drop": 6.0}, "spindle", z)[0] == "unclassified"
     assert suspected({"hf": 40.0, "env_bpfo": 3.5}, "spindle", z)[0] == "bearing"
-    assert suspected({"hf": 4.0}, "spindle", z)[0] == "lubrication"
+    assert suspected({"hf": 4.0, "temp": 4.0}, "spindle", z)[0] == "lubrication"
+    assert suspected({"hf": 4.0}, "spindle", z)[0] == "contamination"
+    assert suspected({"temp": 4.0}, "spindle", z)[0] == "spindle cooling"
     assert suspected({"thermistor": 4.0, "env_bpfo": 9.0}, "spindle", z)[0] == "spindle cooling"
     assert suspected({"discharge": 4.0, "env_bsf": 30.0}, "compressor", z)[0] == "cooler"
     assert suspected({"ord_02": 4.0, "ord_01": 3.5}, "compressor", z)[0] == "imbalance"
@@ -223,46 +302,21 @@ def test_advisory_rules():
 
 
 def test_champion_selection_prefers_simpler_within_margin():
+    from pdm import ml_tasks
+
     sel = pd.DataFrame(
-        {"candidate": ["autoencoder_third_octave", "mahalanobis", "pca_t2_spe"], "skill": [0.40, 0.36, 0.20]}
-    )
-    assert tasks.select_champion(sel, 34, 2) == "mahalanobis"
-    assert tasks.select_champion(sel, 34, 1) == "autoencoder_third_octave"
-
-
-def test_nbm_segments_rebaseline_and_causal_updates():
-    rows = _year(4)
-    rows = rows[rows["hour_utc"] < pd.Timestamp("2024-09-01", tz=UTC)].reset_index(drop=True)
-    repair = pd.Timestamp("2024-06-01", tz=UTC)
-    shift = rows["hour_utc"] >= repair
-    rows.loc[shift, "hf_rms_g"] *= 3.0
-    rows.loc[shift, [c for c in rows.columns if c.startswith("toct_")]] *= 3.0
-    cutoff = pd.Timestamp("2024-05-01", tz=UTC)
-    rb = pd.Timedelta(days=CFG["models"]["nbm"]["rebaseline_days"])
-    win = pd.DataFrame(
         {
-            "window_id": ["P|install", "P|repair"],
-            "point_id": "P",
-            "reason": ["install", "repair W1"],
-            "start": [rows["hour_utc"].min(), repair],
-            "usable": True,
+            "settings": [
+                "autoencoder_third_octave [16-6-16] 200 ep, single",
+                "mahalanobis, single",
+                "pca_t2_spe, single",
+            ],
+            "skill": [0.40, 0.36, 0.20],
+            "complexity_rank": [6, 2, 0],
         }
     )
-    end = pd.Timestamp("2024-09-01", tz=UTC)
-    plan = nbm.segment_plan(win, set(), end, rb)
-    s, info, tr, _fitted = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], plan, end, 3, [], [])
-    assert [i["model"] for i in info] == ["segment fit", "window refit"]
-    assert info[1]["monthly_updates"] == 2 and info[1]["n_train_final"] > info[1]["n_train"]
-    assert set(tr["segment"]) == {0, 1}
-    july = [(pd.Timestamp("2024-07-01", tz=UTC), pd.Timestamp("2024-08-01", tz=UTC))]
-    _, info_b, _, _ = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], plan, end, 3, july, [])
-    assert info_b[1]["n_train_final"] < info[1]["n_train_final"]
-    assert not ((s["hour_utc"] >= repair) & (s["hour_utc"] < repair + rb)).any()
-    after = s[s["hour_utc"] >= repair + rb]
-    assert len(after) and (after["score"] > after["thr_99.5"]).mean() < 0.05
-    flagged = nbm.segment_plan(win, {"P|repair"}, end, rb)
-    s2, info2, _, _ = nbm.fit_score_segments(rows, "mahalanobis", CFG, cutoff, [], flagged, end, 3, [], [])
-    assert info2[1]["model"].startswith("rule floor only") and not (s2["hour_utc"] >= repair).any()
+    assert ml_tasks.select_champion(sel, 34, 2) == "mahalanobis, single"
+    assert ml_tasks.select_champion(sel, 34, 1) == "autoencoder_third_octave [16-6-16] 200 ep, single"
 
 
 def test_evaluation_episodes_catch_chance_and_budget():

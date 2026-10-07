@@ -5,7 +5,11 @@ the asset's points (daily median of hourly z-scores against the point's healthy 
 and regime) and the controller signals (TSC pressure drop, spindle thermistor residual, axis-load drift,
 compressor discharge temperature residual, as daily z-scores against the training period), taking the
 maximum z per indicator. The suspected condition is the first family in the asset kind's fixed
-precedence (specific signatures before generic) whose own indicators are at or above the threshold.
+precedence (specific signatures before generic) whose own indicators are at or above the threshold
+(revision 2 order: on spindles rotary union, spindle cooling, bearing, lubrication, contamination, with the
+housing temperature separating spindle cooling (temperature without HF) from lubrication (HF with
+temperature) and contamination (HF without temperature); on pumps bearing, imbalance, looseness, then
+cavitation or wear; compressors unchanged).
 Output: one work request per case with the condition, the indicators against baseline, the
 recommended inspection and the shadow-mode flag.
 """
@@ -26,6 +30,7 @@ INSPECTION = {
     "spindle cooling": "check spindle chiller and coolant flow",
     "cooler": "check compressor oil cooler and fan",
     "axis wear": "backlash and axis load check",
+    "contamination": "inspect seals and rotary union, check for coolant in the bearing area",
     "unclassified": "listen, temperature check",
 }
 FAULT_LOCATION = {"bpfo": "outer race", "bpfi": "inner race", "bsf": "ball"}
@@ -38,6 +43,7 @@ Z_INDICATORS = {
     "ord_3_10": "ord_3_10_g2",
     "hf": "hf_rms_g",
     "vel": "vel_rms_mm_s",
+    "temp": "temp_c",
 }
 CONTROLLER_INDICATORS = ("tsc_drop", "thermistor", "axis_drift", "discharge")
 ROBUST = 1.4826
@@ -259,26 +265,32 @@ def suspected(z: dict[str, float], kind: str, zthr: float) -> tuple[str, str]:
         k = max(env_hit, key=env_hit.get)
         bearing = ("bearing", f"{FAULT_LOCATION[k]} ({k.upper()} z {env_hit[k]:.1f})")
     rules: list[tuple[str, tuple[str, ...]] | str] = []
+    hf_up = hit("hf")
     if kind == "spindle":
+        if hit("thermistor") or (hit("temp") and not hf_up):
+            keys = ("thermistor",) if hit("thermistor") else ("temp",)
+            if hit("tsc_drop", "hf"):
+                return "rotary union", text("tsc_drop", "hf")
+            return "spindle cooling", text(*keys)
         rules = [
             ("rotary union", ("tsc_drop", "hf")),
-            ("spindle cooling", ("thermistor",)),
             "bearing",
-            ("lubrication", ("hf",)),
+            ("lubrication", ("hf", "temp")),
+            ("contamination", ("hf",)),
         ]
     elif kind == "tsc_pump":
         rules = [
-            ("cavitation or wear", ("tsc_drop", "hf")),
             "bearing",
             ("imbalance", ("ord_01",)),
             ("looseness", ("ord_3_10",)),
+            ("cavitation or wear", ("tsc_drop", "hf")),
         ]
     elif kind == "flood_pump":
         rules = [
-            ("cavitation or wear", ("hf",)),
             "bearing",
             ("imbalance", ("ord_01",)),
             ("looseness", ("ord_3_10",)),
+            ("cavitation or wear", ("hf",)),
         ]
     elif kind == "compressor":
         rules = [
@@ -341,6 +353,7 @@ CONDITION_FAMILY = {
     "spindle cooling": "spindle cooling",
     "cooler (compressor)": "cooler",
     "pump seal or impeller": "cavitation or wear",
+    "cavitation": "cavitation or wear",
 }
 
 

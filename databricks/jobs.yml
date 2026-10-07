@@ -1,10 +1,14 @@
-# pdm_monthly: pipeline update, then train (per-point model challengers and the other training tasks),
-# promote (register the challenger and move the champion alias when its gates pass), score (from the
-# champion) and monitor, as Python wheel tasks on one shared single-node job cluster. auto_promote false
-# registers and tags only, for a manual review cycle. as_of (YYYY-MM) sets the shadow-quarter month a
-# run covers: every task reads data to the end of that month. train_stages (all, or a comma-separated
-# subset of rule_floor, nbm, controller_health, survival, supervised) limits the train task;
-# monitor_stages (all, evaluation, monitoring) limits the monitor task.
+# pdm_monthly (revision 2, one evaluation run): pipeline update, then train (the ML Model's training run:
+# expanding-window selection on two folds inside training, the champion refit on all of training; the
+# rule-floor comparison, controller health, survival and the supervised gate), promote (register the
+# champion and run the gates once; auto_promote false registers and tags only), score (the shadow year
+# with the frozen ML Model, prognosis, the levels of both methods, the ML Model's cases and work
+# requests) and monitor (the evaluation, then monitoring for each of the twelve shadow-year months), as
+# Python wheel tasks on one shared single-node job cluster. train_stages (all, or a comma-separated subset
+# of rule_floor, ml_model, controller_health, survival, supervised) limits the train task; monitor_stages
+# (all, evaluation, monitoring) limits the monitor task. as_of is kept for the governance cycle and is
+# not used by the revision 2 tasks. (Originally a monthly champion and challenger cycle over the shadow
+# quarter.)
 resources:
   jobs:
     pdm_monthly:
