@@ -1475,11 +1475,11 @@ def alert_outcomes(
     S: pd.DataFrame, conds: pd.DataFrame, wo: pd.DataFrame, span: tuple[pd.Timestamp, pd.Timestamp]
 ) -> pd.DataFrame:
     """Each shadow-year ALERT episode's outcome by method: condition confirmed (a confirmed condition on the
-    asset while it was open); repair or PM reached the asset first for an unrelated reason (a repair, or a
-    PM with a finding, on the asset while open, with no confirmed condition); nothing found (an inspection
-    while open closed with no fault found, or no work at all); pending at the record end (open at the end
-    with nothing confirmed)."""
-    rep = wo[wo["wo_type"].isin(r2.REPAIRS) | ((wo["wo_type"] == "pm") & wo["failure_code"].notna())]
+    asset while it was open); repair or PM reached the asset first for an unrelated reason (a repair,
+    rebuild or PM work order on the asset while open, with no confirmed condition, as for ALARM); nothing
+    found (an inspection while open closed with no fault found, or no work at all); pending at the record end
+    (open at the end with nothing confirmed)."""
+    rep = wo[wo["wo_type"].isin((*r2.REPAIRS, "pm", "rebuild_order"))]
     insp = wo[wo["wo_type"] == "inspection"]
     rows = []
     for r in S[(S["opened"] >= span[0]) & (S["opened"] < span[1])].itertuples():
