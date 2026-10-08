@@ -593,8 +593,9 @@ splits:                                   # [fixed] 11
 models:                                   # [fixed]
   seed: 7
   nbm:
-    candidates: [pca_t2_spe, mahalanobis, isolation_forest, autoencoder_third_octave, autoencoder_extended, pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended]   # step 6 design freeze 2026-10-30: extended variants of PCA, Mahalanobis and isolation forest on the autoencoder_extended inputs (was the first five; rev2 R3.3.4 added autoencoder_extended)
-    selection_candidates: [pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended, autoencoder_extended]   # step 6 design freeze: selection between model types on the shared extended input set; the summary-input candidates and the band-only autoencoder are ablations (was all candidates)
+    candidates: [pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended, autoencoder_extended, pca_t2_spe_vendor, mahalanobis_vendor, isolation_forest_vendor, autoencoder_vendor, pca_t2_spe_vendor_octave, mahalanobis_vendor_octave, isolation_forest_vendor_octave, autoencoder_vendor_octave]   # checkpoint (b) diagnosis decisions 2026-10-30, item 4: every model type on input sets (a) extended, (b) vendor and (c) vendor_octave; was [pca_t2_spe, mahalanobis, isolation_forest, autoencoder_third_octave, autoencoder_extended, pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended] (step 6 design freeze; originally the first five)
+    selection_candidates: null              # checkpoint (b) diagnosis decisions 2026-10-30: selection over every candidate above; was [pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended, autoencoder_extended] (step 6 design freeze)
+    robust_trim_share: 0.01                 # checkpoint (b) diagnosis decisions 2026-10-30, item 3.2: drop the top 1 percent of each point's first-fit training scores and refit once; was 0 (single fit)
     model_scope: per_point_all_segments     # rev2 R3.3.1: one model per point over every training segment, segment-relative features (was per segment)
     recenter_days: [3, 7]                   # rev2 R3.3.2: new level from the first days after a repair or remount; no model alerts meanwhile
     recenter_min_hours: 24                  # step 6: the level window ends after recenter_days[0] once this many measured hours have accumulated, at most recenter_days[1]
@@ -610,7 +611,7 @@ models:                                   # [fixed]
     min_regime_healthy_hours: 200
     threshold_percentile: 99.5
     persistence_hours: 6                    # step 5 review: model-layer persistence (rule floor keeps 2)
-    exclude_before_condition_days: 30       # step 5 review: training excludes the 30 days before any confirmed condition
+    exclude_before_condition_days: 120      # checkpoint (b) diagnosis decisions 2026-10-30, item 3.1: the evaluation's healthy definition (the catch window), with open inspection or repair work and flagged baselines as before; was 30 (step 5 review)
     rebaseline_days: 21                     # vendor rules re-baseline window; the vibration model re-centers on recenter_days (rev2)
     coverage_months: {summer: [6, 8], winter: [12, 2]}   # step 5 review: both seasons required before a point's model is used
     sweep_percentiles: [99.0, 99.5, 99.8, 99.9, 99.95, 99.99]   # operating curve
@@ -684,6 +685,9 @@ evaluation:                               # [fixed] 12, chance levels
   holdout_shadow: false                    # lifted 2026-10-30 after the design freeze (rounds 1 to 3 approved; selection pca_t2_spe_extended, speed bands); was true: nothing computed on the shadow year until the design is frozen
   as_of: null                              # shadow-year month YYYY-MM for a monthly monitoring run; null reads to the record end
   false_episode_counting: per_asset         # rev2 R3.5.1 (was per point for the vendor rules and the model)
+  comparison_scope:                         # checkpoint (b) diagnosis decisions 2026-10-30, item 2: sensor-detectable conditions by condition type from the work orders (truth for diagnosis only); ALERT catches and ALARM failures; was every confirmed condition on the instrumented assets
+    exclude_condition_types: [compressor trip, crash, other machine stoppage, "unplanned, no code"]
+    exclude_failure_codes: [RU-LEAK]        # rotary union leaks without coolant ingress (ingress is coded SP-COOLANT-INGRESS)
   plannable_min_warning_days: 7             # rev2 R3.6
   fisher_alpha: 0.05
 

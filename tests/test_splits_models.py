@@ -63,6 +63,9 @@ def _healthy(n: int, start: str, seed: int) -> pd.DataFrame:
             "env_bpfo_1_g2": rng.lognormal(-9, 0.1, n),
             "env_bpfi_1_g2": rng.lognormal(-9, 0.1, n),
             "env_bsf_1_g2": rng.lognormal(-9, 0.1, n),
+            "env_bpfo_2_g2": rng.lognormal(-9.5, 0.1, n),
+            "env_bpfi_2_g2": rng.lognormal(-9.5, 0.1, n),
+            "env_bsf_2_g2": rng.lognormal(-9.5, 0.1, n),
             "temp_c": rng.normal(35, 0.3, n),
             "speed_rpm_at_measurement": 3450.0,
             "load_pct_at_measurement": np.nan,
@@ -174,11 +177,15 @@ def test_nbm_settings_grid_and_complexity():
     grid = nbm.settings_grid(CFG)
     g = CFG["models"]["nbm"]["selection_grid"]
     n_ae = len(g["autoencoder_hidden"]) * len(g["autoencoder_epochs"])
-    assert len(grid) == len(g["threshold_mode"]) * (6 + 2 * n_ae)
+    # every model type on input sets (a), (b) and (c) (checkpoint (b) diagnosis decisions 2026-10-30)
+    assert len(grid) == len(g["threshold_mode"]) * 3 * (3 + n_ae)
     order = sorted(grid, key=nbm.complexity)
     assert nbm.model_type(order[0].candidate) == "pca" and order[0].threshold_mode == "single"
     assert nbm.model_type(order[-1].candidate) == "autoencoder"
-    assert all(nbm.input_set(c) == "extended" for c in CFG["models"]["nbm"]["selection_candidates"])
+    cands = CFG["models"]["nbm"]["candidates"]
+    assert {(nbm.model_type(c), nbm.input_set(c)) for c in cands} == {
+        (m, i) for m in nbm.MODEL_TYPES for i in nbm.INPUT_SETS
+    }
 
 
 def test_nbm_refuses_leaked_rows():

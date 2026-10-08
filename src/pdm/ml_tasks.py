@@ -212,6 +212,8 @@ def asset_episodes(times: dict[str, np.ndarray], gap_days: float) -> pd.DataFram
 def asset_conditions(conds: pd.DataFrame, a: pd.Timestamp, b: pd.Timestamp) -> pd.DataFrame:
     """Confirmed conditions on the instrumented assets credited in [a, b), matched by asset (R3.9 item 3)."""
     c = conds[conds["instrumented"] & (conds["credit_ts"] >= a) & (conds["credit_ts"] < b)].copy()
+    if "in_scope" in c:
+        c = c[c["in_scope"].astype(bool)]  # comparison scope by condition type (2026-10-30, item 2)
     c["point_scope"] = None
     return c
 
@@ -439,6 +441,7 @@ def train_task(
     b = splits.boundaries(cfg)
     cutoff = splits.training_cutoff(cfg)
     inp = load_inputs(store, cfg, b["train"][1])
+    conf = r2.confirmations(inp["conds"], inp["wo"], b["train"][1])  # false episodes (events.false_episodes)
     ctx = tasks._context(store)
     grid = nbm.settings_grid(cfg)
     op_p = float(nb["threshold_percentile"])
@@ -461,13 +464,11 @@ def train_task(
         results = _score_all(args, models, cfg, f["score"], factor, pcts, False)
         conds_f = asset_conditions(inp["conds"], *f["score"])
         veps = vendor_episodes(inp["vendor"], *f["score"], cfg)
-        vrow, _ = summarize(
-            "vendor_rules", "ALERT", veps, conds_f, inp["conds"], f["score"], n_assets, cfg, ctx
-        )
+        vrow, _ = summarize("vendor_rules", "ALERT", veps, conds_f, conf, f["score"], n_assets, cfg, ctx)
         vendor_rows.append({**vrow, "fold": k, "asset_months": asset_months(f["score"], n_assets)})
         for s in grid:
             for pk in PERSISTENCES:
-                c = _curve(results, s.key, pcts, pk, conds_f, inp["conds"], f["score"], n_assets, cfg, ctx)
+                c = _curve(results, s.key, pcts, pk, conds_f, conf, f["score"], n_assets, cfg, ctx)
                 curves.setdefault((s.key, pk), []).append(c.assign(fold=k))
         fold_models[k], fold_args[k] = models, args
         LOG.info("fold_done fold=%s factor=%.3f", k, factor)
@@ -549,9 +550,7 @@ def train_task(
     ts_utc = pd.to_datetime(train_scores["hour_utc"], utc=True)
     ref_eps = persisted_episodes(train_scores[ts_utc >= ref_a], "threshold", persist, cfg)
     ref_conds = asset_conditions(inp["conds"], ref_a, ref_b)
-    ref_row, _ = summarize(
-        "ml_model", "ALERT", ref_eps, ref_conds, inp["conds"], (ref_a, ref_b), n_assets, cfg, ctx
-    )
+    ref_row, _ = summarize("ml_model", "ALERT", ref_eps, ref_conds, conf, (ref_a, ref_b), n_assets, cfg, ctx)
     fold_rate = float(sel.loc[sel["champion"], "false_per_asset_month_operating"].iat[0])
     hs = healthy_stats_table(train_scores, inp["ind"])
     version = tasks.model_version(
@@ -1188,7 +1187,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         periods += [("shadow", b["shadow"]), *_quarters(b["shadow"])]
     rows, by_type, ch_rows = [], [], []
     outcomes: list[pd.DataFrame] = []
-    conf = r2.confirmations(conds, wo)
+    conf = r2.confirmations(conds, wo, b["shadow"][1])  # every false count (events.false_episodes)
     for name, span in periods:
         lev_name = "shadow" if name.startswith("shadow") else name
         L = lev[lev["period"] == lev_name]
@@ -1198,10 +1197,10 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         for method, label in (("ml_model", "ML Model"), ("vendor_rules", "Vendor Rules")):
             e = L[L["method"] == method]
             r, caught = r2.method_row(
-                label, "ALERT", r2.alert_view(e), cp, conds, span, n_assets, window, ctx, cfg
+                label, "ALERT", r2.alert_view(e), cp, conf, span, n_assets, window, ctx, cfg
             )
             rows.append(
-                {**r, **r2.false_two_ways(r2.alert_view(e), conds, wo, span, n_assets), "period": name}
+                {**r, **r2.false_two_ways(r2.alert_view(e), conf, wo, span, n_assets), "period": name}
             )
             by_type.append(caught.assign(period=name))
             for esc, sensor, lvl in (
@@ -1211,7 +1210,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
                 (True, True, "ALARM on sensor criteria with the 14-day rule (tested variant)"),
             ):
                 av = r2.alarm_view(e, esc, sensor)
-                ra, _ = r2.method_row(label, lvl, av, fails, conds, span, n_assets, window, ctx, cfg)
+                ra, _ = r2.method_row(label, lvl, av, fails, conf, span, n_assets, window, ctx, cfg)
                 only14 = (
                     int(
                         (
@@ -1239,12 +1238,12 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
                 rows.append({**ra, "period": name, "alarms_from_14_day_rule_alone": only14})
                 outcomes.append(ao.assign(period=name, method=label, level=lvl))
         r, _ = r2.method_row(
-            "Controller Health", "ALERT", ch.assign(point_id=""), cp, conds, span, n_assets, window, ctx, cfg
+            "Controller Health", "ALERT", ch.assign(point_id=""), cp, conf, span, n_assets, window, ctx, cfg
         )
         ch_rows.append({**r, "period": name, "scope": "instrumented assets"})
         cu = r2.conditions_in(conds, span, instrumented=False)
         r, _ = r2.method_row(
-            "Controller Health", "ALERT", ch.assign(point_id=""), cu, conds, span, machines, window, ctx, cfg
+            "Controller Health", "ALERT", ch.assign(point_id=""), cu, conf, span, machines, window, ctx, cfg
         )
         ch_rows.append({**r, "period": name, "scope": "uninstrumented machines"})
     out: dict[str, Any] = {}
@@ -1287,7 +1286,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     curve = []
     for p, e in sorted(curve_eps.items()):
         r, _ = r2.method_row(
-            "ML Model", f"{p:g}", e.assign(point_id=""), cp, conds, span, n_assets, window, ctx, cfg
+            "ML Model", f"{p:g}", e.assign(point_id=""), cp, conf, span, n_assets, window, ctx, cfg
         )
         curve.append({**r, "percentile": p})
     curve = pd.DataFrame(curve)
@@ -1338,7 +1337,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
             curve_eps,
             op_p,
             cp,
-            conds,
+            conf,
             span,
             sorted(pts["asset_id"].unique()),
             window,
@@ -1381,10 +1380,10 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     store.write_pd(groups, "gold", "eval_groups")
     caught_any = ct["ml_alert_caught"] | ct["vendor_alert_caught"] | ct["ch_caught"]
     n_false, rate = r2.merged_false_rate(
-        [r2.alert_view(ml), r2.alert_view(vd), ch], conds, gap, span, n_assets
+        [r2.alert_view(ml), r2.alert_view(vd), ch], conf, gap, span, n_assets
     )
     vd_only = int((ct["vendor_alert_caught"] | ct["ch_caught"]).sum())
-    v_false, v_rate = r2.merged_false_rate([r2.alert_view(vd), ch], conds, gap, span, n_assets)
+    v_false, v_rate = r2.merged_false_rate([r2.alert_view(vd), ch], conf, gap, span, n_assets)
     combined = pd.DataFrame(
         [
             {
@@ -1409,8 +1408,8 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         for r in combined.itertuples()
     ]
     store.write_pd(combined, "gold", "eval_combined")
-    store.write_pd(inspection_workload(ml, vd, conds, wo, span, ctx, cfg), "gold", "eval_inspection_monthly")
-    store.write_pd(alert_outcomes(S, conds, wo, span), "gold", "eval_alert_outcomes")
+    store.write_pd(inspection_workload(ml, vd, conf, wo, span, ctx, cfg), "gold", "eval_inspection_monthly")
+    store.write_pd(alert_outcomes(S, conf, wo, span), "gold", "eval_alert_outcomes")
     out.update(
         {
             "matched": matched.to_dict("records"),
@@ -1482,6 +1481,7 @@ def alert_outcomes(
     rep = wo[wo["wo_type"].isin((*r2.REPAIRS, "pm", "rebuild_order"))]
     insp = wo[wo["wo_type"] == "inspection"]
     rows = []
+    end = conds.attrs.get("record_end") or span[1]
     for r in S[(S["opened"] >= span[0]) & (S["opened"] < span[1])].itertuples():
         c = conds[
             (conds["asset_key"] == r.asset_id)
@@ -1489,7 +1489,7 @@ def alert_outcomes(
             & (conds["credit_ts"] < r.closed)
         ]
         if len(c):
-            out, ref = "condition confirmed", ",".join(c["wo_id"])
+            out, ref = "condition confirmed", ",".join(c["wo_id"].astype(str))
         else:
             w = rep[
                 rep["asset_id"].str.startswith(r.asset_id)
@@ -1501,13 +1501,15 @@ def alert_outcomes(
                 & (insp["opened"] >= r.opened)
                 & (insp["opened"] < r.closed)
             ]
-            if len(w):
+            # same order as the ALARM outcomes (decisions 2026-10-30, item 8): pending before unrelated work
+            # (was unrelated work first); confirmations as events.false_episodes (was confirmed conditions)
+            if r.closed > end:
+                out, ref = "pending at the record end", ""
+            elif len(w):
                 out, ref = (
                     "repair or PM reached the asset first for an unrelated reason",
                     ",".join(w["wo_id"]),
                 )
-            elif r.closed > span[1]:
-                out, ref = "pending at the record end", ""
             else:
                 out, ref = "nothing found", ",".join(i["wo_id"])
         rows.append(

@@ -54,24 +54,35 @@ LOG_COLUMNS = {
 PLAUSIBILITY = ["vel_rms_mm_s", "hf_rms_g", *ENV_BANDS]
 REGIMES = ["light", "medium", "heavy", "running"]
 BANDS = ["low", "mid", "high"]
+MODEL_PREFIXES = ("pca_t2_spe", "mahalanobis", "isolation_forest", "autoencoder")
+# Input sets (checkpoint (b) diagnosis decisions 2026-10-30, item 4): (a) extended, the 37 inputs as before;
+# (b) vendor, the Vendor Rules' measurements plus crest factor, kurtosis and the 1x and 2x order energies;
+# (c) vendor_octave, set (b) plus the 32 one-third-octave bands merged into 8 bands of 4.
+INPUT_SETS = ("extended", "vendor", "vendor_octave")
 CANDIDATES = (
     "pca_t2_spe",
     "mahalanobis",
     "isolation_forest",
     "autoencoder_third_octave",
-    "autoencoder_extended",
-    "pca_t2_spe_extended",
-    "mahalanobis_extended",
-    "isolation_forest_extended",
+    *(f"{m}_{i}" for i in INPUT_SETS for m in MODEL_PREFIXES),
 )
-AUTOENCODERS = ("autoencoder_third_octave", "autoencoder_extended")
-EXTENDED = (
-    "autoencoder_extended",
-    "pca_t2_spe_extended",
-    "mahalanobis_extended",
-    "isolation_forest_extended",
-)
+EXTENDED = tuple(f"{m}_extended" for m in MODEL_PREFIXES)
+AUTOENCODERS = ("autoencoder_third_octave", *(f"autoencoder_{i}" for i in INPUT_SETS))
 MODEL_TYPES = ("pca", "mahalanobis", "isolation_forest", "autoencoder")
+VENDOR_LOG = [
+    "vel_rms_mm_s",
+    "hf_rms_g",
+    "env_bpfo_1_g2",
+    "env_bpfo_2_g2",
+    "env_bpfi_1_g2",
+    "env_bpfi_2_g2",
+    "env_bsf_1_g2",
+    "env_bsf_2_g2",
+    "ord_01_g2",
+    "ord_02_g2",
+]
+VENDOR_LINEAR = ["crest_factor", "kurtosis"]
+OCTAVE_GROUP = 4  # 32 bands over 10 Hz to 10 kHz (about 3.2 per octave) merged 4 at a time into 8 bands
 
 
 def model_type(candidate: str) -> str:
@@ -86,8 +97,9 @@ def model_type(candidate: str) -> str:
 
 
 def input_set(candidate: str) -> str:
-    if candidate in EXTENDED:
-        return "extended"
+    for i in sorted(INPUT_SETS, key=len, reverse=True):
+        if candidate.endswith(f"_{i}"):
+            return i
     return "third_octave" if candidate == "autoencoder_third_octave" else "summary"
 
 
@@ -111,9 +123,32 @@ def _log(v: np.ndarray) -> np.ndarray:
     return np.log10(np.where(np.isfinite(v), v, 0.0) + EPS)
 
 
+def octave_bands(df: pd.DataFrame) -> tuple[list[np.ndarray], list[str]]:
+    """The one-third-octave band energies summed 4 at a time (8 bands), on a log scale."""
+    cols = toct_columns(df)
+    parts, names = [], []
+    for k in range(0, len(cols), OCTAVE_GROUP):
+        grp = cols[k : k + OCTAVE_GROUP]
+        e = sum(np.where(np.isfinite(v), v, 0.0) for v in (df[c].to_numpy(dtype=float) for c in grp))
+        parts.append(_log(e))
+        names.append(f"oct_{k // OCTAVE_GROUP + 1:02d}_g2")
+    return parts, names
+
+
 def features(df: pd.DataFrame, candidate: str) -> tuple[np.ndarray, list[str]]:
-    """Feature matrix for a candidate: energies and RMS values on a log scale, the temperature
-    residual in degrees C."""
+    """Feature matrix for a candidate: energies and RMS values on a log scale; crest factor, kurtosis and
+    the temperature residual (degrees C) linear."""
+    iset = input_set(candidate)
+    if iset in ("vendor", "vendor_octave"):
+        parts = [_log(df[c].to_numpy(dtype=float)) for c in VENDOR_LOG]
+        parts += [df[c].to_numpy(dtype=float) for c in VENDOR_LINEAR]
+        parts.append(df[TEMP_RESID].to_numpy(dtype=float))
+        cols = [*VENDOR_LOG, *VENDOR_LINEAR, TEMP_RESID]
+        if iset == "vendor_octave":
+            op, on = octave_bands(df)
+            parts += op
+            cols += on
+        return np.column_stack(parts), cols
     if candidate in AUTOENCODERS or candidate in EXTENDED:
         cols = toct_columns(df)
         parts = [_log(df[c].to_numpy(dtype=float)) for c in cols]
@@ -171,7 +206,7 @@ class Settings:
 
     @property
     def key(self) -> str:
-        if self.candidate in AUTOENCODERS:
+        if self.candidate in AUTOENCODERS:  # every autoencoder candidate carries its network and length
             net = "-".join(str(h) for h in self.hidden)
             return f"{self.candidate} [{net}] {self.epochs} ep, {self.threshold_mode}"
         return f"{self.candidate}, {self.threshold_mode}"
@@ -523,8 +558,25 @@ def fit_point(
             sc0 = Scaler.fit(raw)
             z0 = sc0.transform(raw)
             est0, extra0 = _fit_estimator(z0, s, cfg)
-            fitted[arch] = (sc0, est0, extra0, z0)
-        sc, est, extra, z = fitted[arch]
+            keep = np.ones(len(raw), dtype=bool)
+            trim = float(nb.get("robust_trim_share") or 0.0)
+            if trim > 0:
+                # robust fit (checkpoint (b) diagnosis decisions 2026-10-30, item 3.2): drop the training
+                # hours whose first-fit score is above the (1 - trim) quantile and refit once; the
+                # thresholds come from the kept hours (was a single fit on every training hour)
+                probe = PointModel(
+                    pid, pclass, s, cols, rated_rpm, tf, offsets, sc0, est0, extra0, {}, [], 0, 0
+                )
+                sc_first, _ = probe.raw_scores(z0)
+                keep = sc_first <= np.quantile(sc_first, 1.0 - trim)
+                if keep.sum() >= nb["min_train_hours"]:
+                    sc0 = Scaler.fit(raw[keep])
+                    z0 = sc0.transform(raw[keep])
+                    est0, extra0 = _fit_estimator(z0, s, cfg)
+                else:
+                    keep = np.ones(len(raw), dtype=bool)
+            fitted[arch] = (sc0, est0, extra0, z0, keep)
+        sc, est, extra, z, keep = fitted[arch]
         pm = PointModel(
             pid,
             pclass,
@@ -542,12 +594,15 @@ def fit_point(
             sum(g.level is not None for g in segs),
         )
         scores, _ = pm.raw_scores(z)
-        pm.thresholds = _thresholds(scores, bands[train], pcts, nb["min_regime_healthy_hours"])
+        tb = bands[train][keep]
+        pm.thresholds = _thresholds(scores, tb, pcts, nb["min_regime_healthy_hours"])
+        pm.n_train = int(keep.sum())
         pm.info = {
-            "n_train": n,
+            "n_train": int(keep.sum()),
+            "n_before_trim": n,
             "cutoff": cutoff,
             "fit_start": fit_start,
-            "train_bands": pd.Series(bands[train]).value_counts().to_dict(),
+            "train_bands": pd.Series(tb).value_counts().to_dict(),
         }
         models[s.key] = pm
     info["n_train"] = max((m.n_train for m in models.values()), default=0)

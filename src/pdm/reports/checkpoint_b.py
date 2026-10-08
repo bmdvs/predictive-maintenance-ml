@@ -184,7 +184,15 @@ def false_by_context(
     for method in ("ml_model", "vendor_rules"):
         e = lev[(lev["period"] == "shadow") & (lev["method"] == method)]
         e = e[(e["opened"] >= b["shadow"][0]) & (e["opened"] < b["shadow"][1])].reset_index(drop=True)
-        f = e[r2.false_mask(e.assign(point_id=""), conds).to_numpy()] if len(e) else e
+        f = (
+            e[
+                r2.false_mask(
+                    e.assign(point_id=""), r2.confirmations(conds, tasks._wo(store), b["shadow"][1])
+                ).to_numpy()
+            ]
+            if len(e)
+            else e
+        )
         for r in f.itertuples():
             m = r.asset_id[:6]
             h = r.opened.floor("h")

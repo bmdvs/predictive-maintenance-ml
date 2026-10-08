@@ -4,6 +4,7 @@ temperature residual, and the revision 2 evaluation pieces: groups, value and th
 import numpy as np
 import pandas as pd
 
+from pdm.evaluation import events as ev
 from pdm.evaluation import rev2 as r2
 from pdm.models import severity, temperature
 
@@ -130,8 +131,12 @@ def test_temperature_residual_fit_per_point():
     assert abs(f.coef[1] - 0.001) < 1e-4 and abs(f.coef[2] - 1.5) < 0.05 and np.std(f.residual(rows)) < 0.15
     plain = temperature.fit(rows, "spindle_front", seasonal=False)
     assert np.std(plain.residual(rows)) > 0.8
-    pump = temperature.fit(rows.assign(load_pct_at_measurement=np.nan), "flood_pump")
+    pump = temperature.fit(rows.assign(load_pct_at_measurement=np.nan), "flood_pump", seasonal=False)
     assert pump.columns == [] and abs(pump.coef[0] - rows["temp_c"].mean()) < 1e-6
+    # pumps carry the annual harmonic as spindles (checkpoint (b) diagnosis decisions 2026-10-30)
+    pump_s = temperature.fit(rows.assign(load_pct_at_measurement=np.nan), "flood_pump")
+    assert pump_s.columns == [temperature.SEASON_SIN, temperature.SEASON_COS]
+    assert abs(pump_s.coef[1] - 1.5) < 0.3
 
 
 def _conds() -> pd.DataFrame:
@@ -229,7 +234,7 @@ def test_alarm_outcomes_and_false_alarms():
     conf = pd.DataFrame(
         {
             "asset_key": ["A", "B"],
-            "ts": [t + pd.Timedelta(days=5), t + pd.Timedelta(days=1)],
+            "ts": [t + pd.Timedelta(days=5), t + pd.Timedelta(days=3)],
             "failure": [True, False],
             "wo_id": ["W1", "I2"],
         }
@@ -247,3 +252,25 @@ def test_alarm_outcomes_and_false_alarms():
     ]
     f = r2.alarm_outcomes(lev, conf, wo, (t, _ts("2026-07-01")), _ts("2026-07-01"))
     assert list(f["false_alarm"]) == [False, False, True, True, False]
+    # one rule (decisions 2026-10-30, item 8): the ALARM rates' rule gives the same false ALARMs, and a
+    # confirmation between the ALERT opening and the ALARM start does not count
+    c2 = conf.assign(credit_ts=conf["ts"])
+    c2.attrs["record_end"] = _ts("2026-07-01")
+    av = r2.alarm_view(lev.assign(last=lev["closed"] - pd.Timedelta(days=7)))
+    assert list(ev.false_episodes(av, c2)) == list(f["false_alarm"])
+    early = conf.assign(ts=[t + pd.Timedelta(days=5), t + pd.Timedelta(days=1)])
+    g = r2.alarm_outcomes(lev, early, wo, (t, _ts("2026-07-01")), _ts("2026-07-01"))
+    assert bool(g.set_index("asset_id").at["B", "false_alarm"])
+
+
+def test_comparison_scope_by_condition_type():
+    from pdm.config import load_config
+
+    cfg = load_config()
+    c = pd.DataFrame(
+        {
+            "condition_type": ["lubrication", "crash", "rotary union", "rotary union", "unplanned, no code"],
+            "failure_code": ["BRG-LUBE", "CRASH-DMG", "RU-LEAK", "SP-COOLANT-INGRESS", None],
+        }
+    )
+    assert list(ev.in_comparison_scope(c, cfg)) == [True, False, False, True, False]

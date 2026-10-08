@@ -35,6 +35,8 @@ def conditions_in(
 ) -> pd.DataFrame:
     c = conds[(conds["credit_ts"] >= period[0]) & (conds["credit_ts"] < period[1])]
     c = c[c["instrumented"] == instrumented].copy()
+    if instrumented and "in_scope" in c:
+        c = c[c["in_scope"].astype(bool)]  # comparison scope by condition type (2026-10-30, item 2)
     c["point_scope"] = None
     return c.reset_index(drop=True)
 
@@ -147,7 +149,7 @@ def bootstrap(
         v_catch = float(vendor_caught[pick].mean())
         xs = np.array([false_rate(ml_eps_cover[p]) for p in pcts])
         ys = np.array([float(ml_caught[p][pick].mean()) for p in pcts])
-        o = np.argsort(xs)
+        o = np.argsort(xs, kind="stable")  # as events.at_budget (2026-10-30, item 9; was the default)
         d_catch.append(float(np.interp(v_false, xs[o], ys[o])) - v_catch)
         d_false.append(false_rate(ml_eps_cover[ml_op]) - v_false)
     q = np.quantile(d_catch, quantiles), np.quantile(d_false, quantiles)
@@ -366,10 +368,13 @@ ALARM_OUTCOMES = (
 )
 
 
-def confirmations(conds: pd.DataFrame, wo: pd.DataFrame) -> pd.DataFrame:
+def confirmations(
+    conds: pd.DataFrame, wo: pd.DataFrame, record_end: pd.Timestamp | None = None
+) -> pd.DataFrame:
     """Every confirmation on an asset, any condition type and any work order type: the confirmed conditions
-    (unplanned failures marked), inspections that found a condition and PM findings (asset_key, ts,
-    failure, wo_id)."""
+    (unplanned failures marked), inspections that found a condition and PM findings (asset_key, ts and
+    credit_ts, failure, wo_id). Carries the record end (attrs) for the pending rule of
+    events.false_episodes."""
     c = pd.DataFrame(
         {
             "asset_key": conds["asset_key"],
@@ -387,6 +392,8 @@ def confirmations(conds: pd.DataFrame, wo: pd.DataFrame) -> pd.DataFrame:
     )
     out = pd.concat([c, e[~e["wo_id"].isin(set(c["wo_id"]))]], ignore_index=True)
     out["ts"] = pd.to_datetime(out["ts"], utc=True)
+    out["credit_ts"] = out["ts"]
+    out.attrs["record_end"] = record_end
     return out
 
 
@@ -399,8 +406,9 @@ def alarm_outcomes(
     escalation: bool = False,
     sensor_only: bool = False,
 ) -> pd.DataFrame:
-    """Each ALARM episode starting in the span with its outcome over the episode's open interval (from the
-    ALERT opening to its close): failure followed (an unplanned failure on the asset); condition confirmed
+    """Each ALARM episode starting in the span with its outcome over the ALARM's open interval (from the
+    ALARM start to the episode's close, as events.false_episodes; was from the ALERT opening): failure
+    followed (an unplanned failure on the asset); condition confirmed
     and repaired before failure (any other confirmation); repair or PM reached the asset first for an
     unrelated reason (a repair or PM work order on the asset with nothing confirmed); nothing found;
     pending at the record end (still open at the end with nothing confirmed). A false ALARM is one with no
@@ -413,7 +421,8 @@ def alarm_outcomes(
     work = wo[wo["wo_type"].isin((*REPAIRS, "pm", "rebuild_order"))]
     rows = []
     for r in a.itertuples():
-        c = conf[(conf["asset_key"] == r.asset_id) & (conf["ts"] >= r.opened) & (conf["ts"] < r.closed)]
+        start = getattr(r, col)
+        c = conf[(conf["asset_key"] == r.asset_id) & (conf["ts"] >= start) & (conf["ts"] < r.closed)]
         if c["failure"].any():
             out = ALARM_OUTCOMES[0]
         elif len(c):
@@ -422,7 +431,7 @@ def alarm_outcomes(
             out = ALARM_OUTCOMES[4]
         elif (
             work["asset_id"].str.startswith(r.asset_id)
-            & (work["opened"] >= r.opened)
+            & (work["opened"] >= start)
             & (work["opened"] < r.closed)
         ).any():
             out = ALARM_OUTCOMES[2]
@@ -544,7 +553,7 @@ def asset_bootstrap(
         v_catch = share(vc)
         xs = np.array([sum(mf[p_][a] for a in pick) / am for p_ in pcts])
         ys = np.array([share(mc[p_]) for p_ in pcts])
-        o = np.argsort(xs)
+        o = np.argsort(xs, kind="stable")  # as events.at_budget (2026-10-30, item 9; was the default)
         if np.isfinite(v_catch) and np.isfinite(ys).all():
             d_catch.append(float(np.interp(v_false, xs[o], ys[o])) - v_catch)
         d_false.append(sum(mf[ml_op][a] for a in pick) / am - v_false)

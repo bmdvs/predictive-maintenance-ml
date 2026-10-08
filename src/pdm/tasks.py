@@ -215,6 +215,7 @@ def _conditions(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
     mclass = store.read_pd("bronze", "reg_machines").set_index("machine_id")["class"].to_dict()
     c["machine_class"] = c["machine_id"].map(mclass).fillna("compressor")
     c["instrumented"] = c["asset_id"].str.match(INSTRUMENTED)
+    c["in_scope"] = ev.in_comparison_scope(c, cfg)
     return ev.condition_scope(c, _points_by_asset(_points(store)))
 
 

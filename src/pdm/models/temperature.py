@@ -3,9 +3,10 @@
 The expected value is a linear fit on the point's own healthy training hours: spindle points on spindle
 speed and an annual harmonic of the local day of year (the seasonal term, as Controller Health's
 thermistor residual; the exports carry no shop-floor ambient); pump points on load where the record
-carries it (otherwise a constant for the running state); compressor points on load and the
-compressor-room ambient. No cross-machine correction. (Step 6 design freeze 2026-10-30: the seasonal
-term added for spindle points; originally spindle speed alone.)
+carries it (otherwise a constant for the running state) and the annual harmonic; compressor points on
+load and the compressor-room ambient. No cross-machine correction. (Step 6 design freeze 2026-10-30:
+the seasonal term added for spindle points; originally spindle speed alone. Checkpoint (b) diagnosis
+decisions 2026-10-30: the same seasonal term added for pump points; originally load alone.)
 Inputs: a point's hourly rows with temp_c, speed and load, and the room ambient by hour for compressor
 points. Output: fit coefficients per point and the residual column.
 """
@@ -42,7 +43,9 @@ def covariates(point_class: str, seasonal: bool = True) -> list[str]:
         return [SPEED, SEASON_SIN, SEASON_COS] if seasonal else [SPEED]
     if point_class.startswith("compressor"):
         return [LOAD, AMBIENT]
-    return [LOAD]
+    # pumps (checkpoint (b) diagnosis decisions 2026-10-30, item 3.3): load and the annual harmonic, as on
+    # spindles (was load alone)
+    return [LOAD, SEASON_SIN, SEASON_COS] if seasonal else [LOAD]
 
 
 @dataclass
