@@ -1,6 +1,8 @@
 """Splits, per-point models (shape, determinism, leaked-window refusal, seasonal coverage), controller
 health, prognosis, fusion, advisory and event-based evaluation on small known inputs."""
 
+import copy
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -177,15 +179,20 @@ def test_nbm_settings_grid_and_complexity():
     grid = nbm.settings_grid(CFG)
     g = CFG["models"]["nbm"]["selection_grid"]
     n_ae = len(g["autoencoder_hidden"]) * len(g["autoencoder_epochs"])
-    # every model type on input sets (a), (b) and (c) (checkpoint (b) diagnosis decisions 2026-10-30)
-    assert len(grid) == len(g["threshold_mode"]) * 3 * (3 + n_ae)
-    order = sorted(grid, key=nbm.complexity)
+    # the configured grid: the adopted design only (fold diagnosis round 2 decision, 2026-10-31)
+    cands = CFG["models"]["nbm"]["candidates"]
+    n_ae = sum(c in nbm.AUTOENCODERS for c in cands) * n_ae
+    assert len(grid) == len(g["threshold_mode"]) * (sum(c not in nbm.AUTOENCODERS for c in cands) + n_ae)
+    assert [s.key for s in grid] == ["pca_t2_spe_vendor, single"]
+    # the 42-setting grid the selection ran on (checkpoint (b) diagnosis decisions 2026-10-30)
+    full = copy.deepcopy(CFG)
+    full["models"]["nbm"]["candidates"] = [c for c in nbm.CANDIDATES if nbm.input_set(c) in nbm.INPUT_SETS]
+    full["models"]["nbm"]["selection_grid"]["threshold_mode"] = ["single", "speed_band"]
+    big = nbm.settings_grid(full)
+    assert len(big) == 2 * 3 * (3 + len(g["autoencoder_hidden"]) * len(g["autoencoder_epochs"]))
+    order = sorted(big, key=nbm.complexity)
     assert nbm.model_type(order[0].candidate) == "pca" and order[0].threshold_mode == "single"
     assert nbm.model_type(order[-1].candidate) == "autoencoder"
-    cands = CFG["models"]["nbm"]["candidates"]
-    assert {(nbm.model_type(c), nbm.input_set(c)) for c in cands} == {
-        (m, i) for m in nbm.MODEL_TYPES for i in nbm.INPUT_SETS
-    }
 
 
 def test_nbm_refuses_leaked_rows():
@@ -536,3 +543,25 @@ def test_lives_register_date_on_preventive_work_order_day_is_that_replacement():
     starts = list(lives["start"])
     assert ts("2025-03-16") not in starts and ts("2025-09-01") not in starts
     assert ts("2025-03-16 15:35") in starts and ts("2025-09-02 08:00") in starts
+
+
+def test_per_input_limits_alert_alongside_the_score():
+    """Fold diagnosis round 2 decision (2026-10-31): any single standardized input persisted above its own
+    healthy-training limit raises a persisted exceedance even when the score stays below its threshold."""
+    rows = _year(7)
+    cutoff = pd.Timestamp("2024-07-01", tz=UTC)
+    win = _windows(rows["hour_utc"].min())
+    st = _settings("pca_t2_spe_vendor")
+    m, _ = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    pm = m[st.key]
+    assert set(pm.input_limits) == set(pm.columns)
+    end = cutoff + pd.Timedelta(hours=48)
+    calm, _ = nbm.score_point(pm, rows, win, CFG, cutoff, end, 1.45, 3)
+    bad = rows.copy()
+    late = bad["hour_utc"] >= cutoff + pd.Timedelta(hours=10)
+    bad.loc[late, "kurtosis"] += 2.0
+    s, _ = nbm.score_point(pm, bad, win, CFG, cutoff, end, 1.45, 3)
+    assert s["limit_inputs"].str.contains("kurtosis").sum() >= 30
+    ex = nbm.exceedance_hours(s.assign(score=0.0), "threshold", 6)
+    assert len(ex) and ex["source"].str.contains("limit:kurtosis").all()
+    assert len(nbm.exceedance_hours(calm.assign(score=0.0), "threshold", 6)) <= 2

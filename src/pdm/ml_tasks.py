@@ -396,13 +396,14 @@ def persisted_episodes(
 ) -> pd.DataFrame:
     """ALERT episodes per asset from scored hours (columns point_id, asset_id, hour_utc, state, score and
     the threshold column)."""
-    cols = ["point_id", "ts", "ratio", "top_contributors"]
+    cols = nbm.EXCEED_COLS
     ex = nbm.exceedance_hours(scores, thr_col, persistence) if len(scores) else pd.DataFrame(columns=cols)
     if len(ex):
         ex = ex.merge(scores[["point_id", "asset_id"]].drop_duplicates(), on="point_id")
     else:
         ex = ex.assign(asset_id=pd.Series(dtype=object))
-    sig = ex.reindex(columns=["asset_id", "point_id", "ts"])
+    # the episode records what opened it: the PCA score ('pca') or an input's limit ('limit:<input>')
+    sig = ex.reindex(columns=["asset_id", "point_id", "ts", "source"]).rename(columns={"source": "rules"})
     return severity.episodes(sig, cfg["evaluation"]["catch"]["episode_gap_days"])
 
 
@@ -474,11 +475,15 @@ def train_task(
         LOG.info("fold_done fold=%s factor=%.3f", k, factor)
     vend = pd.DataFrame(vendor_rows)
     budget = float(vend["false_episodes"].sum() / vend["asset_months"].sum())
-    floor = curve_floor(
-        {s.key: combine(curves[(s.key, persist)]) for s in grid},
-        budget,
-        [float(p) for p in nb["sweep_percentiles"]],
-        [float(p) for p in nb.get("sweep_extension_percentiles", [])],
+    floor = (
+        float(nb["curve_floor_fixed"])
+        if nb.get("curve_floor_fixed") is not None
+        else curve_floor(
+            {s.key: combine(curves[(s.key, persist)]) for s in grid},
+            budget,
+            [float(p) for p in nb["sweep_percentiles"]],
+            [float(p) for p in nb.get("sweep_extension_percentiles", [])],
+        )
     )
     LOG.info("curve floor percentile %s for budget %.4f", floor, budget)
     for s in grid:
@@ -554,7 +559,13 @@ def train_task(
     fold_rate = float(sel.loc[sel["champion"], "false_per_asset_month_operating"].iat[0])
     hs = healthy_stats_table(train_scores, inp["ind"])
     version = tasks.model_version(
-        "nbm", {"settings": champion_key, "factor": factor, "info": info.astype(str).to_dict("records")}
+        "nbm",
+        {
+            "settings": champion_key,
+            "factor": factor,
+            "info": info.astype(str).to_dict("records"),
+            "input_limit_percentile": nb.get("input_limit_percentile"),  # 2026-10-31: limits in the version
+        },
     )
     model_info = pd.DataFrame(
         [

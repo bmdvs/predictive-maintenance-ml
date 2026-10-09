@@ -372,6 +372,9 @@ class PointModel:
     n_train: int
     segments_trained: int
     info: dict[str, Any] = field(default_factory=dict)
+    # per-input limits (fold diagnosis round 2 decision, 2026-10-31): each standardized input's high-side
+    # limit, the configured percentile of its values on the point's healthy training hours; empty = off
+    input_limits: dict[str, float] = field(default_factory=dict)
 
     def raw_scores(self, z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         cand = model_type(self.settings.candidate)
@@ -604,9 +607,41 @@ def fit_point(
             "fit_start": fit_start,
             "train_bands": pd.Series(tb).value_counts().to_dict(),
         }
+        lim_p = nb.get("input_limit_percentile")
+        if lim_p:
+            pm.input_limits = input_limits(
+                pm, rows, windows, cfg, fit_start, cutoff, excluded, ambient, float(lim_p)
+            )
         models[s.key] = pm
     info["n_train"] = max((m.n_train for m in models.values()), default=0)
     return models, info
+
+
+def input_limits(
+    pm: PointModel,
+    rows: pd.DataFrame,
+    windows: pd.DataFrame,
+    cfg: dict[str, Any],
+    fit_start: pd.Timestamp,
+    cutoff: pd.Timestamp,
+    excluded: list[tuple[pd.Timestamp, pd.Timestamp]],
+    ambient: pd.Series | None,
+    pct: float,
+) -> dict[str, float]:
+    """Each standardized input's limit: the pct percentile of its values on the point's healthy training
+    hours (scored hours from fit_start to the cutoff outside the excluded intervals), high side. Scores the
+    training span with the fitted model, as the scoring run does, so the values are those the model sees."""
+    s, _ = score_point(pm, rows, windows, cfg, fit_start, cutoff, 1.0, 0, ambient, keep_inputs=True)
+    if s.empty:
+        return {}
+    healthy = (s["state"] == "scored").to_numpy() & training_mask(s["hour_utc"], cutoff, excluded, fit_start)
+    out = {}
+    for c in pm.columns:
+        v = s.loc[healthy, f"z:{c}"].to_numpy(dtype=float)
+        v = v[np.isfinite(v)]
+        if len(v):
+            out[c] = float(np.quantile(v, pct / 100.0))
+    return out
 
 
 def plausibility_factor(models: list[PointModel], quantile: float, fallback: float) -> tuple[float, int]:
@@ -635,6 +670,7 @@ def score_point(
     plaus_factor: float,
     top_k: int,
     ambient: pd.Series | None = None,
+    keep_inputs: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Scores from start to end with the frozen model. Every segment is re-centered on its own window
     (no score while the level forms); a segment starting at or after the model's training cutoff is
@@ -710,11 +746,19 @@ def score_point(
     sc = (state == "scored") & span & np.isfinite(lvl).all(axis=1) & np.isfinite(x).all(axis=1)
     score = np.full(len(clean), np.nan)
     contrib_txt = np.full(len(clean), "", dtype=object)
+    limit_txt = np.full(len(clean), "", dtype=object)
+    zin = np.full((len(clean), len(model.columns)), np.nan)
     if sc.any():
         raw = np.column_stack([x[sc] - lvl[sc], _one_hot(clean[sc], bands[sc])])
-        s, contrib = model.raw_scores(model.scaler.transform(raw))
+        zs = model.scaler.transform(raw)
+        s, contrib = model.raw_scores(zs)
         score[sc] = s
         contrib_txt[sc] = model.contributors(contrib, top_k)
+        zin[sc] = zs[:, : len(model.columns)]
+        if model.input_limits:
+            lim = np.array([model.input_limits.get(c, np.inf) for c in model.columns], dtype=float)
+            over = np.nan_to_num(zs[:, : len(model.columns)], nan=-np.inf) > lim
+            limit_txt[sc] = [",".join(c for c, o in zip(model.columns, r, strict=True) if o) for r in over]
     out = pd.DataFrame(
         {
             "point_id": model.point_id,
@@ -726,6 +770,8 @@ def score_point(
             "score": score,
             "temp_resid_c": clean[TEMP_RESID].to_numpy(dtype=float),
             "top_contributors": contrib_txt,
+            "limit_inputs": limit_txt,
+            **({f"z:{c}": zin[:, j] for j, c in enumerate(model.columns)} if keep_inputs else {}),
         }
     )[span]
     pcts = sweep_percentiles(cfg)
@@ -736,19 +782,37 @@ def score_point(
     return out.reset_index(drop=True), pd.DataFrame(seg_rows)
 
 
+def _runs(over: np.ndarray) -> np.ndarray:
+    run = np.zeros(len(over), dtype=int)
+    c = 0
+    for i, o in enumerate(over):
+        c = c + 1 if o else 0
+        run[i] = c
+    return run
+
+
+EXCEED_COLS = ["point_id", "ts", "ratio", "top_contributors", "source"]
+
+
 def exceedance_hours(scores: pd.DataFrame, threshold_col: str, persistence: int) -> pd.DataFrame:
-    """Hours at which the score has exceeded the threshold column on persistence consecutive scored hours
-    (the persisted exceedances that ALERT episodes are built from)."""
+    """Hours at which the score has exceeded the threshold column on persistence consecutive scored hours,
+    or (fold diagnosis round 2 decision, 2026-10-31) any single standardized input has exceeded its own
+    limit on persistence consecutive scored hours (column limit_inputs): the persisted exceedances that
+    ALERT episodes are built from. source names what persisted at each hour: 'pca' and 'limit:<input>'.
+    (Was the score alone.)"""
     rows = []
     s = scores[scores["state"] == "scored"] if "state" in scores else scores
     for pid, g in s.sort_values("hour_utc").groupby("point_id"):
-        over = (g["score"] > g[threshold_col]).to_numpy()
-        run = np.zeros(len(over), dtype=int)
-        c = 0
-        for i, o in enumerate(over):
-            c = c + 1 if o else 0
-            run[i] = c
-        hit = run >= persistence
+        pca = _runs((g["score"] > g[threshold_col]).to_numpy()) >= persistence
+        hit = pca.copy()
+        src = [["pca"] if p else [] for p in pca]
+        if "limit_inputs" in g and g["limit_inputs"].fillna("").astype(str).str.len().any():
+            lists = [set(v.split(",")) if v else set() for v in g["limit_inputs"].fillna("").astype(str)]
+            for name in sorted(set().union(*lists)):
+                m = _runs(np.array([name in x for x in lists])) >= persistence
+                hit |= m
+                for i in np.flatnonzero(m):
+                    src[i].append(f"limit:{name}")
         if hit.any():
             rows.append(
                 pd.DataFrame(
@@ -757,11 +821,8 @@ def exceedance_hours(scores: pd.DataFrame, threshold_col: str, persistence: int)
                         "ts": g["hour_utc"].to_numpy()[hit],
                         "ratio": (g["score"] / g[threshold_col]).to_numpy()[hit],
                         "top_contributors": g["top_contributors"].to_numpy()[hit],
+                        "source": [",".join(src[i]) for i in np.flatnonzero(hit)],
                     }
                 )
             )
-    return (
-        pd.concat(rows, ignore_index=True)
-        if rows
-        else pd.DataFrame(columns=["point_id", "ts", "ratio", "top_contributors"])
-    )
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=EXCEED_COLS)

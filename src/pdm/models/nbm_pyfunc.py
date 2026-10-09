@@ -6,7 +6,8 @@ healthy stats as an artifact. Input: hourly indicator rows with each point's seg
 column segment_starts (ISO times separated by ';', from the healthy-window table) and, for compressor
 points, the room ambient in room_ambient_c. Output: per input row, in input order, the state (scored,
 recentering, plausibility, no level), the score, the threshold at the operating percentile and at every
-sweep percentile, the temperature residual and the top contributors. Persistence and levels are applied
+sweep percentile, the temperature residual, the top contributors and the inputs above their own limits
+(limit_inputs). Persistence and levels are applied
 downstream. (Revision 2; originally each segment's monthly version history.)
 """
 
@@ -142,6 +143,7 @@ class NBMPointModels(mlflow.pyfunc.PythonModel):
             "threshold",
             "temp_resid_c",
             "top_contributors",
+            "limit_inputs",
             *[c for c in s.columns if c.startswith("thr_")],
         ]
         out = out.merge(
