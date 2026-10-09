@@ -258,8 +258,16 @@ def training_prediction(model: Any, store: Any, cfg: dict[str, Any]) -> pd.DataF
     return s
 
 
-def decide(registry: Registry, name: str, version: str, gates: list[Gate], auto_promote: bool) -> str:
-    """Tag the version with every gate and move the champion alias when all pass and auto_promote is on."""
+def decide(
+    registry: Registry,
+    name: str,
+    version: str,
+    gates: list[Gate],
+    auto_promote: bool,
+    alias: str = "champion",
+) -> str:
+    """Tag the version with every gate and move the alias (champion, or challenger for the second finalist)
+    when all pass and auto_promote is on."""
     failed = [g.name for g in gates if not g.passed]
     for g in gates:
         registry.set_tag(name, version, tag_key(f"gate_{g.name}"), "pass" if g.passed else "fail")
@@ -275,7 +283,7 @@ def decide(registry: Registry, name: str, version: str, gates: list[Gate], auto_
     elif failed:
         status = "rejected"
     else:
-        registry.set_alias(name, CHAMPION, version)
+        registry.set_alias(name, alias, version)
         status = "promoted"
     registry.set_tag(name, version, tag_key("status"), status)
     return status
@@ -298,8 +306,10 @@ def promote(
     run_id: str | None = None,
     auto_promote: bool = True,
     registry: Registry | None = None,
+    alias: str = CHAMPION,
 ) -> dict[str, Any]:
-    """Register the challenger, evaluate the gates and move the champion alias when allowed."""
+    """Register the training run's model, evaluate the gates and move the alias when allowed (champion, or
+    challenger for the second finalist, 2026-10-31)."""
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as pkg_version
 
@@ -337,16 +347,21 @@ def promote(
     gates = evaluate_gates(model, tags, tables, training_prediction(model, store, cfg))
     for g in gates:
         LOG.info("gate %s %s: %s", g.name, "pass" if g.passed else "fail", g.detail)
-    status = decide(reg, name, version, gates, auto_promote)
+    status = decide(reg, name, version, gates, auto_promote, alias)
     champion = reg.alias_version(name, CHAMPION)
-    LOG.info("version %s %s; champion is version %s", version, status, champion)
-    if champion is None:
-        raise RuntimeError(f"{name} has no {CHAMPION} version; version {version} is {status}")
+    holder = reg.alias_version(name, alias)
+    LOG.info(
+        "version %s %s; %s is version %s; champion is version %s", version, status, alias, holder, champion
+    )
+    if holder is None:
+        raise RuntimeError(f"{name} has no {alias} version; version {version} is {status}")
     return {
         "run_id": run_id,
         "version": version,
         "reused": reused,
         "status": status,
         "champion": champion,
+        "alias": alias,
+        "alias_version": holder,
         "gates": {g.name: g.passed for g in gates},
     }

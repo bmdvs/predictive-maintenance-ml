@@ -593,6 +593,9 @@ splits:                                   # [fixed] 11
 models:                                   # [fixed]
   seed: 7
   nbm:
+    finalists:                              # 2026-10-31: the two finalists, run one at a time by the job parameter finalist (0 or 1)
+      - {candidate: autoencoder_vendor, hidden: [16, 6, 16], epochs: 200, threshold_mode: single, alias: champion}
+      - {candidate: autoencoder_extended, hidden: [16, 6, 16], epochs: 400, threshold_mode: speed_band, alias: challenger}
     candidates: [mahalanobis_extended]     # parity failure decisions 2026-10-31: the rule's pick on the corrected scores (42-setting selection rerun, unchanged rule, stable sort); with the design 1 limits below; was [pca_t2_spe_vendor] (fold diagnosis round 2 decision, the pick on the uncorrected scores), before that the 12 candidates [pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended, autoencoder_extended, pca_t2_spe_vendor, mahalanobis_vendor, isolation_forest_vendor, autoencoder_vendor, pca_t2_spe_vendor_octave, mahalanobis_vendor_octave, isolation_forest_vendor_octave, autoencoder_vendor_octave] (checkpoint (b) diagnosis decisions item 4)
     selection_candidates: null              # checkpoint (b) diagnosis decisions 2026-10-30: selection over every candidate above; was [pca_t2_spe_extended, mahalanobis_extended, isolation_forest_extended, autoencoder_extended] (step 6 design freeze)
     input_limit_percentile: null            # base-model decision 2026-10-31: no design 1 limits (on the corrected models they added false alerts without adding catches); was 99.9 (fold diagnosis round 2 decision 2026-10-31, design 1, on the 13 Vendor Rules measurements)

@@ -58,7 +58,21 @@ MODEL_PREFIXES = ("pca_t2_spe", "mahalanobis", "isolation_forest", "autoencoder"
 # Input sets (checkpoint (b) diagnosis decisions 2026-10-30, item 4): (a) extended, the 37 inputs as before;
 # (b) vendor, the Vendor Rules' measurements plus crest factor, kurtosis and the 1x and 2x order energies;
 # (c) vendor_octave, set (b) plus the 32 one-third-octave bands merged into 8 bands of 4.
-INPUT_SETS = ("extended", "vendor", "vendor_octave")
+INPUT_SETS = ("extended", "vendor", "vendor_octave", "full", "full_env")
+# (e) full_env (2026-10-31): full plus the envelope 3rd harmonics of BPFO, BPFI and BSF (the export carries
+# harmonics 1 to 3; set (b) holds the 1st and 2nd) and the sideband energies (BPFI +/- 1x, BSF +/- FTF);
+# 52 inputs
+FULL_ENV_EXTRA = [
+    "env_bpfo_3_g2",
+    "env_bpfi_3_g2",
+    "env_bsf_3_g2",
+    "env_bpfi_sb_lo_g2",
+    "env_bpfi_sb_hi_g2",
+    "env_bsf_sb_lo_g2",
+    "env_bsf_sb_hi_g2",
+]
+# (d) full (2026-10-31): the 32 one-third-octave bands plus the 13 inputs of set (b), 45 inputs; no input
+# counted twice (set (b) carries no third-octave band)
 CANDIDATES = (
     "pca_t2_spe",
     "mahalanobis",
@@ -139,11 +153,18 @@ def features(df: pd.DataFrame, candidate: str) -> tuple[np.ndarray, list[str]]:
     """Feature matrix for a candidate: energies and RMS values on a log scale; crest factor, kurtosis and
     the temperature residual (degrees C) linear."""
     iset = input_set(candidate)
-    if iset in ("vendor", "vendor_octave"):
+    if iset in ("vendor", "vendor_octave", "full", "full_env"):
         parts = [_log(df[c].to_numpy(dtype=float)) for c in VENDOR_LOG]
         parts += [df[c].to_numpy(dtype=float) for c in VENDOR_LINEAR]
         parts.append(df[TEMP_RESID].to_numpy(dtype=float))
         cols = [*VENDOR_LOG, *VENDOR_LINEAR, TEMP_RESID]
+        if iset in ("full", "full_env"):
+            tc = toct_columns(df)
+            parts = [_log(df[c].to_numpy(dtype=float)) for c in tc] + parts
+            cols = [*tc, *cols]
+        if iset == "full_env":
+            parts += [_log(df[c].to_numpy(dtype=float)) for c in FULL_ENV_EXTRA]
+            cols += FULL_ENV_EXTRA
         if iset == "vendor_octave":
             op, on = octave_bands(df)
             parts += op
@@ -397,7 +418,9 @@ class PointModel:
             spe = np.sum((z - p.inverse_transform(t)) ** 2, axis=1)
             return t2 / self.extra["t2_med"] + spe / self.extra["spe_med"], z**2
         if cand == "mahalanobis":
-            return np.einsum("ij,jk,ik->i", z, self.model, z), z**2
+            loc = self.extra.get("location")
+            zc = z - loc if loc is not None else z  # models fitted before the fix carry no location
+            return np.einsum("ij,jk,ik->i", zc, self.model, zc), zc**2
         if cand == "isolation_forest":
             return -self.model.score_samples(z), z**2
         rec = self.model.predict(z)
@@ -479,7 +502,11 @@ def _fit_estimator(z: np.ndarray, s: Settings, cfg: dict[str, Any]) -> tuple[Any
             "rank": rank,
         }
     if kind == "mahalanobis":
-        return LedoitWolf().fit(z).precision_, {}
+        # 2026-10-31 (centering defect): the Ledoit-Wolf location (the training mean of z) is kept and
+        # subtracted at score time, so the score is the squared distance from the fitted location (was the
+        # precision alone, scored around the scaler's median: an offset m'Pm plus a cross term 2(z - m)'Pm)
+        lw = LedoitWolf().fit(z)
+        return lw.precision_, {"location": lw.location_.astype(float)}
     if kind == "isolation_forest":
         return IsolationForest(
             n_estimators=m["nbm"]["isolation_forest"]["n_estimators"], random_state=seed

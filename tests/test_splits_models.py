@@ -68,6 +68,7 @@ def _healthy(n: int, start: str, seed: int) -> pd.DataFrame:
             "env_bpfo_2_g2": rng.lognormal(-9.5, 0.1, n),
             "env_bpfi_2_g2": rng.lognormal(-9.5, 0.1, n),
             "env_bsf_2_g2": rng.lognormal(-9.5, 0.1, n),
+            **{c: rng.lognormal(-10, 0.1, n) for c in nbm.FULL_ENV_EXTRA},
             "temp_c": rng.normal(35, 0.3, n),
             "speed_rpm_at_measurement": 3450.0,
             "load_pct_at_measurement": np.nan,
@@ -189,7 +190,9 @@ def test_nbm_settings_grid_and_complexity():
     full["models"]["nbm"]["candidates"] = [c for c in nbm.CANDIDATES if nbm.input_set(c) in nbm.INPUT_SETS]
     full["models"]["nbm"]["selection_grid"]["threshold_mode"] = ["single", "speed_band"]
     big = nbm.settings_grid(full)
-    assert len(big) == 2 * 3 * (3 + len(g["autoencoder_hidden"]) * len(g["autoencoder_epochs"]))
+    assert len(big) == 2 * len(nbm.INPUT_SETS) * (
+        3 + len(g["autoencoder_hidden"]) * len(g["autoencoder_epochs"])
+    )
     order = sorted(big, key=nbm.complexity)
     assert nbm.model_type(order[0].candidate) == "pca" and order[0].threshold_mode == "single"
     assert nbm.model_type(order[-1].candidate) == "autoencoder"
@@ -633,3 +636,32 @@ def test_numerics_gate_fails_below_the_floor():
     assert registry.gate_numerics(SimpleNamespace(models={"A": ok})).passed
     g = registry.gate_numerics(SimpleNamespace(models={"A": ok, "B": bad}))
     assert not g.passed and "B input scale" in g.detail and "B spe_med" in g.detail
+
+
+def test_mahalanobis_scores_from_the_fitted_location():
+    """Centering defect fix (2026-10-31): a reading at the fitted location scores 0, and on Gaussian data
+    the mean training score is within 10 percent of the column count."""
+    rng = np.random.default_rng(5)
+    z = rng.normal(loc=0.4, scale=1.0, size=(4000, 8))
+    st = _settings("mahalanobis")
+    prec, extra = nbm._fit_estimator(z, st, CFG)
+    pm = nbm.PointModel(
+        "P",
+        "flood_pump",
+        st,
+        [f"c{j}" for j in range(8)],
+        None,
+        None,
+        {},
+        nbm.Scaler(np.zeros(8), np.ones(8)),
+        prec,
+        extra,
+        {},
+        [],
+        len(z),
+        1,
+    )
+    s0, _ = pm.raw_scores(extra["location"][None, :])
+    assert abs(float(s0[0])) < 1e-12
+    s, _ = pm.raw_scores(z)
+    assert abs(float(s.mean()) - 8) <= 0.8

@@ -30,6 +30,20 @@ PERSISTENCES = (3, 6, 12)
 # ---------------------------------------------------------------- inputs
 
 
+def apply_finalist(cfg: dict[str, Any], index: int) -> str:
+    """Restrict the training grid to one finalist (models.nbm.finalists, 2026-10-31) and return its registry
+    alias: the candidate, network, length and threshold mode of entry index, nothing else."""
+    nb = cfg["models"]["nbm"]
+    f = nb["finalists"][int(index)]
+    nb["candidates"] = [f["candidate"]]
+    grid = nb["selection_grid"]
+    grid["threshold_mode"] = [f["threshold_mode"]]
+    if f.get("hidden"):
+        grid["autoencoder_hidden"] = [list(f["hidden"])]
+        grid["autoencoder_epochs"] = [int(f["epochs"])]
+    return str(f["alias"])
+
+
 def _utc(s: pd.Series) -> pd.Series:
     return tasks._utc(s)
 

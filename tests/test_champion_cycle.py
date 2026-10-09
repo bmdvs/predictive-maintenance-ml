@@ -216,3 +216,33 @@ def test_promote_reuses_the_version_registered_from_the_same_run():
     assert reg.tags[("2", "failed_gates")] == "parity"
     registry.decide(reg, "m", "2", [registry.Gate("parity", True, "d")], False)
     assert ("2", "failed_gates") not in reg.tags and reg.tags[("2", "status")] == "for_review"
+
+
+def test_second_finalist_takes_the_challenger_alias():
+    """2026-10-31: the second finalist is promoted under the challenger alias; the champion stays."""
+    gates = [
+        registry.Gate(n, True, "d") for n in ("selection", "parity", "points", "false_episodes", "numerics")
+    ]
+    reg = FakeRegistry(champion="1")
+    assert registry.decide(reg, "pdm.ml.nbm_point_models", "2", gates, True, "challenger") == "promoted"
+    assert reg.aliases == {"champion": "1", "challenger": "2"}
+
+
+def test_apply_finalist_restricts_the_grid_to_one_setting():
+    import copy
+
+    from pdm import ml_tasks
+    from pdm.config import load_config
+    from pdm.models import nbm
+
+    cfg = load_config()
+    keys, aliases = [], []
+    for i in (0, 1):
+        c = copy.deepcopy(cfg)
+        aliases.append(ml_tasks.apply_finalist(c, i))
+        keys.append([s.key for s in nbm.settings_grid(c)])
+    assert aliases == ["champion", "challenger"]
+    assert keys == [
+        ["autoencoder_vendor [16-6-16] 200 ep, single"],
+        ["autoencoder_extended [16-6-16] 400 ep, speed_band"],
+    ]

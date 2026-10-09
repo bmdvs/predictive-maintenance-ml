@@ -43,6 +43,9 @@ def parse(prog: str, argv: list[str] | None = None) -> argparse.Namespace:
     _flag(p, "as-of", default=None, help="shadow-quarter month YYYY-MM; the data horizon is its end")
     _flag(p, "train-stages", default="all", help="train: comma-separated training stages, or all")
     _flag(p, "monitor-stages", default="all", help="monitor: evaluation, monitoring, or all")
+    _flag(
+        p, "finalist", default="", help="0 or 1: train, register and score that finalist (empty: config grid)"
+    )
     return p.parse_args(argv)
 
 
@@ -56,6 +59,15 @@ def setup(prog: str, argv: list[str] | None = None) -> tuple[Store, dict[str, An
     cfg = load_config(args.config)
     if args.as_of:
         cfg["evaluation"]["as_of"] = args.as_of
+    args.alias = registry.CHAMPION
+    if str(args.finalist).strip() != "":
+        args.alias = ml_tasks.apply_finalist(cfg, int(args.finalist))
+        LOG.info(
+            "finalist %s, alias %s, candidates %s",
+            args.finalist,
+            args.alias,
+            cfg["models"]["nbm"]["candidates"],
+        )
     LOG.info("data horizon %s (as_of %s)", tasks.horizon(cfg), args.as_of or "not set")
     return Store(spark, catalog=args.catalog), cfg, args
 
@@ -113,19 +125,21 @@ def promote(argv: list[str] | None = None) -> None:
         job_run_id=args.job_run_id,
         run_id=args.run_id,
         auto_promote=args.auto_promote,
+        alias=args.alias,
     )
     log.get_logger("pdm.entrypoints").info("promote: %s", out)
 
 
-def champion(catalog: str) -> tuple[Any, str]:
-    """The frozen ML Model from the Unity Catalog registry and its version label."""
+def champion(catalog: str, alias: str = registry.CHAMPION) -> tuple[Any, str]:
+    """The frozen ML Model from the Unity Catalog registry under the alias (champion, or challenger for the
+    second finalist) and its version label."""
     import mlflow
     from mlflow import MlflowClient
 
     mlflow.set_registry_uri("databricks-uc")
     name = registry.model_name(catalog)
-    v = MlflowClient(registry_uri="databricks-uc").get_model_version_by_alias(name, registry.CHAMPION).version
-    model = mlflow.pyfunc.load_model(f"models:/{name}@{registry.CHAMPION}").unwrap_python_model()
+    v = MlflowClient(registry_uri="databricks-uc").get_model_version_by_alias(name, alias).version
+    model = mlflow.pyfunc.load_model(f"models:/{name}@{alias}").unwrap_python_model()
     return model, f"{registry.MODEL}/{v}"
 
 
@@ -133,7 +147,7 @@ def score(argv: list[str] | None = None) -> None:
     """The shadow year scored with the frozen ML Model, then prognosis, and the levels of both methods
     (ALERT episodes and ALARM starts) with the ML Model's cases and work requests."""
     store, cfg, args = setup("pdm-score", argv)
-    model, version = champion(args.catalog)
+    model, version = champion(args.catalog, args.alias)
     ml_tasks.score_task(store, cfg, model, version)
     tasks.prognosis_task(store, cfg)
     ml_tasks.levels_task(store, cfg)
