@@ -111,6 +111,26 @@ def gate_points(model: Any, points: pd.DataFrame, train_segments: pd.DataFrame) 
     )
 
 
+NUMERIC_FLOOR = 1e-6
+
+
+def gate_numerics(model: Any, floor: float = NUMERIC_FLOOR) -> Gate:
+    """Every point's score rests on well-conditioned numbers (parity failure decisions, 2026-10-31): each
+    input's scale, and the T2 and (where used) SPE training medians that normalize the score, at or above
+    the floor (1e-6, in the input's own units for the scales). Fails any point below it."""
+    bad = []
+    for pid, pm in sorted(getattr(model, "models", {}).items()):
+        scale = np.asarray(getattr(pm.scaler, "scale", []), dtype=float)
+        if scale.size and float(scale.min()) < floor:
+            bad.append(f"{pid} input scale {float(scale.min()):.3g}")
+        extra = getattr(pm, "extra", {}) or {}
+        for k in ("t2_med", "spe_med"):
+            v = extra.get(k)
+            if v is not None and float(v) < floor:
+                bad.append(f"{pid} {k} {float(v):.3g}")
+    return Gate("numerics", not bad, f"floor {floor:g}; points below it: {', '.join(bad) or 'none'}")
+
+
 def gate_false_episodes(settings: pd.DataFrame) -> Gate:
     """False episodes per asset-month on the last six months of training within twice the fold rate."""
     r = settings.iloc[0]
@@ -213,9 +233,9 @@ def evaluate_gates(
     tables: dict[str, pd.DataFrame],
     pred: pd.DataFrame,
 ) -> list[Gate]:
-    """The four gates, run once on the frozen champion (revision 2): selection, parity with the training
-    run's scores, every point's model and re-centering levels, and the false-episode rate on the last six
-    months of training within twice the fold rate."""
+    """The gates, run once on the frozen champion (revision 2): selection, parity with the training run's
+    scores, every point's model and re-centering levels, the false-episode rate on the last six months of
+    training within twice the fold rate, and (2026-10-31) the numerics floor on scales and normalizers."""
     train = tables["ml_train_scores"]
     keep = [c for c in train.columns if c not in ("asset_id", "model_version", "settings")]
     return [
@@ -223,6 +243,7 @@ def evaluate_gates(
         gate_parity(pred, train[keep]),
         gate_points(model, tables["points"], tables["ml_train_segments"]),
         gate_false_episodes(tables["ml_settings"]),
+        gate_numerics(model),
     ]
 
 

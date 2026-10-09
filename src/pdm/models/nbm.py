@@ -185,10 +185,13 @@ class Scaler:
 
     @classmethod
     def fit(cls, x: np.ndarray) -> Scaler:
+        """Median and robust scale per column. The robust scale (IQR / 1.349) is floored at the column's
+        standard deviation (parity failure decisions, 2026-10-31: on HMC-08-CP the IQR of HF acceleration
+        was 43 times below its standard deviation, so one input took 99 percent of the variance); a
+        constant column takes 1. (Was the IQR / 1.349, the standard deviation only where the IQR is zero.)"""
         c = np.nanmedian(x, axis=0)
         q75, q25 = np.nanpercentile(x, [75, 25], axis=0)
-        s = (q75 - q25) / 1.349
-        s = np.where(s > 1e-9, s, np.nanstd(x, axis=0))
+        s = np.maximum((q75 - q25) / 1.349, np.nanstd(x, axis=0))
         return cls(c, np.where(s > 1e-9, s, 1.0))
 
     def transform(self, x: np.ndarray) -> np.ndarray:
@@ -375,6 +378,13 @@ class PointModel:
     # per-input limits (fold diagnosis round 2 decision, 2026-10-31): each standardized input's high-side
     # limit, the configured percentile of its values on the point's healthy training hours; empty = off
     input_limits: dict[str, float] = field(default_factory=dict)
+    # base-model decision 2026-10-31: the indicator columns kept (those that vary in the point's training);
+    # None keeps all seven (the earlier models)
+    indicator_keep: np.ndarray | None = None
+
+    def indicators(self, rows: pd.DataFrame, bands: np.ndarray) -> np.ndarray:
+        oh = _one_hot(rows, bands)
+        return oh if self.indicator_keep is None else oh[:, self.indicator_keep]
 
     def raw_scores(self, z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         cand = model_type(self.settings.candidate)
@@ -382,6 +392,8 @@ class PointModel:
             p = self.model
             t = p.transform(z)
             t2 = np.sum(t**2 / p.explained_variance_, axis=1)
+            if self.extra.get("spe_med") is None:  # no residual subspace: T2 alone (2026-10-31)
+                return t2 / self.extra["t2_med"], z**2
             spe = np.sum((z - p.inverse_transform(t)) ** 2, axis=1)
             return t2 / self.extra["t2_med"] + spe / self.extra["spe_med"], z**2
         if cand == "mahalanobis":
@@ -392,7 +404,10 @@ class PointModel:
         return np.mean((z - rec) ** 2, axis=1), (z - rec) ** 2
 
     def contributors(self, contrib: np.ndarray, k: int) -> list[str]:
-        names = self.columns + [f"regime_{r}" for r in REGIMES] + [f"band_{b}" for b in BANDS]
+        ind = [f"regime_{r}" for r in REGIMES] + [f"band_{b}" for b in BANDS]
+        if self.indicator_keep is not None:
+            ind = [n for n, kp in zip(ind, self.indicator_keep, strict=True) if kp]
+        names = self.columns + ind
         idx = np.argsort(-contrib, axis=1)[:, :k]
         return [",".join(names[j] for j in row) for row in idx]
 
@@ -451,8 +466,18 @@ def _fit_estimator(z: np.ndarray, s: Settings, cfg: dict[str, Any]) -> tuple[Any
         model = PCA(n_components=m["nbm"]["pca_variance_kept"], svd_solver="full", random_state=seed).fit(z)
         t = model.transform(z)
         t2 = np.sum(t**2 / model.explained_variance_, axis=1)
+        # parity failure decisions (2026-10-31): where the PCA keeps every component of the training
+        # matrix's rank there is no residual subspace and SPE is undefined (rounding only); the score is T2
+        # alone (was T2 plus SPE, each over its training median, on every point)
+        rank = int(np.linalg.matrix_rank(z))
+        if model.n_components_ >= rank:
+            return model, {"t2_med": float(np.median(t2)) or 1.0, "spe_med": None, "rank": rank}
         spe = np.sum((z - model.inverse_transform(t)) ** 2, axis=1)
-        return model, {"t2_med": float(np.median(t2)) or 1.0, "spe_med": float(np.median(spe)) or 1.0}
+        return model, {
+            "t2_med": float(np.median(t2)) or 1.0,
+            "spe_med": float(np.median(spe)) or 1.0,
+            "rank": rank,
+        }
     if kind == "mahalanobis":
         return LedoitWolf().fit(z).precision_, {}
     if kind == "isolation_forest":
@@ -557,7 +582,14 @@ def fit_point(
         arch = (s.candidate, tuple(s.hidden), int(s.epochs))
         if arch not in fitted:
             check_training_rows(clean.loc[train, "hour_utc"], cutoff, excluded)
-            raw = np.column_stack([xc[train], oh[train]])
+            # base-model decision 2026-10-31: indicators that never vary in the point's training are dropped
+            # before fitting (was all seven on every point)
+            ind_keep = (
+                oh[train].std(axis=0) > 0
+                if nb.get("drop_constant_indicators")
+                else np.ones(oh.shape[1], dtype=bool)
+            )
+            raw = np.column_stack([xc[train], oh[train][:, ind_keep]])
             sc0 = Scaler.fit(raw)
             z0 = sc0.transform(raw)
             est0, extra0 = _fit_estimator(z0, s, cfg)
@@ -578,8 +610,8 @@ def fit_point(
                     est0, extra0 = _fit_estimator(z0, s, cfg)
                 else:
                     keep = np.ones(len(raw), dtype=bool)
-            fitted[arch] = (sc0, est0, extra0, z0, keep)
-        sc, est, extra, z, keep = fitted[arch]
+            fitted[arch] = (sc0, est0, extra0, z0, keep, ind_keep)
+        sc, est, extra, z, keep, ind_keep = fitted[arch]
         pm = PointModel(
             pid,
             pclass,
@@ -596,6 +628,7 @@ def fit_point(
             n,
             sum(g.level is not None for g in segs),
         )
+        pm.indicator_keep = None if ind_keep.all() else ind_keep
         scores, _ = pm.raw_scores(z)
         tb = bands[train][keep]
         pm.thresholds = _thresholds(scores, tb, pcts, nb["min_regime_healthy_hours"])
@@ -749,7 +782,7 @@ def score_point(
     limit_txt = np.full(len(clean), "", dtype=object)
     zin = np.full((len(clean), len(model.columns)), np.nan)
     if sc.any():
-        raw = np.column_stack([x[sc] - lvl[sc], _one_hot(clean[sc], bands[sc])])
+        raw = np.column_stack([x[sc] - lvl[sc], model.indicators(clean[sc], bands[sc])])
         zs = model.scaler.transform(raw)
         s, contrib = model.raw_scores(zs)
         score[sc] = s

@@ -183,7 +183,7 @@ def test_nbm_settings_grid_and_complexity():
     cands = CFG["models"]["nbm"]["candidates"]
     n_ae = sum(c in nbm.AUTOENCODERS for c in cands) * n_ae
     assert len(grid) == len(g["threshold_mode"]) * (sum(c not in nbm.AUTOENCODERS for c in cands) + n_ae)
-    assert [s.key for s in grid] == ["pca_t2_spe_vendor, single"]
+    assert [s.key for s in grid] == ["mahalanobis_extended, single"]  # base-model decision 2026-10-31
     # the 42-setting grid the selection ran on (checkpoint (b) diagnosis decisions 2026-10-30)
     full = copy.deepcopy(CFG)
     full["models"]["nbm"]["candidates"] = [c for c in nbm.CANDIDATES if nbm.input_set(c) in nbm.INPUT_SETS]
@@ -552,16 +552,84 @@ def test_per_input_limits_alert_alongside_the_score():
     cutoff = pd.Timestamp("2024-07-01", tz=UTC)
     win = _windows(rows["hour_utc"].min())
     st = _settings("pca_t2_spe_vendor")
-    m, _ = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    cfg = copy.deepcopy(CFG)
+    cfg["models"]["nbm"]["input_limit_percentile"] = 99.9  # design 1 (dropped from the adopted design)
+    m, _ = nbm.fit_point(rows, win, [st], cfg, rows["hour_utc"].min(), cutoff, [], None, None)
     pm = m[st.key]
     assert set(pm.input_limits) == set(pm.columns)
     end = cutoff + pd.Timedelta(hours=48)
-    calm, _ = nbm.score_point(pm, rows, win, CFG, cutoff, end, 1.45, 3)
+    calm, _ = nbm.score_point(pm, rows, win, cfg, cutoff, end, 1.45, 3)
     bad = rows.copy()
     late = bad["hour_utc"] >= cutoff + pd.Timedelta(hours=10)
     bad.loc[late, "kurtosis"] += 2.0
-    s, _ = nbm.score_point(pm, bad, win, CFG, cutoff, end, 1.45, 3)
+    s, _ = nbm.score_point(pm, bad, win, cfg, cutoff, end, 1.45, 3)
     assert s["limit_inputs"].str.contains("kurtosis").sum() >= 30
     ex = nbm.exceedance_hours(s.assign(score=0.0), "threshold", 6)
     assert len(ex) and ex["source"].str.contains("limit:kurtosis").all()
     assert len(nbm.exceedance_hours(calm.assign(score=0.0), "threshold", 6)) <= 2
+
+
+def test_scoring_identical_under_two_thread_counts():
+    """Parity failure decisions (2026-10-31): fitting and scoring give the same scores within 1e-9 under one
+    and four BLAS threads."""
+    from threadpoolctl import threadpool_limits
+
+    rows = _year(11)
+    cutoff = pd.Timestamp("2024-07-01", tz=UTC)
+    win = _windows(rows["hour_utc"].min())
+    st = _settings("pca_t2_spe_vendor")
+    end = cutoff + pd.Timedelta(hours=72)
+    out = []
+    for n in (1, 4):
+        with threadpool_limits(limits=n):
+            m, _ = nbm.fit_point(rows, win, [st], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+            s, _ = nbm.score_point(m[st.key], rows, win, CFG, cutoff, end, 1.45, 3)
+        out.append(s["score"].to_numpy(float))
+    assert np.allclose(out[0], out[1], rtol=1e-9, atol=1e-12)
+
+
+def test_full_rank_pca_scores_on_t2_alone_and_scale_floor():
+    """Where the PCA keeps every component of the training rank there is no residual subspace: the score is
+    T2 alone (SPE undefined). The robust scale is floored at the standard deviation."""
+    sc = nbm.Scaler.fit(np.column_stack([np.r_[np.zeros(90), np.full(10, 50.0)], np.ones(100)]))
+    assert sc.scale[0] >= np.std(np.r_[np.zeros(90), np.full(10, 50.0)]) - 1e-12 and sc.scale[1] == 1.0
+    rng = np.random.default_rng(3)
+    z = np.column_stack([rng.normal(size=(500, 2)), np.zeros((500, 3))])
+    st = _settings("pca_t2_spe_vendor")
+    model, extra = nbm._fit_estimator(z, st, CFG)
+    assert extra["rank"] == 2 and model.n_components_ == 2 and extra["spe_med"] is None
+    pm = nbm.PointModel(
+        "P",
+        "flood_pump",
+        st,
+        ["a", "b"],
+        None,
+        None,
+        {},
+        nbm.Scaler(np.zeros(5), np.ones(5)),
+        model,
+        extra,
+        {},
+        [],
+        500,
+        1,
+    )
+    s, _ = pm.raw_scores(z[:10])
+    t = model.transform(z[:10])
+    assert np.allclose(s, np.sum(t**2 / model.explained_variance_, axis=1) / extra["t2_med"])
+
+
+def test_numerics_gate_fails_below_the_floor():
+    from types import SimpleNamespace
+
+    from pdm import registry
+
+    ok = SimpleNamespace(
+        scaler=SimpleNamespace(scale=np.array([0.1, 1.0])), extra={"t2_med": 5.0, "spe_med": None}
+    )
+    bad = SimpleNamespace(
+        scaler=SimpleNamespace(scale=np.array([1e-8, 1.0])), extra={"t2_med": 5.0, "spe_med": 1e-29}
+    )
+    assert registry.gate_numerics(SimpleNamespace(models={"A": ok})).passed
+    g = registry.gate_numerics(SimpleNamespace(models={"A": ok, "B": bad}))
+    assert not g.passed and "B input scale" in g.detail and "B spe_med" in g.detail
