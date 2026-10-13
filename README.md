@@ -44,7 +44,9 @@ The Vendor Rules' and ML Model's statuses and work requests are presented in a [
 
 A precision machining shop runs 40 CNC machines. Its eight horizontal machining centers (HMCs) are the bottleneck: they carry [share]% of the shop's cutting hours at [71]% utilization, and an hour of HMC downtime costs [value, USD] in contribution margin, [x] times the average for the rest of the fleet. Spindle and pump failures on the HMCs stop the shop's highest-margin work.
 
-In July 2023, the shop installed wireless vibration sensors on the HMCs and its four plant compressors, monitored by the sensor vendor's threshold alerts, Vendor Rules, alongside interval-based PM. Vendor Rules alerts sent technicians to inspect machines, and [x]% of those inspections found nothing. To catch developing faults earlier without adding inspection workload, the shop built its own ML Model on the sensor record and ran it in shadow mode beside Vendor Rules from July 2025 to June 2026.
+In July 2023 the shop began a pilot of sensor-based condition monitoring on the HMC cell and the compressors: wireless sensors on 40 points, monitored as 28 assets (each HMC's spindle, through-spindle coolant (TSC) pump and flood coolant pump, and each compressor). These sensors were monitored by the sensor vendor's threshold alerts, Vendor Rules, alongside interval-based PM. Vendor Rules alerts sent technicians to inspect machines at a [x] false alert rate, leading to [x] hours of inspections that found nothing wrong. 
+
+To lower this false alert rate, and to catch developing faults earlier, this project built the ML Model on the sensor record and ran it in shadow mode beside Vendor Rules over the evaluation year to prove its effectiveness.
 
 ---
 
