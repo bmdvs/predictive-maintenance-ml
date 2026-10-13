@@ -227,12 +227,18 @@ class Settings:
     hidden: tuple[int, ...] = ()
     epochs: int = 0
     threshold_mode: str = "single"
+    # final tuning round (2026-10-31): the autoencoder's L2 weight decay (None: the library default 1e-4)
+    # and early stopping on a time-ordered validation slice in place of a fixed number of epochs
+    weight_decay: float | None = None
+    early_stopping: bool = False
 
     @property
     def key(self) -> str:
         if self.candidate in AUTOENCODERS:  # every autoencoder candidate carries its network and length
             net = "-".join(str(h) for h in self.hidden)
-            return f"{self.candidate} [{net}] {self.epochs} ep, {self.threshold_mode}"
+            length = "early stopping" if self.early_stopping else f"{self.epochs} ep"
+            wd = "" if self.weight_decay is None else f", wd {self.weight_decay:g}"
+            return f"{self.candidate} [{net}] {length}{wd}, {self.threshold_mode}"
         return f"{self.candidate}, {self.threshold_mode}"
 
 
@@ -511,9 +517,37 @@ def _fit_estimator(z: np.ndarray, s: Settings, cfg: dict[str, Any]) -> tuple[Any
         return IsolationForest(
             n_estimators=m["nbm"]["isolation_forest"]["n_estimators"], random_state=seed
         ).fit(z), {}
-    return MLPRegressor(hidden_layer_sizes=tuple(s.hidden), max_iter=int(s.epochs), random_state=seed).fit(
-        z, z
-    ), {}
+    alpha = 1e-4 if s.weight_decay is None else float(s.weight_decay)
+    if not s.early_stopping:
+        return MLPRegressor(
+            hidden_layer_sizes=tuple(s.hidden), max_iter=int(s.epochs), alpha=alpha, random_state=seed
+        ).fit(z, z), {}
+    # early stopping (2026-10-31): the last share of the training hours by time is the validation slice;
+    # train epoch by epoch on the rest, stop after patience epochs without a lower validation rebuild error
+    # (at most max_epochs) and keep the best weights
+    es = {
+        "validation_share": 0.15,
+        "patience": 20,
+        "max_epochs": 1000,
+        **(m["nbm"].get("autoencoder", {}).get("early_stopping") or {}),
+    }
+    n_val = max(1, int(round(float(es["validation_share"]) * len(z))))
+    fit_z, val_z = z[: len(z) - n_val], z[len(z) - n_val :]
+    model = MLPRegressor(hidden_layer_sizes=tuple(s.hidden), alpha=alpha, random_state=seed, max_iter=1)
+    best, best_epoch, since, state = np.inf, 0, 0, None
+    epoch = 0
+    for epoch in range(1, int(es["max_epochs"]) + 1):
+        model.partial_fit(fit_z, fit_z)
+        err = float(np.mean((val_z - model.predict(val_z)) ** 2))
+        if err < best:
+            best, best_epoch, since = err, epoch, 0
+            state = ([w.copy() for w in model.coefs_], [b.copy() for b in model.intercepts_])
+        else:
+            since += 1
+            if since >= int(es["patience"]):
+                break
+    model.coefs_, model.intercepts_ = state
+    return model, {"best_epoch": best_epoch, "epochs_run": epoch, "validation_error": best}
 
 
 def _thresholds(
@@ -606,7 +640,7 @@ def fit_point(
         if n < nb["min_train_hours"]:
             info.setdefault("too_few", []).append(s.key)
             continue
-        arch = (s.candidate, tuple(s.hidden), int(s.epochs))
+        arch = (s.candidate, tuple(s.hidden), int(s.epochs), s.weight_decay, s.early_stopping)
         if arch not in fitted:
             check_training_rows(clean.loc[train, "hour_utc"], cutoff, excluded)
             # base-model decision 2026-10-31: indicators that never vary in the point's training are dropped

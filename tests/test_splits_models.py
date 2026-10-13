@@ -118,6 +118,28 @@ def test_nbm_shape_determinism_and_anomaly(cand):
     assert s3["score"].median() > s1["score"].median()
 
 
+def test_autoencoder_weight_decay_default_is_unchanged_and_early_stopping_keys():
+    """2026-11-01: weight decay None trains with the library default 1e-4 (same scores as an explicit 1e-4,
+    same key as before); early stopping replaces the epoch count in the key and records the best epoch."""
+    rows = _year(1)
+    cutoff = pd.Timestamp("2024-07-01", tz=UTC)
+    win = _windows(rows["hour_utc"].min())
+    cand = "autoencoder_vendor"
+    base = nbm.Settings(cand, (8, 4, 8), 50, "single")
+    wd = nbm.Settings(cand, (8, 4, 8), 50, "single", weight_decay=1e-4)
+    es = nbm.Settings(cand, (8, 4, 8), 0, "single", early_stopping=True)
+    assert base.key == "autoencoder_vendor [8-4-8] 50 ep, single"
+    assert wd.key == "autoencoder_vendor [8-4-8] 50 ep, wd 0.0001, single"
+    assert es.key == "autoencoder_vendor [8-4-8] early stopping, single"
+    m, _ = nbm.fit_point(rows, win, [base, wd, es], CFG, rows["hour_utc"].min(), cutoff, [], None, None)
+    end = cutoff + pd.Timedelta(hours=50)
+    s0, _ = nbm.score_point(m[base.key], rows, win, CFG, cutoff, end, 1.45, 3)
+    s1, _ = nbm.score_point(m[wd.key], rows, win, CFG, cutoff, end, 1.45, 3)
+    s2, _ = nbm.score_point(m[es.key], rows, win, CFG, cutoff, end, 1.45, 3)
+    assert np.array_equal(s0["score"].to_numpy(), s1["score"].to_numpy())
+    assert np.isfinite(s2["score"]).all()
+
+
 def _shifted(factor: float, repair: pd.Timestamp, seed: int) -> pd.DataFrame:
     rows = _year(seed)
     shift = rows["hour_utc"] >= repair

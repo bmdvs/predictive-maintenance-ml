@@ -243,6 +243,6 @@ def test_apply_finalist_restricts_the_grid_to_one_setting():
         keys.append([s.key for s in nbm.settings_grid(c)])
     assert aliases == ["champion", "challenger"]
     assert keys == [
-        ["autoencoder_vendor [16-6-16] 200 ep, single"],
+        ["autoencoder_vendor [16-4-16] 200 ep, single"],  # tuning re-run 2026-11-01; was [16-6-16]
         ["autoencoder_extended [16-6-16] 400 ep, speed_band"],
     ]
