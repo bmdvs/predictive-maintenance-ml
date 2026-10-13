@@ -34,6 +34,7 @@ INSPECTION = {
     "unclassified": "listen, temperature check",
 }
 FAULT_LOCATION = {"bpfo": "outer race", "bpfi": "inner race", "bsf": "ball"}
+D1_HF_QUIET = 2.0
 Z_INDICATORS = {
     "env_bpfo": "env_bpfo_1_g2",
     "env_bpfi": "env_bpfi_1_g2",
@@ -248,9 +249,12 @@ def case_z(
     return out
 
 
-def suspected(z: dict[str, float], kind: str, zthr: float) -> tuple[str, str]:
+def suspected(z: dict[str, float], kind: str, zthr: float, d1: bool = False) -> tuple[str, str]:
     """The first family in the asset kind's precedence (specific signatures before generic) whose own
-    indicators are all at or above zthr."""
+    indicators are all at or above zthr. D1 (2026-11-01, switch advisory.d1_precedence): on spindles,
+    lubrication ahead of spindle cooling when temperature and HF both reach zthr, and spindle cooling only
+    from the thermistor or from a temperature rise with HF below d1_hf_quiet (2); on pumps, cavitation or
+    wear ahead of bearing when HF and order 1 rise together."""
 
     def hit(*keys: str) -> bool:
         return all(pd.notna(z.get(k, np.nan)) and z[k] >= zthr for k in keys)
@@ -266,7 +270,24 @@ def suspected(z: dict[str, float], kind: str, zthr: float) -> tuple[str, str]:
         bearing = ("bearing", f"{FAULT_LOCATION[k]} ({k.upper()} z {env_hit[k]:.1f})")
     rules: list[tuple[str, tuple[str, ...]] | str] = []
     hf_up = hit("hf")
-    if kind == "spindle":
+    if kind == "spindle" and d1:
+        hf = z.get("hf", np.nan)
+        hf_quiet = pd.isna(hf) or hf < D1_HF_QUIET
+        lube = hit("hf", "temp")
+        if not lube and (hit("thermistor") or (hit("temp") and hf_quiet)):
+            keys = ("thermistor",) if hit("thermistor") else ("temp",)
+            if hit("tsc_drop", "hf"):
+                return "rotary union", text("tsc_drop", "hf")
+            return "spindle cooling", text(*keys)
+        rules = [
+            ("rotary union", ("tsc_drop", "hf")),
+            "bearing",
+            ("lubrication", ("hf", "temp")),
+            ("contamination", ("hf",)),
+        ]
+    elif kind in ("tsc_pump", "flood_pump") and d1 and hit("hf", "ord_01"):
+        return "cavitation or wear", text("hf", "ord_01")
+    elif kind == "spindle":
         if hit("thermistor") or (hit("temp") and not hf_up):
             keys = ("thermistor",) if hit("thermistor") else ("temp",)
             if hit("tsc_drop", "hf"):
@@ -318,11 +339,12 @@ def work_requests(
     zs: dict[str, dict[str, tuple[float, str]]],
     shadow: tuple[pd.Timestamp, pd.Timestamp],
     zthr: float,
+    d1: bool = False,
 ) -> pd.DataFrame:
     rows = []
     for c in cases.itertuples():
         z = zs.get(c.case_id, {})
-        cond, detail = suspected({k: v[0] for k, v in z.items()}, asset_kind(c.asset_id), zthr)
+        cond, detail = suspected({k: v[0] for k, v in z.items()}, asset_kind(c.asset_id), zthr, d1)
         pts = [p for p in str(c.trigger_points or "").split(",") if p]
         rows.append(
             {

@@ -52,6 +52,75 @@ LOG_COLUMNS = {
     *ENV_BANDS,
 }
 PLAUSIBILITY = ["vel_rms_mm_s", "hf_rms_g", *ENV_BANDS]
+# Model fixes after the first evaluation-year scoring (2026-11-01), each behind a switch in
+# models.nbm.fixes; all off by default (the behavior before the fixes)
+FIX_DEFAULTS: dict[str, Any] = {
+    "f1_hold_level": False,
+    "f2_post_repair_window": False,
+    "f2_days": [3, 14],
+    "f2_min_hours": 24,
+    "f2_train_factor": None,
+    "f3_spindle_temp_regime": False,
+    "f4_high_ratio": False,
+    "f4_ratio": 3.0,
+    "f4_hours": 2,
+    "f1_scope": False,
+    "f4_exclude_pump_low_pressure": False,
+    "t1_vendor_exclusion": False,
+    "t2_season_min_months": None,
+    "t3_min_train_hours": None,
+    "s1_on_component_window": False,
+    "s1_max_days": 60,
+    "c1_wear_stretch": False,
+    "c2_season_clamp": False,
+    "c3_flat_rearm": False,
+    "c4_other_repair_window": False,
+    "c3_lookback_days": 150,
+}
+# F1-scope (2026-11-01): parts that mark a repair on the component a point measures, by point kind
+COMPONENT_PARTS = {
+    "spindle": ("SPINDLE-CARTRIDGE", "SPINDLE-REBUILD"),
+    "pump": ("PUMP-UNIT", "6205", "6309"),
+    "compressor": ("6316", "NU2210"),
+}
+
+
+def point_kind(point_id: str) -> str:
+    if str(point_id).startswith("CMP-"):
+        return "compressor"
+    return "spindle" if "-SP-" in str(point_id) else "pump"
+
+
+def component_repairs(windows: pd.DataFrame, wo: pd.DataFrame) -> pd.DataFrame:
+    """The windows with on_component: the repair that opened the segment replaced parts of the component the
+    point measures (a spindle cartridge or rebuild on spindle points; a pump unit or pump bearing on pump
+    points; motor or airend bearings on compressor points), from the work order's parts."""
+    parts = wo.set_index("wo_id")["parts"].astype(str).to_dict()
+    out = windows.copy()
+    flags = []
+    for pid, reason in zip(out["point_id"], out["reason"], strict=True):
+        if not is_repair(reason):
+            flags.append(False)
+            continue
+        wid = str(reason).split(" ", 1)[1] if " " in str(reason) else ""
+        have = parts.get(wid, "")
+        flags.append(any(k in have for k in COMPONENT_PARTS[point_kind(pid)]))
+    out["on_component"] = flags
+    return out
+
+
+def fixes(cfg: dict[str, Any]) -> dict[str, Any]:
+    return {**FIX_DEFAULTS, **(cfg["models"]["nbm"].get("fixes") or {})}
+
+
+def is_repair(reason: Any) -> bool:
+    return str(reason).startswith("repair")
+
+
+def is_remount(reason: Any) -> bool:
+    return str(reason).startswith("remount")
+
+
 REGIMES = ["light", "medium", "heavy", "running"]
 BANDS = ["low", "mid", "high"]
 MODEL_PREFIXES = ("pca_t2_spe", "mahalanobis", "isolation_forest", "autoencoder")
@@ -316,6 +385,7 @@ def segment_levels(
     windows: pd.DataFrame,
     offsets: dict[str, np.ndarray],
     cfg: dict[str, Any],
+    s1_after: pd.Timestamp | None = None,
 ) -> list[Segment]:
     """Each segment's level: the median over its re-centering window of the features less the point's
     operating-key offsets. The window ends once recenter_days[0] have passed and recenter_min_hours
@@ -323,6 +393,7 @@ def segment_levels(
     recenter_floor_hours by then has no level and is not scored."""
     nb = cfg["models"]["nbm"]
     lo, hi = (pd.Timedelta(days=d) for d in nb["recenter_days"])
+    fx = fixes(cfg)
     t = _naive(rows["hour_utc"])
     w = windows.sort_values("start").reset_index(drop=True)
     seg = segment_ids(rows["hour_utc"], list(w["start"]))
@@ -334,6 +405,56 @@ def segment_levels(
     out = []
     for k, r in w.iterrows():
         a = _naive([r["start"]])[0]
+        if (
+            fx["s1_on_component_window"]
+            and s1_after is not None
+            and pd.Timestamp(r["start"]) >= s1_after
+            and is_repair(r["reason"])
+            and bool(r.get("on_component", False))
+        ):
+            # S1 (2026-11-01, switch models.nbm.fixes.s1_on_component_window; scoring only): after a repair
+            # on the measured component the level window runs from recenter_days[0] until
+            # recenter_min_hours measured hours exist, at most s1_max_days; no level until then (WATCH)
+            span_h = np.timedelta64(int(fx["s1_max_days"]) * 24, "h")
+            mine = np.flatnonzero((seg == k) & (t >= a) & (t < a + span_h))
+            if len(mine) < nb["recenter_min_hours"]:
+                out.append(Segment(r["start"], r["reason"], None, None, {}, len(mine)))
+                continue
+            nth = t[mine[nb["recenter_min_hours"] - 1]]
+            ready = max(a + np.timedelta64(lo), nth + np.timedelta64(1, "h"))
+            m = (seg == k) & (t >= a) & (t < ready)
+            out.append(
+                Segment(
+                    r["start"],
+                    r["reason"],
+                    pd.Timestamp(ready).tz_localize("UTC"),
+                    np.nanmedian(adj[m], axis=0),
+                    _plaus_levels(rows, m),
+                    int(m.sum()),
+                )
+            )
+            continue
+        c4 = fx["c4_other_repair_window"] and is_repair(r["reason"]) and not bool(r.get("on_component", True))
+        if (fx["f2_post_repair_window"] and is_repair(r["reason"])) or c4:
+            # F2 (2026-11-01, switch models.nbm.fixes.f2_post_repair_window): after a repair the level is the
+            # median over days f2_days[0] to f2_days[1] (at least f2_min_hours measured hours); the segment
+            # is scored against the previous level until then. Fewer hours: no level (held, F1).
+            d0, d1 = (np.timedelta64(int(float(d) * 24), "h") for d in fx["f2_days"])
+            m = (seg == k) & (t >= a + d0) & (t < a + d1)
+            if int(m.sum()) < int(fx["f2_min_hours"]):
+                out.append(Segment(r["start"], r["reason"], None, None, {}, int(m.sum())))
+                continue
+            out.append(
+                Segment(
+                    r["start"],
+                    r["reason"],
+                    pd.Timestamp(a + d1).tz_localize("UTC"),
+                    np.nanmedian(adj[m], axis=0),
+                    _plaus_levels(rows, m),
+                    int(m.sum()),
+                )
+            )
+            continue
         mine = np.flatnonzero((seg == k) & (t >= a) & (t < a + np.timedelta64(hi)))
         ready = None
         if len(mine) >= nb["recenter_min_hours"]:
@@ -562,6 +683,61 @@ def _thresholds(
     return {"single": {"_point": point}, "speed_band": by_band}
 
 
+def f2_train_held(segs: list[Segment], cfg: dict[str, Any]) -> set[int]:
+    """F2 in training: post-repair segments whose level is missing or differs from the last accepted level
+    by more than the factor in either direction on any plausibility indicator. Their hours are left out of
+    training and the segment is held at the last accepted level when scored (F1)."""
+    fx = fixes(cfg)
+    if not fx["f2_post_repair_window"]:
+        return set()
+    pl = cfg["models"]["nbm"]["plausibility"]
+    lf = float(np.log10(fx["f2_train_factor"] or pl.get("factor") or 1.45))
+    held: set[int] = set()
+    last: dict[str, float] | None = None
+    for k, sg in enumerate(segs):
+        if sg.level is None:
+            if is_repair(sg.reason) and last is not None:
+                held.add(k)
+            continue
+        if (
+            is_repair(sg.reason)
+            and last is not None
+            and any(
+                np.isfinite(sg.plaus.get(c, np.nan))
+                and np.isfinite(last.get(c, np.nan))
+                and abs(sg.plaus[c] - last[c]) > lf
+                for c in PLAUSIBILITY
+            )
+        ):
+            held.add(k)
+            continue
+        last = sg.plaus
+    return held
+
+
+def segment_plaus(
+    rows: pd.DataFrame,
+    windows: pd.DataFrame,
+    cfg: dict[str, Any],
+    cutoff: pd.Timestamp,
+    ambient: pd.Series | None,
+) -> list[dict[str, float]]:
+    """The plausibility levels of a point's training segments (no model needed), for the F2 factor."""
+    clean = prepare(rows, ambient)
+    win = (
+        windows[pd.to_datetime(windows["start"], utc=True) < cutoff]
+        .sort_values("start")
+        .reset_index(drop=True)
+    )
+    if clean.empty or win.empty:
+        return []
+    n = len(clean)
+    segs = segment_levels(
+        clean, np.zeros((n, 1)), np.full(n, "_", dtype=object), win, {"_all": np.zeros(1)}, cfg
+    )
+    return [g.plaus for g in segs if g.level is not None]
+
+
 def fit_point(
     rows: pd.DataFrame,
     windows: pd.DataFrame,
@@ -591,7 +767,13 @@ def fit_point(
     if win.empty:
         return {}, {**info, "n_train": 0, "reason": "no segment before the cutoff"}
     eligible = training_mask(clean["hour_utc"], cutoff, excluded, fit_start)
-    tf = temperature.fit(clean[eligible], pclass)
+    tf = temperature.fit(
+        clean[eligible],
+        pclass,
+        regime=bool(fixes(cfg)["f3_spindle_temp_regime"]),
+        season_min_months=fixes(cfg)["t2_season_min_months"],
+        season_clamp=bool(fixes(cfg)["c2_season_clamp"]),
+    )
     clean[TEMP_RESID] = tf.residual(clean)
     bands = speed_band(clean, rated_rpm, cfg)
     keys = operating_key(clean, bands)
@@ -607,8 +789,9 @@ def fit_point(
         first = np.full_like(x, np.nan)
         zero = {"_all": np.zeros(x.shape[1])}
         segs0 = segment_levels(clean, x, keys, win, zero, cfg)
+        held = f2_train_held(segs0, cfg)
         for k, sg in enumerate(segs0):
-            if sg.level is not None:
+            if sg.level is not None and k not in held:
                 first[seg == k] = sg.level
         in_win = np.zeros(len(clean), dtype=bool)
         for k, sg in enumerate(segs0):
@@ -620,11 +803,11 @@ def fit_point(
         segs = segment_levels(clean, x, keys, win, offsets, cfg)
         lev = np.full_like(x, np.nan)
         for k, sg in enumerate(segs):
-            if sg.level is not None:
+            if sg.level is not None and k not in held:
                 lev[seg == k] = sg.level
         xc = x - lev
         train = ok & np.isfinite(xc).all(axis=1)
-        shared[cand] = (xc, train, offsets, segs, cols)
+        shared[cand] = (xc, train, offsets, segs, cols, held)
     info.update(
         {
             "segments_before_cutoff": len(win),
@@ -635,7 +818,7 @@ def fit_point(
     oh = _one_hot(clean, bands)
     fitted: dict[tuple[str, tuple[int, ...], int], tuple[Scaler, Any, dict[str, Any], np.ndarray]] = {}
     for s in settings_list:
-        xc, train, offsets, segs, cols = shared[s.candidate]
+        xc, train, offsets, segs, cols, held = shared[s.candidate]
         n = int(train.sum())
         if n < nb["min_train_hours"]:
             info.setdefault("too_few", []).append(s.key)
@@ -685,9 +868,9 @@ def fit_point(
             est,
             extra,
             {},
-            [g.plaus for g in segs if g.level is not None],
+            [g.plaus for k, g in enumerate(segs) if g.level is not None and k not in held],
             n,
-            sum(g.level is not None for g in segs),
+            sum(g.level is not None and k not in held for k, g in enumerate(segs)),
         )
         pm.indicator_keep = None if ind_keep.all() else ind_keep
         scores, _ = pm.raw_scores(z)
@@ -700,6 +883,7 @@ def fit_point(
             "cutoff": cutoff,
             "fit_start": fit_start,
             "train_bands": pd.Series(tb).value_counts().to_dict(),
+            **({"f2_held_starts": [str(pd.Timestamp(segs[k].start)) for k in sorted(held)]} if held else {}),
         }
         lim_p = nb.get("input_limit_percentile")
         if lim_p:
@@ -782,45 +966,111 @@ def score_point(
     bands = speed_band(clean, model.rated_rpm, cfg)
     keys = operating_key(clean, bands)
     x, _ = features(clean, model.settings.candidate)
-    segs = segment_levels(clean, x, keys, win, model.offsets, cfg)
+    segs = segment_levels(clean, x, keys, win, model.offsets, cfg, s1_after=model.info.get("cutoff"))
     seg = segment_ids(clean["hour_utc"], list(win["start"]))
     t = _naive(clean["hour_utc"])
     cutoff = model.info.get("cutoff")
     lvl = np.full_like(x, np.nan)
     state = np.full(len(clean), "no level", dtype=object)
+    watch = np.zeros(len(clean), dtype=bool)
     log_factor = float(np.log10(plaus_factor))
     hist = list(model.train_levels)
+    fx = fixes(cfg)
+    f1, f2 = bool(fx["f1_hold_level"]), bool(fx["f2_post_repair_window"])
+    train_held = {str(pd.Timestamp(s)) for s in (model.info or {}).get("f2_held_starts", [])}
+    on_comp = (
+        {str(pd.Timestamp(s)): bool(v) for s, v in zip(win["start"], win["on_component"], strict=True)}
+        if (fx["f1_scope"] or fx["s1_on_component_window"] or fx["c4_other_repair_window"])
+        and "on_component" in win
+        else {}
+    )
+    last_level: np.ndarray | None = None
+    last_plaus: dict[str, float] | None = None
     seg_rows = []
     for k, sg in enumerate(segs):
         rows_k = seg == k
         trained = cutoff is not None and sg.start < cutoff
+        repair_f2 = f2 and is_repair(sg.reason)
+        # C4: repair to another component: previous level while the day 3 to 14 level forms (no two-way check)
+        repair_c4 = (
+            bool(fx["c4_other_repair_window"])
+            and is_repair(sg.reason)
+            and str(pd.Timestamp(sg.start)) in on_comp
+            and not on_comp[str(pd.Timestamp(sg.start))]
+        )
+        # S1: no held level after a repair on the measured component (WATCH until its own level forms)
+        s1_on = (
+            bool(fx["s1_on_component_window"])
+            and is_repair(sg.reason)
+            and on_comp.get(str(pd.Timestamp(sg.start)), False)
+        )
+        hold_ok = (f1 or repair_f2) and last_level is not None and not s1_on
+        over: list[str] = []
         if sg.level is not None and not trained:
-            prior = [h for h in hist if h]
-            highs = {
-                c: max((h[c] for h in prior if np.isfinite(h.get(c, np.nan))), default=np.nan)
-                for c in PLAUSIBILITY
-            }
-            over = [
-                c
-                for c in PLAUSIBILITY
-                if np.isfinite(sg.plaus.get(c, np.nan))
-                and np.isfinite(highs[c])
-                and sg.plaus[c] - highs[c] > log_factor
-            ]
-            sg.flagged = bool(over)
+            if f1 and is_remount(sg.reason):
+                # F1: a remount accepts its new level without the plausibility check
+                sg.flagged = False
+            elif repair_f2 and last_plaus is not None:
+                # F2: the post-repair level against the last healthy pre-repair level, both directions
+                over = [
+                    c
+                    for c in PLAUSIBILITY
+                    if np.isfinite(sg.plaus.get(c, np.nan))
+                    and np.isfinite(last_plaus.get(c, np.nan))
+                    and abs(sg.plaus[c] - last_plaus[c]) > log_factor
+                ]
+                sg.flagged = bool(over)
+            else:
+                prior = [h for h in hist if h]
+                highs = {
+                    c: max((h[c] for h in prior if np.isfinite(h.get(c, np.nan))), default=np.nan)
+                    for c in PLAUSIBILITY
+                }
+                over = [
+                    c
+                    for c in PLAUSIBILITY
+                    if np.isfinite(sg.plaus.get(c, np.nan))
+                    and np.isfinite(highs[c])
+                    and sg.plaus[c] - highs[c] > log_factor
+                ]
+                sg.flagged = bool(over)
+            if sg.flagged and (fx["f1_scope"] or s1_on) and on_comp.get(str(pd.Timestamp(sg.start)), False):
+                # F1-scope: the repair replaced the measured component; its new level is accepted
+                sg.flagged = False
+                over = [f"accepted on component ({','.join(over)})"]
             if not sg.flagged:
                 hist.append(sg.plaus)
-        else:
-            over = []
+        elif sg.level is not None and trained and str(pd.Timestamp(sg.start)) in train_held:
+            sg.flagged = True  # held in training by the F2 check
         a = _naive([sg.start])[0]
         if sg.level is None:
-            state[rows_k] = "no level"
+            if hold_ok:
+                # F1: no level could be formed; scored against the last accepted level, on WATCH
+                state[rows_k] = "scored"
+                lvl[rows_k] = last_level
+                watch[rows_k] = True
+            else:
+                state[rows_k] = "no level"
         else:
             r = _naive([sg.ready])[0]
-            state[rows_k & (t >= a) & (t < r)] = "recentering"
+            pre = rows_k & (t >= a) & (t < r)
+            if (repair_f2 or repair_c4) and last_level is not None:
+                # F2 and C4: scored against the previous level while the new level forms
+                state[pre] = "scored"
+                lvl[pre] = last_level
+            else:
+                state[pre] = "recentering"
             after = rows_k & (t >= r)
-            state[after] = "plausibility" if sg.flagged else "scored"
-            lvl[after] = sg.level
+            if sg.flagged and hold_ok:
+                # F1: flagged level; scored against the last accepted level, on WATCH
+                state[after] = "scored"
+                lvl[after] = last_level
+                watch[after] = True
+            else:
+                state[after] = "plausibility" if sg.flagged else "scored"
+                lvl[after] = sg.level
+                if not sg.flagged:
+                    last_level, last_plaus = sg.level, sg.plaus
         seg_rows.append(
             {
                 "point_id": model.point_id,
@@ -832,6 +1082,7 @@ def score_point(
                 "trained": bool(trained),
                 "plausibility_flag": bool(sg.flagged),
                 "plausibility_over": ",".join(over),
+                **({"held": bool(hold_ok and (sg.level is None or sg.flagged))} if (f1 or f2) else {}),
                 **{f"level_log10_{c}": sg.plaus.get(c, np.nan) for c in PLAUSIBILITY},
             }
         )
@@ -865,6 +1116,12 @@ def score_point(
             "temp_resid_c": clean[TEMP_RESID].to_numpy(dtype=float),
             "top_contributors": contrib_txt,
             "limit_inputs": limit_txt,
+            **({"watch": watch} if (f1 or f2) else {}),
+            **(
+                {"alert_blocked": np.full(len(clean), model.n_train < int(fx["t3_min_train_hours"]))}
+                if fx["t3_min_train_hours"]
+                else {}
+            ),
             **({f"z:{c}": zin[:, j] for j, c in enumerate(model.columns)} if keep_inputs else {}),
         }
     )[span]
@@ -874,6 +1131,130 @@ def score_point(
         out[f"thr_{p:g}"] = model.threshold_for(b, p)
     out["threshold"] = model.threshold_for(b, nb["threshold_percentile"])
     return out.reset_index(drop=True), pd.DataFrame(seg_rows)
+
+
+def pelt_mean(x: np.ndarray, penalty: float | None = None, min_size: int = 7) -> list[int]:
+    """Change points in the mean of a series by PELT (Killick et al. 2012): Gaussian cost scaled by a robust
+    noise variance (median absolute first difference), BIC penalty 2 ln n per change. Returns the indices
+    where a new segment starts."""
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x)]
+    n = len(x)
+    if n < 2 * min_size:
+        return []
+    d = np.diff(x)
+    sig = 1.4826 * float(np.median(np.abs(d - np.median(d)))) / np.sqrt(2.0)
+    if not np.isfinite(sig) or sig <= 0:
+        sig = float(np.std(x)) or 1.0
+    z = x / sig
+    s1 = np.r_[0.0, np.cumsum(z)]
+    s2 = np.r_[0.0, np.cumsum(z * z)]
+    pen = 2.0 * np.log(n) if penalty is None else penalty
+
+    def cost(a: int, b: int) -> float:
+        m = b - a
+        return float(s2[b] - s2[a] - (s1[b] - s1[a]) ** 2 / m)
+
+    f = np.full(n + 1, np.inf)
+    f[0] = -pen
+    last = np.zeros(n + 1, dtype=int)
+    cands = [0]
+    for t_ in range(min_size, n + 1):
+        vals = [(f[s] + cost(s, t_) + pen, s) for s in cands if t_ - s >= min_size]
+        if not vals:
+            continue
+        best, arg = min(vals)
+        f[t_] = best
+        last[t_] = arg
+        cands = [s for s in cands if t_ - s < min_size or f[s] + cost(s, t_) <= f[t_]] + [t_ - min_size + 1]
+    cps = []
+    t_ = n
+    while t_ > 0:
+        s = last[t_]
+        if s > 0:
+            cps.append(s)
+        t_ = s
+    return sorted(cps)
+
+
+def flat_rearm(
+    scores: pd.DataFrame,
+    segs: pd.DataFrame,
+    conds: pd.DataFrame,
+    wo: pd.DataFrame,
+    days: int = 30,
+    pct: float = 99.5,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """C3 (2026-11-01, switch models.nbm.fixes.c3_flat_rearm; scoring): a point above its threshold for at
+    least half its scored hours over `days` consecutive days, with no confirmed condition and no open work
+    order on the asset in them, and no upward trend in its daily-median score/threshold (Mann-Kendall
+    p >= 0.05 or Theil-Sen slope <= 0), has its threshold reset to the pct percentile of those days' scores
+    until its next segment start (repair or re-centering). Returns the scores and the re-arm log."""
+    from scipy import stats
+
+    out = scores.copy()
+    out["hour_utc"] = pd.to_datetime(out["hour_utc"], utc=True)
+    log: list[dict[str, Any]] = []
+    span = pd.Timedelta(days=days)
+    for pid, g in out[out["state"] == "scored"].sort_values("hour_utc").groupby("point_id"):
+        asset = str(g["asset_id"].iat[0])
+        starts = (
+            pd.to_datetime(segs.loc[segs["point_id"] == pid, "segment_start"], utc=True)
+            .sort_values()
+            .tolist()
+        )
+        cts = pd.to_datetime(conds.loc[conds["asset_key"] == asset, "credit_ts"], utc=True)
+        w = wo[wo["asset_id"].astype(str).str.startswith(asset)]
+        wo_iv = list(
+            zip(pd.to_datetime(w["opened"], utc=True), pd.to_datetime(w["closed"], utc=True), strict=True)
+        )
+        thr = g["threshold"].to_numpy(dtype=float).copy()
+        hrs = g["hour_utc"].reset_index(drop=True)
+        sc = g["score"].to_numpy(dtype=float)
+        day = hrs.dt.floor("D")
+        days_u = day.drop_duplicates().tolist()
+        i = 0
+        while i < len(days_u):
+            a = days_u[i]
+            b = a + span
+            m = ((hrs >= a) & (hrs < b)).to_numpy()
+            if hrs.iloc[-1] < b - pd.Timedelta(days=1) or not m.any():
+                break
+            over = sc[m] > thr[m]
+            busy = bool(((cts >= a) & (cts < b)).any()) or any(
+                (o < b) and (pd.isna(c) or c > a) for o, c in wo_iv
+            )
+            if over.mean() >= 0.5 and not busy:
+                ratio = pd.Series(sc[m] / thr[m], index=hrs[m].to_numpy()).groupby(day[m].to_numpy()).median()
+                tt = np.arange(len(ratio), dtype=float)
+                tau, p = stats.kendalltau(tt, ratio.to_numpy())
+                slope = stats.theilslopes(ratio.to_numpy(), tt)[0]
+                if (not np.isfinite(p)) or p >= 0.05 or slope <= 0:
+                    new = float(np.percentile(sc[m], pct))
+                    nxt = next((s for s in starts if s > b), None)
+                    k = ((hrs >= b) & ((hrs < nxt) if nxt is not None else True)).to_numpy()
+                    thr[k] = new
+                    log.append(
+                        {
+                            "point_id": pid,
+                            "window_start": a,
+                            "rearm_from": b,
+                            "until": nxt,
+                            "new_threshold": new,
+                            "share_above": float(over.mean()),
+                            "mk_p": float(p),
+                            "theil_sen_slope": float(slope),
+                        }
+                    )
+                    j = next((n for n, d in enumerate(days_u) if d >= b), len(days_u))
+                    i = j
+                    continue
+            i += 1
+        scale = thr / g["threshold"].to_numpy(dtype=float)
+        for col in [c for c in out.columns if c.startswith("thr_")]:
+            out.loc[g.index, col] = g[col].to_numpy(dtype=float) * scale  # the sweep moves with the re-arm
+        out.loc[g.index, "threshold"] = thr
+    return out, log
 
 
 def _runs(over: np.ndarray) -> np.ndarray:
@@ -888,7 +1269,13 @@ def _runs(over: np.ndarray) -> np.ndarray:
 EXCEED_COLS = ["point_id", "ts", "ratio", "top_contributors", "source"]
 
 
-def exceedance_hours(scores: pd.DataFrame, threshold_col: str, persistence: int) -> pd.DataFrame:
+def exceedance_hours(
+    scores: pd.DataFrame,
+    threshold_col: str,
+    persistence: int,
+    high_ratio: tuple[float, int] | None = None,
+    exclude_low_pressure: bool = False,
+) -> pd.DataFrame:
     """Hours at which the score has exceeded the threshold column on persistence consecutive scored hours,
     or (fold diagnosis round 2 decision, 2026-10-31) any single standardized input has exceeded its own
     limit on persistence consecutive scored hours (column limit_inputs): the persisted exceedances that
@@ -900,6 +1287,19 @@ def exceedance_hours(scores: pd.DataFrame, threshold_col: str, persistence: int)
         pca = _runs((g["score"] > g[threshold_col]).to_numpy()) >= persistence
         hit = pca.copy()
         src = [["pca"] if p else [] for p in pca]
+        if high_ratio is not None:
+            # F4 (2026-11-01, test only; switch models.nbm.fixes.f4_high_ratio): a score at high_ratio[0]
+            # times the threshold or more on high_ratio[1] consecutive scored hours counts without the
+            # full persistence
+            high = (g["score"] >= high_ratio[0] * g[threshold_col]).to_numpy()
+            if exclude_low_pressure and point_kind(pid) == "pump" and "low_pressure" in g:
+                # F4-tight: hours on pump points during a controller low-pressure alarm (column
+                # low_pressure) do not count toward the high-ratio run
+                high &= ~g["low_pressure"].fillna(False).astype(bool).to_numpy()
+            hr = _runs(high) >= int(high_ratio[1])
+            hit |= hr
+            for i in np.flatnonzero(hr):
+                src[i].append("high_ratio")
         if "limit_inputs" in g and g["limit_inputs"].fillna("").astype(str).str.len().any():
             lists = [set(v.split(",")) if v else set() for v in g["limit_inputs"].fillna("").astype(str)]
             for name in sorted(set().union(*lists)):

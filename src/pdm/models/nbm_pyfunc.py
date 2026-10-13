@@ -40,16 +40,20 @@ class NBMPointModels(mlflow.pyfunc.PythonModel):
         self.cfg = {
             "models": {
                 "nbm": {
-                    k: nb[k]
-                    for k in (
-                        "recenter_days",
-                        "recenter_min_hours",
-                        "recenter_floor_hours",
-                        "sweep_percentiles",
-                        "sweep_extension_percentiles",
-                        "threshold_percentile",
-                        "top_contributors",
-                    )
+                    **{
+                        k: nb[k]
+                        for k in (
+                            "recenter_days",
+                            "recenter_min_hours",
+                            "recenter_floor_hours",
+                            "sweep_percentiles",
+                            "sweep_extension_percentiles",
+                            "threshold_percentile",
+                            "top_contributors",
+                        )
+                    },
+                    # the model fixes (2026-11-01) travel with the registered model, so scoring applies them
+                    **({"fixes": dict(nb["fixes"])} if nb.get("fixes") else {}),
                 },
                 "seed": cfg["models"]["seed"],
             },

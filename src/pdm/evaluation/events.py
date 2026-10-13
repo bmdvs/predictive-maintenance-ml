@@ -30,6 +30,15 @@ def in_comparison_scope(conds: pd.DataFrame, cfg: dict[str, Any]) -> pd.Series:
     sc = cfg["evaluation"].get("comparison_scope") or {}
     out = ~conds["condition_type"].isin(sc.get("exclude_condition_types", []))
     out &= ~conds["failure_code"].isin(sc.get("exclude_failure_codes", []))
+    fx = cfg["evaluation"].get("fixes") or {}
+    if fx.get("e2_scope"):
+        # E2 (2026-11-01, switch evaluation.fixes.e2_scope): cooler (compressor) conditions out of scope;
+        # rotary union conditions in scope only where the failure code records coolant ingress
+        out &= ~conds["condition_type"].isin(fx.get("e2_exclude_condition_types", ["cooler (compressor)"]))
+        ru = conds["condition_type"] == "rotary union"
+        out &= ~ru | conds["failure_code"].isin(
+            fx.get("e2_rotary_union_ingress_codes", ["SP-COOLANT-INGRESS"])
+        )
     return out
 
 
@@ -111,6 +120,48 @@ def catch_table(ep: pd.DataFrame, conds: pd.DataFrame, window_days: float) -> pd
             }
         )
     return pd.DataFrame(rows)
+
+
+def lookback_catch_table(
+    ep: pd.DataFrame, conds: pd.DataFrame, window_days: float, lookback_days: float
+) -> tuple[pd.DataFrame, set[Any]]:
+    """E4 (2026-11-01, switch evaluation.fixes.e4_lookback_days): a condition is caught when an episode at its
+    scope was open at any time in the lookback days before its confirmation and opened no more than the
+    window before it; of several, the one open latest before the confirmation is credited (latest opening on
+    a tie) and the warning runs from its opening. Returns the catch table (as catch_table, plus the credited
+    episode's index) and the set of credited episode indexes, which are not counted as false."""
+    w = pd.Timedelta(days=window_days)
+    lb = pd.Timedelta(days=lookback_days)
+    rows, credited = [], set()
+    for c in conds.itertuples():
+        t = c.credit_ts
+        m = (
+            _scope_mask(ep, c.asset_key, c.point_scope)
+            & (ep["opened"] <= t)
+            & (ep["closed"] > t - lb)
+            & (ep["opened"] >= t - w)
+        )
+        hit = ep[m]
+        idx = None
+        if len(hit):
+            key = pd.DataFrame({"end": hit["closed"].where(hit["closed"] < t, t), "opened": hit["opened"]})
+            idx = key.sort_values(["end", "opened"]).index[-1]
+            credited.add(idx)
+        rows.append(
+            {
+                "wo_id": c.wo_id,
+                "asset_id": c.asset_id,
+                "point_scope": c.point_scope,
+                "condition_type": c.condition_type,
+                "unplanned": bool(c.unplanned),
+                "caught": idx is not None,
+                "warning_days": (t - ep.at[idx, "opened"]) / DAY if idx is not None else np.nan,
+                "downtime_hours": c.downtime_hours,
+                "machine_class": c.machine_class,
+                "credited_episode": idx,
+            }
+        )
+    return pd.DataFrame(rows), credited
 
 
 def chance_share(

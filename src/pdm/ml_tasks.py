@@ -9,6 +9,7 @@ nbm_scores, nbm_exceedances). (Revision 2; originally per-segment challengers re
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any
 
@@ -66,6 +67,9 @@ def load_inputs(store: Store, cfg: dict[str, Any], end: pd.Timestamp) -> dict[st
         sanity = sanity.merge(win[["window_id", "start", "end"]], on="window_id", how="left")
     conds = tasks._conditions(store, cfg)
     wo = tasks._wo(store)
+    fx = nbm.fixes(cfg)
+    if (fx["f1_scope"] or fx["s1_on_component_window"] or fx["c4_other_repair_window"]) and "parts" in wo:
+        win = nbm.component_repairs(win, wo)  # on_component for S1 and C4 (training and scoring)
     pts = tasks._points(store)
     mach = store.read_pd("bronze", "reg_machines").set_index("machine_id")
     rated = mach["rated_rpm"].astype(float).to_dict()
@@ -123,6 +127,99 @@ def excluded_intervals(
     return out
 
 
+def _windows(win: pd.DataFrame, inp: dict[str, Any], cfg: dict[str, Any]) -> pd.DataFrame:
+    w = win[["point_id", "start", "reason"]].reset_index(drop=True)
+    fx = nbm.fixes(cfg)
+    if (fx["f1_scope"] or fx["s1_on_component_window"] or fx["c4_other_repair_window"]) and "parts" in inp[
+        "wo"
+    ]:
+        w = nbm.component_repairs(w, inp["wo"])
+    return w
+
+
+def vendor_exclusions(
+    point_id: str, inp: dict[str, Any], cutoff: pd.Timestamp, cfg: dict[str, Any]
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """T1 (2026-11-01, switch models.nbm.fixes.t1_vendor_exclusion): the hours a Vendor Rules ALERT or
+    ALARM was open on the point (its persisted exceedances at the operating setting, grouped with the
+    episode gap), known at the cutoff. The 120 days before every confirmed condition on the asset is already
+    excluded (excluded_intervals)."""
+    if not nbm.fixes(cfg)["t1_vendor_exclusion"]:
+        return []
+    v = inp["vendor"]
+    v = v[(v["point_id"] == point_id) & (v["ts"] < cutoff)]
+    if v.empty:
+        return []
+    gap = cfg["evaluation"]["catch"]["episode_gap_days"]
+    e = severity.episodes(v[["asset_id", "point_id", "ts", "rules"]], gap)
+    return [(a, min(b, cutoff)) for a, b in zip(e["opened"], e["closed"], strict=True)]
+
+
+def wear_stretch_exclusions(
+    point_id: str,
+    rows: pd.DataFrame,
+    win: pd.DataFrame,
+    inp: dict[str, Any],
+    cutoff: pd.Timestamp,
+    cfg: dict[str, Any],
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """C1 (2026-11-01, switch models.nbm.fixes.c1_wear_stretch; training): for each segment that ended in a
+    confirmed in-scope condition or a component replacement (the repair opening the next segment), upward
+    change points in the daily medians of log velocity RMS and HF RMS (and order 1 on pump points) over the
+    segment's last 365 days, by PELT with a BIC penalty, from the data alone; the hours from the earliest
+    upward change point to the repair are left out of healthy training."""
+    if not nbm.fixes(cfg)["c1_wear_stretch"]:
+        return []
+    w = win.sort_values("start").reset_index(drop=True)
+    if len(w) < 2:
+        return []
+    conds = inp["conds"]
+    scope = (
+        set(conds.loc[conds["in_scope"].astype(bool), "wo_id"])
+        if "in_scope" in conds
+        else set(conds["wo_id"])
+    )
+    parts = inp["wo"].set_index("wo_id")["parts"].astype(str).to_dict() if "parts" in inp["wo"] else {}
+    kind = nbm.point_kind(point_id)
+    cols = ["vel_rms_mm_s", "hf_rms_g"] + (["ord_01_g2"] if kind == "pump" else [])
+    clean = nbm.prepare(rows, None)
+    h = pd.to_datetime(clean["hour_utc"], utc=True)
+    out = []
+    for k in range(1, len(w)):
+        end = pd.Timestamp(w.at[k, "start"])
+        reason = str(w.at[k, "reason"])
+        if end >= cutoff or not nbm.is_repair(reason):
+            continue
+        wid = reason.split(" ", 1)[1] if " " in reason else ""
+        on_comp = any(x in parts.get(wid, "") for x in nbm.COMPONENT_PARTS[kind])
+        if wid not in scope and not on_comp:
+            continue
+        a = max(pd.Timestamp(w.at[k - 1, "start"]), end - pd.Timedelta(days=365))
+        m = ((h >= a) & (h < end)).to_numpy()
+        if m.sum() < 24 * 14:
+            continue
+        seg = clean.loc[m]
+        first = None
+        for c in cols:
+            dm = (
+                np.log10(seg[c].astype(float) + 1e-12)
+                .groupby(h[m].dt.floor("D").to_numpy())
+                .median()
+                .dropna()
+            )
+            cps = nbm.pelt_mean(dm.to_numpy())
+            v = dm.to_numpy()
+            bounds = [0, *cps, len(v)]
+            for j, cp in enumerate(cps):
+                if v[bounds[j + 1] : bounds[j + 2]].mean() > v[bounds[j] : bounds[j + 1]].mean():
+                    t0 = pd.Timestamp(dm.index[cp])
+                    first = t0 if first is None else min(first, t0)
+                    break
+        if first is not None:
+            out.append((first, end))
+    return out
+
+
 def _point_args(inp: dict[str, Any], cfg: dict[str, Any], cutoff: pd.Timestamp) -> list[dict[str, Any]]:
     flagged_all = (
         inp["sanity"][inp["sanity"]["flagged"].astype(bool)] if len(inp["sanity"]) else pd.DataFrame()
@@ -138,8 +235,10 @@ def _point_args(inp: dict[str, Any], cfg: dict[str, Any], cutoff: pd.Timestamp) 
                 "point_id": pid,
                 "asset_id": asset,
                 "rows": rows.reset_index(drop=True),
-                "windows": win[["point_id", "start", "reason"]].reset_index(drop=True),
-                "excluded": excluded_intervals(asset, inp["conds"], inp["wo"], fl, cutoff, cfg),
+                "windows": _windows(win, inp, cfg),
+                "excluded": excluded_intervals(asset, inp["conds"], inp["wo"], fl, cutoff, cfg)
+                + vendor_exclusions(pid, inp, cutoff, cfg)
+                + wear_stretch_exclusions(pid, rows, win, inp, cutoff, cfg),
                 "rated": inp["rated"].get(machine),
                 "ambient": inp["ambient"]
                 if str(rows["point_class"].iat[0]).startswith("compressor")
@@ -351,6 +450,26 @@ def _fit_all(
     cutoff: pd.Timestamp,
 ) -> tuple[dict[str, dict[str, nbm.PointModel]], pd.DataFrame]:
     keys = ("point_id", "asset_id", "rows", "windows", "excluded", "rated", "ambient")
+    fx = nbm.fixes(cfg)
+    if fx["f2_post_repair_window"] and not fx["f2_train_factor"]:
+        # F2 training check factor: the configured quantile of the ratios between consecutive training
+        # segment levels across all points, from the F2 level windows (as the plausibility factor)
+        ratios = []
+        for a in args:
+            lv = nbm.segment_plaus(a["rows"], a["windows"], cfg, cutoff, a["ambient"])
+            for x0, x1 in zip(lv[:-1], lv[1:], strict=False):
+                ratios += [
+                    10 ** (x1[c] - x0[c])
+                    for c in nbm.PLAUSIBILITY
+                    if np.isfinite(x0.get(c, np.nan)) and np.isfinite(x1.get(c, np.nan))
+                ]
+        pl = cfg["models"]["nbm"]["plausibility"]
+        cfg = copy.deepcopy(cfg)
+        cfg["models"]["nbm"].setdefault("fixes", {})["f2_train_factor"] = (
+            float(np.quantile(ratios, pl["factor_quantile"]))
+            if len(ratios) >= 5
+            else (pl.get("factor") or 1.45)
+        )
     jobs = [
         {
             **{k: a[k] for k in keys},
@@ -411,7 +530,16 @@ def persisted_episodes(
     """ALERT episodes per asset from scored hours (columns point_id, asset_id, hour_utc, state, score and
     the threshold column)."""
     cols = nbm.EXCEED_COLS
-    ex = nbm.exceedance_hours(scores, thr_col, persistence) if len(scores) else pd.DataFrame(columns=cols)
+    fx = nbm.fixes(cfg)
+    hr = (float(fx["f4_ratio"]), int(fx["f4_hours"])) if fx["f4_high_ratio"] else None
+    if "alert_blocked" in scores and len(scores):
+        # T3: points below the minimum training hours raise only WATCH (no ALERT episode)
+        scores = scores[~scores["alert_blocked"].astype(bool)]
+    ex = (
+        nbm.exceedance_hours(scores, thr_col, persistence, hr, bool(fx["f4_exclude_pump_low_pressure"]))
+        if len(scores)
+        else pd.DataFrame(columns=cols)
+    )
     if len(ex):
         ex = ex.merge(scores[["point_id", "asset_id"]].drop_duplicates(), on="point_id")
     else:
@@ -787,6 +915,22 @@ ALARM_CRITERIA = {
 }
 
 
+def low_pressure_flags(store: Store, sc: pd.DataFrame) -> pd.DataFrame:
+    """F4-tight: scored hours on a machine during a controller coolant low-pressure alarm (from the alarm's
+    hour to its end), as column low_pressure."""
+    e = store.read_pd("bronze", "ctrl_events")
+    e = e[e["event_type"] == "coolant_low_pressure"]
+    t = _utc(e["ts_utc"])
+    a = t.dt.floor("h")
+    b = t + pd.to_timedelta(e["duration_s"].fillna(0).astype(float), unit="s")
+    flag = np.zeros(len(sc), dtype=bool)
+    mach = sc["point_id"].astype(str).str[:6].to_numpy()
+    h = _utc(sc["hour_utc"])
+    for mid, a0, b0 in zip(e["machine_id"], a, b, strict=True):
+        flag |= (mach == mid) & ((h >= a0) & (h <= b0)).to_numpy()
+    return sc.assign(low_pressure=flag)
+
+
 def score_task(store: Store, cfg: dict[str, Any], model: Any, model_version: str) -> dict[str, Any]:
     """Score the shadow year with the frozen ML Model (the registered champion in the job) and write
     gold.nbm_scores, nbm_exceedances (every sweep percentile and persistence), ml_segments (every segment
@@ -795,10 +939,24 @@ def score_task(store: Store, cfg: dict[str, Any], model: Any, model_version: str
         raise ValueError("scoring the shadow year needs evaluation.holdout_shadow false")
     b = splits.boundaries(cfg)
     inp = load_inputs(store, cfg, b["shadow"][1])
-    sc, segs = model.score_span(inp["ind"], inp["win"], b["shadow"][0], b["shadow"][1], inp["ambient"])
+    fx = nbm.fixes(model.cfg if getattr(model, "cfg", None) else cfg)
+    # C3 re-arms look back over the scores before the shadow year (c3_lookback_days)
+    start = (
+        b["shadow"][0] - pd.Timedelta(days=int(fx["c3_lookback_days"]))
+        if fx["c3_flat_rearm"]
+        else b["shadow"][0]
+    )
+    sc, segs = model.score_span(inp["ind"], inp["win"], start, b["shadow"][1], inp["ambient"])
     assets = inp["pts"].set_index("point_id")["asset_id"]
     sc["asset_id"] = sc["point_id"].map(assets)
     segs["asset_id"] = segs["point_id"].map(assets)
+    sc["hour_utc"] = _utc(sc["hour_utc"])
+    rearms: list[dict[str, Any]] = []
+    if fx["c3_flat_rearm"]:
+        sc, rearms = nbm.flat_rearm(sc, segs, inp["conds"], inp["wo"])
+        sc = sc[sc["hour_utc"] >= b["shadow"][0]].reset_index(drop=True)
+    if fx["f4_exclude_pump_low_pressure"]:
+        sc = low_pressure_flags(store, sc)
     pcts = nbm.sweep_percentiles(cfg)
     parts = []
     for p in pcts:

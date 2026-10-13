@@ -236,13 +236,11 @@ def test_apply_finalist_restricts_the_grid_to_one_setting():
     from pdm.models import nbm
 
     cfg = load_config()
-    keys, aliases = [], []
-    for i in (0, 1):
-        c = copy.deepcopy(cfg)
-        aliases.append(ml_tasks.apply_finalist(c, i))
-        keys.append([s.key for s in nbm.settings_grid(c)])
-    assert aliases == ["champion", "challenger"]
-    assert keys == [
-        ["autoencoder_vendor [16-4-16] 200 ep, single"],  # tuning re-run 2026-11-01; was [16-6-16]
-        ["autoencoder_extended [16-6-16] 400 ep, speed_band"],
-    ]
+    c = copy.deepcopy(cfg)
+    assert ml_tasks.apply_finalist(c, 0) == "champion"
+    assert [s.key for s in nbm.settings_grid(c)] == ["autoencoder_vendor [16-4-16] 200 ep, single"]
+    # finalist B retired 2026-11-01 (was index 1: autoencoder_extended [16-6-16] 400 ep, speed_band)
+    import pytest
+
+    with pytest.raises(IndexError):
+        ml_tasks.apply_finalist(copy.deepcopy(cfg), 1)

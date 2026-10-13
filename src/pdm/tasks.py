@@ -669,7 +669,9 @@ def _work_requests(store: Store, cs: pd.DataFrame, cfg: dict[str, Any]) -> pd.Da
         for c in cs.to_dict("records")
     }
     b = splits.boundaries(cfg)
-    return adv.work_requests(cs, zs, b["shadow"], cfg["evaluation"]["advisory_z"])
+    return adv.work_requests(
+        cs, zs, b["shadow"], cfg["evaluation"]["advisory_z"], bool(cfg["advisory"].get("d1_precedence"))
+    )
 
 
 # ---------------------------------------------------------------- evaluation

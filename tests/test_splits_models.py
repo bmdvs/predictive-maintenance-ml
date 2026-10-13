@@ -15,6 +15,8 @@ from pdm.models import controller_health as ch
 from pdm.models import nbm, prognosis
 
 CFG = load_config()
+# the base mechanisms are tested with every model fix off (the frozen switches: test_fix_switches.py)
+CFG["models"]["nbm"]["fixes"] = dict(nbm.FIX_DEFAULTS)
 UTC = "UTC"
 
 
