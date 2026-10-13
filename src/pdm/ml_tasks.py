@@ -824,7 +824,9 @@ TRAIN_INPUTS = [
 ]
 
 
-def healthy_stats_table(scores: pd.DataFrame, ind: pd.DataFrame) -> pd.DataFrame:
+def healthy_stats_table(
+    scores: pd.DataFrame, ind: pd.DataFrame, indicators: dict[str, str] | None = None
+) -> pd.DataFrame:
     """Healthy spread per point, segment and regime from the training hours the champion scored, for the
     advisory z-scores (median and robust scale of the log indicators)."""
     if scores.empty:
@@ -833,7 +835,7 @@ def healthy_stats_table(scores: pd.DataFrame, ind: pd.DataFrame) -> pd.DataFrame
     rows = ind.merge(s, on=["point_id", "hour_utc"])
     parts = []
     for (_pid, seg), g in rows.groupby(["point_id", "segment"]):
-        st = adv.healthy_stats(g)
+        st = adv.healthy_stats(g, indicators)
         if len(st):
             parts.append(st.assign(segment=int(seg), segment_start=g["hour_utc"].min()))
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
@@ -985,7 +987,9 @@ def score_task(store: Store, cfg: dict[str, Any], model: Any, model_version: str
     }
 
 
-def shadow_segment_stats(train_stats: pd.DataFrame, segs: pd.DataFrame, ind: pd.DataFrame) -> pd.DataFrame:
+def shadow_segment_stats(
+    train_stats: pd.DataFrame, segs: pd.DataFrame, ind: pd.DataFrame, indicators: dict[str, str] | None = None
+) -> pd.DataFrame:
     """Advisory healthy stats for every segment: training segments as trained; a segment re-centered in the
     shadow year takes its median from its re-centering window and its scale from the point's training
     segments (the frozen spread, re-centered)."""
@@ -998,7 +1002,7 @@ def shadow_segment_stats(train_stats: pd.DataFrame, segs: pd.DataFrame, ind: pd.
             continue
         t = pd.to_datetime(ind["hour_utc"], utc=True)
         w = ind[(ind["point_id"] == r.point_id) & (t >= r.segment_start) & (t < r.level_ready)]
-        st = adv.healthy_stats(w) if len(w) >= 20 else pd.DataFrame()
+        st = adv.healthy_stats(w, indicators) if len(w) >= 20 else pd.DataFrame()
         if st.empty:
             continue
         st["scale"] = [
@@ -1260,7 +1264,7 @@ def levels_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     if not held:
         cases = ml_cases(lev[(lev["period"] == "shadow") & (lev["method"] == "ml_model")])
         store.write_pd(cases, "gold", "cases")
-        store.write_pd(tasks._work_requests(store, cases, cfg), "gold", "work_requests")
+        store.write_pd(tasks._work_requests(store, cases, cfg, scores, segs), "gold", "work_requests")
         store.write_pd(tasks._tsc_pressure_daily(store, cfg), "gold", "tsc_pressure_daily")
     store.write_pd(watch.drop(columns=["state"]), "gold", "watch_hours")
     return {

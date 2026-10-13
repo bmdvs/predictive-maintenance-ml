@@ -686,6 +686,21 @@ advisory:                                 # 10.9 controller signals for diagnosi
   tsc_pump_on_min_bar: 1.0                 # approved at checkpoint (b), 2026-10-26: a minute above this mean pressure counts as pump running (silver coolant_pressure_pump_on_bar; the TSC drop keeps coolant_pressure_bar)
   trip_match_days: 1                       # a compressor trip work order maps to cooler when a high-temperature trip was logged up to 1 day before it
   d1_precedence: false                     # D1 (2026-11-01): lubrication ahead of spindle cooling when temperature and HF both reach z 3; spindle cooling only from the thermistor or temperature with HF below z 2; pumps: cavitation or wear ahead of bearing when HF and order 1 rise together (false: the order before)
+  diagnosis_rule: d2                       # 2026-11-01: adopted by the D2 rule (training folds: 15 strict matches against 5, no bearing lost); current (the rules before), d1 (as d1_precedence), d2 (below); was current
+  d2:                                      # D2 (2026-11-01): thresholds set from the training period only, before the evaluation year was scored with D2; healthy training hours: scored hours of version 13's training run (gold.ml_train_scores) before the training cutoff, outside every confirmation window (159831 point-hours, 13206 point-days; temperature 4006 spindle point-days); training-fold catches: the 22 E2 to E4 catches of version 13's fold models
+    thresholds:
+      band_min_db: 2.05                   # 99th percentile of the daily-median dB change of the three fault bands (BPFO, BPFI, BSF), all points
+      dominance_ratio: 1.33               # not separable on the training catches; the lowest training bearing ratio (1.33), so every training bearing with a clearing band stays dominant; training bearing cases: HMC-02-WO00029, HMC-03-WO00026, HMC-02-WO00033, HMC-06-WO00020, HMC-07-WO00031
+      kurt_z: 1.7                         # 99.9th percentile of the daily-median kurtosis z, all points ('sharply up')
+      crest_z: 2.0                        # 99.9th percentile of the daily-median crest-factor z, all points ('sharply up')
+      band_rise_db: 1.97                  # 99th percentile of the daily-median fault-band dB change on pump points
+      ord1_db: 2.07                       # 99th percentile of the daily-median 1x dB change on pump and compressor points
+      kurt_flat_z: 1.01                   # 99th percentile of the daily-median kurtosis z on pump points (below it: flat)
+      temp_up_c: 0.54                     # 99th percentile of the daily-median temperature residual change on spindle points (C)
+      hf_db: 1.43                         # 99th percentile of the daily-median HF dB change on spindle points (at or above: HF up)
+      ord2_db: 1.14                       # 99th percentile of the daily-median 2x dB change on compressor points
+      ord_hi_db: 2.97                     # 99th percentile of the daily-median orders 3 to 10 dB change on pump and compressor points
+      tsc_drop_z: 3.0                     # unchanged from the current rules (advisory z)
 
 evaluation:                               # [fixed] 12, chance levels
   alert_precision_window_days: 30

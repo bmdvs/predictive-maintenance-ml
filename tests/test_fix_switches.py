@@ -206,3 +206,47 @@ def test_c3_rearm_on_a_flat_stuck_point():
     )
     assert len(log) == 1 and out["threshold"].iloc[-1] > 2.0
     assert out["thr_99"].iloc[-1] > 0.9
+
+
+def test_d2_rule_order_and_measures():
+    th = dict(adv.D2_DEFAULTS)
+    th.update(
+        {
+            "band_min_db": 2.0,
+            "dominance_ratio": 1.3,
+            "kurt_z": 2.0,
+            "crest_z": 2.0,
+            "temp_up_c": 0.5,
+            "hf_db": 1.5,
+        }
+    )
+    # a dominant band names a bearing with its location
+    m = {"db_env_bpfo": 30.0, "db_env_bpfi": 12.0, "db_env_bsf": 10.0, "kurt": 0.5, "crest": 0.5}
+    assert (
+        adv.suspected_d2(m, "spindle", th)[0] == "bearing"
+        and "outer race" in adv.suspected_d2(m, "spindle", th)[1]
+    )
+    # kurtosis sharply up names a bearing without a dominant band
+    m = {"db_env_bpfo": 3.0, "db_env_bpfi": 2.9, "db_env_bsf": 2.8, "kurt": 50.0}
+    assert adv.suspected_d2(m, "flood_pump", th)[0] == "bearing"
+    # pumps: bands together, 1x up, kurtosis flat
+    m = {"db_env_bpfo": 3.5, "db_env_bpfi": 3.3, "db_env_bsf": 3.4, "db_ord_01": 4.0, "kurt": 0.2}
+    assert adv.suspected_d2(m, "tsc_pump", th)[0] == "cavitation or wear"
+    # spindles: temperature up with HF up is lubrication, with HF flat spindle cooling
+    m = {"db_env_bpfo": 1.0, "db_env_bpfi": 1.0, "db_env_bsf": 1.0, "temp_dc": 4.0, "db_hf": 3.0}
+    assert adv.suspected_d2(m, "spindle", th)[0] == "lubrication"
+    assert adv.suspected_d2({**m, "db_hf": 0.2}, "spindle", th)[0] == "spindle cooling"
+    assert adv.suspected_d2({"tsc_drop": 4.0}, "spindle", th)[0] == "rotary union"
+    assert adv.suspected_d2({}, "spindle", th)[0] == "unclassified"
+
+
+def test_d2_temperature_residual_change_from_the_segment_level():
+    h = pd.date_range("2025-01-01", periods=24 * 20, freq="h", tz="UTC")
+    s = pd.DataFrame(
+        {"point_id": "P", "hour_utc": h, "temp_resid_c": np.r_[np.full(24 * 10, 1.0), np.full(24 * 10, 4.0)]}
+    )
+    segs = pd.DataFrame(
+        {"point_id": ["P"], "segment_start": [h[0]], "level_ready": [h[0] + pd.Timedelta(days=3)]}
+    )
+    d = adv.temp_residual_daily(s, segs)
+    assert d["temp_dc"].iloc[0] == 0.0 and d["temp_dc"].iloc[-1] == 3.0

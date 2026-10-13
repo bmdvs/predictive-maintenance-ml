@@ -50,11 +50,44 @@ CONTROLLER_INDICATORS = ("tsc_drop", "thermistor", "axis_drift", "discharge")
 ROBUST = 1.4826
 
 
-def log_indicators(df: pd.DataFrame) -> pd.DataFrame:
+# D2 (2026-11-01, switch advisory.diagnosis_rule: d2): the vibration measures as the change from the
+# segment's own level in dB (10 log10 of the ratio for energies in g^2, 20 log10 for RMS amplitudes), so a
+# rise reads the same on every point whatever its healthy spread. Kurtosis and crest factor stay as z against
+# the segment's healthy spread: they are dimensionless shape statistics whose healthy level differs little
+# between points while their spread does, and a ratio in dB of a shape statistic has no physical meaning.
+DB_FACTOR = {
+    "env_bpfo": 10.0,
+    "env_bpfi": 10.0,
+    "env_bsf": 10.0,
+    "ord_01": 10.0,
+    "ord_02": 10.0,
+    "ord_3_10": 10.0,
+    "hf": 20.0,
+    "vel": 20.0,
+}
+D2_INDICATORS = {**Z_INDICATORS, "crest": "crest_factor", "kurt": "kurtosis"}
+FAULT_BANDS = ("env_bpfo", "env_bpfi", "env_bsf")
+D2_DEFAULTS: dict[str, float] = {
+    "band_min_db": 3.0,
+    "dominance_ratio": 2.0,
+    "kurt_z": 6.0,
+    "crest_z": 6.0,
+    "band_rise_db": 3.0,
+    "ord1_db": 3.0,
+    "kurt_flat_z": 3.0,
+    "temp_up_c": 2.0,
+    "hf_db": 3.0,
+    "ord2_db": 3.0,
+    "ord_hi_db": 3.0,
+    "tsc_drop_z": 3.0,
+}
+
+
+def log_indicators(df: pd.DataFrame, indicators: dict[str, str] | None = None) -> pd.DataFrame:
     d = df.copy()
     d["ord_3_10_g2"] = d[[f"ord_{o:02d}_g2" for o in range(3, 11)]].sum(axis=1)
     out = pd.DataFrame(index=d.index)
-    for k, c in Z_INDICATORS.items():
+    for k, c in (indicators or Z_INDICATORS).items():
         out[k] = np.log10(d[c].astype(float) + 1e-12)
     return out
 
@@ -65,14 +98,17 @@ def _robust(v: np.ndarray) -> tuple[float, float]:
     return med, sc
 
 
-def healthy_stats(rows: pd.DataFrame) -> pd.DataFrame:
+def healthy_stats(rows: pd.DataFrame, indicators: dict[str, str] | None = None) -> pd.DataFrame:
     """Median and robust scale per point, regime and indicator."""
     if rows.empty:
         return pd.DataFrame()
-    li = log_indicators(rows).assign(point_id=rows["point_id"].to_numpy(), regime=rows["regime"].to_numpy())
+    inds = indicators or Z_INDICATORS
+    li = log_indicators(rows, inds).assign(
+        point_id=rows["point_id"].to_numpy(), regime=rows["regime"].to_numpy()
+    )
     out = []
     for (pid, reg), g in li.groupby(["point_id", "regime"]):
-        for k in Z_INDICATORS:
+        for k in inds:
             v = g[k].dropna().to_numpy()
             if v.size >= 20:
                 med, sc = _robust(v)
@@ -89,9 +125,13 @@ def healthy_stats(rows: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def hourly_z(ind: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
+def hourly_z(
+    ind: pd.DataFrame, stats: pd.DataFrame, indicators: dict[str, str] | None = None, delta: bool = False
+) -> pd.DataFrame:
     """z per hour and indicator against the healthy spread of the point's segment in effect at that hour,
-    by regime where the segment has it, otherwise pooled over the segment's regimes."""
+    by regime where the segment has it, otherwise pooled over the segment's regimes. With delta, also the
+    change from the segment's level in dB (db_<indicator>) for the vibration measures (D2)."""
+    inds = indicators or Z_INDICATORS
     parts = []
     for pid, g in ind.groupby("point_id"):
         st = stats[stats["point_id"] == pid]
@@ -103,13 +143,13 @@ def hourly_z(ind: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
             pd.to_datetime(starts["segment_start"], utc=True).dt.tz_localize(None), dtype="datetime64[ns]"
         )
         idx = np.clip(np.searchsorted(s0, t, side="right") - 1, 0, len(s0) - 1)
-        li = log_indicators(g).assign(
+        li = log_indicators(g, inds).assign(
             segment=starts["segment"].to_numpy()[idx], regime=g["regime"].to_numpy()
         )
         by_reg = st.set_index(["segment", "regime", "indicator"])[["median", "scale"]]
         pooled = st.groupby(["segment", "indicator"])[["median", "scale"]].median()
         z = pd.DataFrame({"point_id": pid, "hour_utc": g["hour_utc"].to_numpy()})
-        for k in Z_INDICATORS:
+        for k in inds:
             key_r = pd.MultiIndex.from_arrays([li["segment"], li["regime"], np.full(len(li), k)])
             key_p = pd.MultiIndex.from_arrays([li["segment"], np.full(len(li), k)])
             med = by_reg["median"].reindex(key_r).to_numpy()
@@ -117,13 +157,147 @@ def hourly_z(ind: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
             med = np.where(np.isnan(med), pooled["median"].reindex(key_p).to_numpy(), med)
             sc = np.where(np.isnan(sc), pooled["scale"].reindex(key_p).to_numpy(), sc)
             z[k] = (li[k].to_numpy() - med) / sc
+            if delta and k in DB_FACTOR:
+                z[f"db_{k}"] = DB_FACTOR[k] * (li[k].to_numpy() - med)
         parts.append(z)
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
 def daily_point_z(hz: pd.DataFrame) -> pd.DataFrame:
     d = hz.assign(day=pd.to_datetime(hz["hour_utc"], utc=True).dt.floor("D"))
-    return d.groupby(["point_id", "day"])[list(Z_INDICATORS)].median().reset_index()
+    cols = [c for c in hz.columns if c not in ("point_id", "hour_utc")]
+    return d.groupby(["point_id", "day"])[cols].median().reset_index()
+
+
+def temp_residual_daily(scores: pd.DataFrame, segs: pd.DataFrame) -> pd.DataFrame:
+    """D2: the temperature residual's change from the segment's own level, in degrees C: the daily median of
+    temp_resid_c less its median over the segment's level window (segment start to level ready; the segment's
+    first 7 days when it has no level). Columns point_id, day, temp_dc."""
+    s = scores[["point_id", "hour_utc", "temp_resid_c"]].dropna().copy()
+    s["hour_utc"] = pd.to_datetime(s["hour_utc"], utc=True)
+    out = []
+    for pid, g in s.groupby("point_id"):
+        sg = segs[segs["point_id"] == pid].sort_values("segment_start").drop_duplicates("segment_start")
+        if sg.empty:
+            continue
+        starts = pd.to_datetime(sg["segment_start"], utc=True).to_numpy()
+        ready = pd.to_datetime(sg["level_ready"], utc=True)
+        ready = ready.where(
+            ready.notna(), pd.to_datetime(sg["segment_start"], utc=True) + pd.Timedelta(days=7)
+        ).to_numpy()
+        h = g["hour_utc"].to_numpy()
+        k = np.searchsorted(starts, h, side="right") - 1
+        lvl = np.full(len(starts), np.nan)
+        v = g["temp_resid_c"].to_numpy(dtype=float)
+        for j in range(len(starts)):
+            m = (h >= starts[j]) & (h < ready[j])
+            if m.any():
+                lvl[j] = float(np.median(v[m]))
+        dc = np.where(k >= 0, v - lvl[np.clip(k, 0, None)], np.nan)
+        out.append(
+            pd.DataFrame({"point_id": pid, "day": g["hour_utc"].dt.floor("D").to_numpy(), "temp_dc": dc})
+        )
+    if not out:
+        return pd.DataFrame(columns=["point_id", "day", "temp_dc"])
+    d = pd.concat(out, ignore_index=True)
+    return d.groupby(["point_id", "day"])["temp_dc"].median().reset_index()
+
+
+def d2_measures(
+    case: dict,
+    vib: pd.DataFrame,
+    points: list[str],
+    temp: pd.DataFrame,
+    ctrl: pd.DataFrame,
+    end: pd.Timestamp,
+) -> dict[str, float]:
+    """D2 inputs over the case's open interval (to the case close, or to `end` while it is open, so the
+    suspected condition updates while the episode is open): the maximum over days and the asset's points
+    of the daily medians of each band, HF and order change in dB, kurtosis and crest factor z and the
+    temperature residual change, and the TSC pressure drop z."""
+    a = pd.Timestamp(case["opened"]).floor("D")
+    b = min(pd.Timestamp(case["closed"]) if pd.notna(case["closed"]) else end, end)
+    v = vib[vib["point_id"].isin(points) & (vib["day"] >= a) & (vib["day"] <= b)]
+    out: dict[str, float] = {}
+    for k in [f"db_{x}" for x in DB_FACTOR] + ["crest", "kurt"]:
+        if k in v and v[k].notna().any():
+            out[k] = float(v[k].max())
+    tt = temp[temp["point_id"].isin(points) & (temp["day"] >= a) & (temp["day"] <= b)] if len(temp) else temp
+    if len(tt) and tt["temp_dc"].notna().any():
+        out["temp_dc"] = float(tt["temp_dc"].max())
+    if len(ctrl):
+        la = a.tz_convert("America/Chicago").tz_localize(None).normalize()
+        lb = b.tz_convert("America/Chicago").tz_localize(None).normalize()
+        c = ctrl[
+            (ctrl["entity"] == controller_entity(case["asset_id"]))
+            & (ctrl["local_date"] >= la)
+            & (ctrl["local_date"] <= lb)
+        ]
+        s = c[c["indicator"] == "tsc_drop"]
+        if len(s):
+            out["tsc_drop"] = float(s["z"].max())
+    return out
+
+
+def suspected_d2(m: dict[str, float], kind: str, th: dict[str, float]) -> tuple[str, str]:
+    """D2 (2026-11-01): in order, (1) bearing: a dominant fault band (the top band's dB change at least
+    band_min_db and at least dominance_ratio times the second band's), or kurtosis or crest factor z sharply
+    up; the location is the dominant band; (2) pumps: the bands rising together (two or more at band_rise_db)
+    with no dominant band, 1x up (ord1_db) and kurtosis flat (below kurt_flat_z): cavitation or wear;
+    (3) spindles with the temperature residual up (temp_up_c): HF up (hf_db) is lubrication, HF flat is
+    spindle cooling; (4) the shaft orders as the current rules: imbalance (1x), misalignment (2x,
+    compressors), looseness (orders 3 to 10); (5) rotary union: a spindle with a TSC pump-on pressure drop
+    (z); otherwise unclassified."""
+    g = {k: m.get(f"db_{k}", np.nan) for k in FAULT_BANDS}
+    vals = sorted(((v, k) for k, v in g.items() if pd.notna(v)), reverse=True)
+    top, topk = vals[0] if vals else (np.nan, "")
+    second = vals[1][0] if len(vals) > 1 else np.nan
+    dom = (
+        pd.notna(top)
+        and top >= th["band_min_db"]
+        and (top / max(second, 0.1) if pd.notna(second) else np.inf) >= th["dominance_ratio"]
+    )
+    kz, cz = m.get("kurt", np.nan), m.get("crest", np.nan)
+    sharp = (pd.notna(kz) and kz >= th["kurt_z"]) or (pd.notna(cz) and cz >= th["crest_z"])
+    if dom or sharp:
+        loc = FAULT_LOCATION[topk.removeprefix("env_")] if dom else "location unknown (no dominant band)"
+        why = (
+            f"{topk.removeprefix('env_').upper()} +{top:.1f} dB, {top / max(second, 0.1):.1f} x the next"
+            if dom
+            else f"kurtosis z {kz:.1f}, crest z {cz:.1f}"
+        )
+        return "bearing", f"{loc} ({why})"
+    o1 = m.get("db_ord_01", np.nan)
+    if kind in ("tsc_pump", "flood_pump"):
+        rising = [k for k, v in g.items() if pd.notna(v) and v >= th["band_rise_db"]]
+        if (
+            len(rising) >= 2
+            and pd.notna(o1)
+            and o1 >= th["ord1_db"]
+            and (pd.isna(kz) or kz < th["kurt_flat_z"])
+        ):
+            return (
+                "cavitation or wear",
+                f"bands up together ({', '.join(r.removeprefix('env_').upper() for r in rising)}), "
+                f"1x +{o1:.1f} dB, kurtosis z {kz:.1f}",
+            )
+    td, hf = m.get("temp_dc", np.nan), m.get("db_hf", np.nan)
+    if kind == "spindle" and pd.notna(td) and td >= th["temp_up_c"]:
+        if pd.notna(hf) and hf >= th["hf_db"]:
+            return "lubrication", f"temperature residual +{td:.1f} C, HF +{hf:.1f} dB"
+        return "spindle cooling", f"temperature residual +{td:.1f} C, HF flat ({hf:+.1f} dB)"
+    o2, o3 = m.get("db_ord_02", np.nan), m.get("db_ord_3_10", np.nan)
+    if kind in ("tsc_pump", "flood_pump", "compressor"):
+        if pd.notna(o1) and o1 >= th["ord1_db"]:
+            return "imbalance", f"1x +{o1:.1f} dB"
+        if kind == "compressor" and pd.notna(o2) and o2 >= th["ord2_db"]:
+            return "misalignment", f"2x +{o2:.1f} dB"
+        if pd.notna(o3) and o3 >= th["ord_hi_db"]:
+            return "looseness", f"orders 3 to 10 +{o3:.1f} dB"
+    tsc = m.get("tsc_drop", np.nan)
+    if kind == "spindle" and pd.notna(tsc) and tsc >= th["tsc_drop_z"]:
+        return "rotary union", f"tsc_drop z {tsc:.1f}"
+    return "unclassified", ""
 
 
 def tsc_drop_daily(hourly: pd.DataFrame, ref_days: tuple[int, int]) -> pd.DataFrame:
@@ -340,11 +514,16 @@ def work_requests(
     shadow: tuple[pd.Timestamp, pd.Timestamp],
     zthr: float,
     d1: bool = False,
+    d2: dict[str, float] | None = None,
+    measures: dict[str, dict[str, float]] | None = None,
 ) -> pd.DataFrame:
     rows = []
     for c in cases.itertuples():
         z = zs.get(c.case_id, {})
-        cond, detail = suspected({k: v[0] for k, v in z.items()}, asset_kind(c.asset_id), zthr, d1)
+        if d2 is not None:
+            cond, detail = suspected_d2((measures or {}).get(c.case_id, {}), asset_kind(c.asset_id), d2)
+        else:
+            cond, detail = suspected({k: v[0] for k, v in z.items()}, asset_kind(c.asset_id), zthr, d1)
         pts = [p for p in str(c.trigger_points or "").split(",") if p]
         rows.append(
             {

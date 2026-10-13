@@ -651,7 +651,50 @@ def _controller_daily_z(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
     return adv.controller_z(pd.concat(parts, ignore_index=True), train_end)
 
 
-def _work_requests(store: Store, cs: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
+def diagnosis_rule(cfg: dict[str, Any]) -> str:
+    """advisory.diagnosis_rule: current, d1 or d2 (2026-11-01); d1_precedence true reads as d1."""
+    a = cfg.get("advisory") or {}
+    r = str(a.get("diagnosis_rule") or ("d1" if a.get("d1_precedence") else "current"))
+    if r not in ("current", "d1", "d2"):
+        raise ValueError(f"advisory.diagnosis_rule must be current, d1 or d2, not {r}")
+    return r
+
+
+def _d2_measures(
+    store: Store, cs: pd.DataFrame, cfg: dict[str, Any], scores: pd.DataFrame, segs: pd.DataFrame
+) -> dict[str, dict[str, float]]:
+    """D2 inputs per case: healthy stats with kurtosis and crest factor (the champion's training hours, then
+    the shadow year's re-centered segments), the dB change and z per hour and day, the temperature residual
+    change from the scores and segments, and the controller signals."""
+    from pdm import ml_tasks
+
+    end = horizon(cfg)
+    cols = ["point_id", "hour_utc", "regime", "implausible", *adv.D2_INDICATORS.values()]
+    cols += [f"ord_{o:02d}_g2" for o in range(3, 11)]
+    ind = store.read_pd("silver", "hourly_indicators", sorted(set(cols) - {"ord_3_10_g2"}))
+    ind["hour_utc"] = _utc(ind["hour_utc"])
+    ind = ind[~ind["implausible"].fillna(False).astype(bool) & (ind["hour_utc"] < end)]
+    tr = scores[scores["period"] == "training"] if "period" in scores else scores
+    train_stats = ml_tasks.healthy_stats_table(tr, ind, adv.D2_INDICATORS)
+    shadow_segs = segs[~segs["trained"].astype(bool)] if "trained" in segs else segs
+    stats = ml_tasks.shadow_segment_stats(train_stats, shadow_segs, ind, adv.D2_INDICATORS)
+    vib = adv.daily_point_z(adv.hourly_z(ind, stats, adv.D2_INDICATORS, delta=True))
+    temp = adv.temp_residual_daily(scores, segs)
+    ctrl = _controller_daily_z(store, cfg)
+    pts_by_asset = _points_by_asset(_points(store))
+    return {
+        c["case_id"]: adv.d2_measures(c, vib, pts_by_asset.get(c["asset_id"], []), temp, ctrl, end)
+        for c in cs.to_dict("records")
+    }
+
+
+def _work_requests(
+    store: Store,
+    cs: pd.DataFrame,
+    cfg: dict[str, Any],
+    scores: pd.DataFrame | None = None,
+    segs: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     end = horizon(cfg)
     name = "point_segment_stats" if store.exists("gold", "point_segment_stats") else "point_healthy_stats"
     stats = _utc_cols(store.read_pd("gold", name), ["segment_start"])
@@ -669,9 +712,14 @@ def _work_requests(store: Store, cs: pd.DataFrame, cfg: dict[str, Any]) -> pd.Da
         for c in cs.to_dict("records")
     }
     b = splits.boundaries(cfg)
-    return adv.work_requests(
-        cs, zs, b["shadow"], cfg["evaluation"]["advisory_z"], bool(cfg["advisory"].get("d1_precedence"))
-    )
+    rule = diagnosis_rule(cfg)
+    if rule == "d2":
+        if scores is None or segs is None:
+            raise ValueError("the D2 diagnosis needs the scores and segments")
+        th = {**adv.D2_DEFAULTS, **((cfg["advisory"].get("d2") or {}).get("thresholds") or {})}
+        meas = _d2_measures(store, cs, cfg, scores, segs)
+        return adv.work_requests(cs, zs, b["shadow"], cfg["evaluation"]["advisory_z"], False, th, meas)
+    return adv.work_requests(cs, zs, b["shadow"], cfg["evaluation"]["advisory_z"], rule == "d1")
 
 
 # ---------------------------------------------------------------- evaluation
