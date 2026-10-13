@@ -13,7 +13,7 @@ A **Predictive Maintenance ML model** was built on the past three years of the s
 
 <b>ML Model vs. Vendor Rules, July 2025 to June 2026</b>
 
-| | Conditions caught | Median warning | False alerts per asset-month | False ALARMs per asset-month | Inspection hours on false alerts |
+| | Conditions caught | Median warning (days) | False ALERTs per asset-month | False ALARMs per asset-month | Inspection hours on false alerts |
 |:---|:---:|:---:|:---:|:---:|:---:|
 | Vendor Rules | [b] of [N] | [ ] days | [ ] | [ ] | [ ] |
 | **ML Model** | **[a] of [N]** | **[ ] days** | **[ ]** | **[ ]** | **[ ]** |
