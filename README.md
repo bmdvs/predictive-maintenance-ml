@@ -42,9 +42,9 @@ The Vendor Rules' and ML Model's statuses and work requests are presented in a [
 
 ## Business Context
 
-A contract machining shop in the northwest suburbs of Chicago machines precision parts on 20 CNC machines. Its four-machine HMC cell is the bottleneck. In July 2023 it installed wireless vibration sensors on the HMC cell and its two compressors. Through June 2026, it maintained them on the sensor vendor's threshold alerts and interval-based PM.
+A precision machining shop runs 40 CNC machines. Its eight horizontal machining centers (HMCs) are the bottleneck: they carry [share]% of the shop's cutting hours at [71]% utilization, and an hour of HMC downtime costs [value, USD] in contribution margin, [x] times the average for the rest of the fleet. Spindle and pump failures on the HMCs stop the shop's highest-margin work.
 
-Spindle and pump failures on the HMC cell stop the shop's highest-margin work, and vendor alerts raised inspections that most often found nothing. The shop built a model layer on the three-year record to catch more developing faults earlier with no added inspection workload. It ran the model layer alongside the vendor alerts for a quarter before acting on it.
+In July 2023, the shop installed wireless vibration sensors on the HMCs and its four plant compressors, monitored by the sensor vendor's threshold alerts, Vendor Rules, alongside interval-based PM. Vendor Rules alerts sent technicians to inspect machines, and [x]% of those inspections found nothing. To catch developing faults earlier without adding inspection workload, the shop built its own ML Model on the sensor record and ran it in shadow mode beside Vendor Rules from July 2025 to June 2026.
 
 ---
 
