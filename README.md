@@ -46,7 +46,7 @@ A precision machining shop runs 40 CNC machines. Its eight horizontal machining 
 
 In July 2023 the shop began a pilot of sensor-based condition monitoring on the HMC cell and the compressors: wireless sensors on 40 points, monitored as 28 assets (each HMC's spindle, through-spindle coolant (TSC) pump and flood coolant pump, and each compressor). These sensors were monitored by the sensor vendor's threshold alerts, Vendor Rules, alongside interval-based PM. Vendor Rules alerts sent technicians to inspect machines at a [x] false alert rate, leading to [x] hours of inspections that found nothing wrong. 
 
-To lower this false alert rate, and to catch developing faults earlier, this project built the ML Model on the sensor record and ran it in shadow mode beside Vendor Rules over the evaluation year to prove its effectiveness.
+To lower this false alert rate, and to catch developing faults earlier, the pilot's second phase added the ML Model. Built on the same sensor record, it ran in shadow mode beside Vendor Rules over the evaluation year to prove its effectiveness.
 
 ---
 
