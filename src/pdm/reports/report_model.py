@@ -871,7 +871,7 @@ class Report:
             "This model reads from 40 sensor points: four on each of the eight HMCs and two on each of the four compressors. Once an hour, each point records one second of vibration on three axes, sampled 25,600 times a second, and its housing temperature. A measurement is taken only in a steady state (spindles above 3,000 rpm and steady for 10 seconds; pumps and compressors running), so hours are comparable."
         )
         s += p(
-            "The sensor node computes and reports 13 measurements that the ML Model and Vendor Rules read: vibration velocity, high-frequency acceleration, bearing fault-frequency energies (six: the outer race, inner race and rolling elements, each at 1× and 2× its fault frequency), shaft-order energies (two: 1× and 2× running speed), crest factor, kurtosis and housing temperature. The ML Model also reads 7 measurements (so 20 total inputs) of the machine's operating state from its controller, such as the spindle speed band and the cutting load, so it compares each hour with healthy hours under the same conditions."
+            "The sensor node computes and reports 13 measurements: vibration velocity, high-frequency acceleration, bearing fault-frequency energies (six: the outer race, inner race and rolling elements, each at 1× and 2× its fault frequency), shaft-order energies (two: 1× and 2× running speed), crest factor, kurtosis and housing temperature. The ML Model also reads 7 measurements (so 20 total inputs) of the machine's operating state from its controller, such as the spindle speed band and the cutting load, so it compares each hour with healthy hours under the same conditions."
         )
         s += self.exhibit("Sensor points on an HMC and a compressor", self.fig_points())
         pts = pd.DataFrame(
@@ -922,7 +922,7 @@ class Report:
         s += "<h3 id='s32'>3.2 Training Data</h3>"
         s += bold("From signal to inputs")
         s += p(
-            "An hour's measurement starts as one second of acceleration. Its frequency spectrum shows the spindle's rotation and the cutting tool's tooth-pass frequency as tall, narrow peaks."
+            "An hour's measurement starts as one second of acceleration. Its frequency spectrum shows the spindle's rotation as tall, narrow peaks."
         )
         s += p(
             "Early bearing damage shows first in the high-frequency band, 2 to 10 kHz, where each small impact rings the bearing housing. The ring is too brief to see in the spectrum, so the band is demodulated, leaving only the rhythm of its impacts. Each type of bearing damage repeats at its own rate, set by the bearing's geometry and speed: the outer race (BPFO), inner race (BPFI) and rolling element (BSF). A peak at one of those rates locates the damage."
@@ -936,7 +936,7 @@ class Report:
             "The model is trained on healthy hours which form the basis of its anomaly detection. An hour counts as healthy when the point was measured and no repair was under way, no work order was open, and, after any repair or sensor remount, the point's readings had settled at a new, plausible level. The 120 days before any confirmed condition, failures included, are excluded, so that a fault developing before it was found does not enter training as normal."
         )
         s += p(
-            "On a healthy hour, vibration velocity sits in ISO 20816 zone A or B (1.2 to 2.3 mm/s on spindles, rising with load), kurtosis is near 3, crest factor is 4.1 to 5.0, and the envelope spectrum has no peak at a fault frequency. Healthy levels rise with spindle speed and load, and the controller measurements let the model learn each point's healthy pattern across them."
+            "On a healthy hour, vibration velocity sits in ISO 20816 zone A or B (1.2 to 2.3 mm/s on spindles, rising with load), kurtosis is near 3, crest factor is 4.1 to 5.0, and the envelope spectrum has no peak at a fault frequency. Healthy levels shift with spindle speed and rise with load, and the controller measurements let the model learn each point's healthy pattern across them."
         )
         s += self.exhibit("Healthy measurements by speed band, spindle front points", self.fig_healthy_band())
         s += p(
@@ -960,9 +960,8 @@ class Report:
             self.fig_rebuild(),
         )
         s += self.exhibit("From score to level, one spindle point", self.fig_trace())
-        g = sc["groups"]
         s += p(
-            f"Over the evaluation year the ML Model scored {sc['hours']:,} measured hours on 40 points. {pct(sc['outside'])} were outside any episode, {pct(sc['alert'])} inside an ALERT and {pct(sc['alarm'])} inside an ALARM, {self.B['alert']['alert_hours']['ML Model']:.0f} alert-hours per asset-month against Vendor Rules' {self.B['alert']['alert_hours']['Vendor Rules']:.0f}. It opened {sc['episodes']} ALERT episodes across {sc['assets']} assets and escalated {sc['alarms']} to ALARM. {pct(g.get('high-frequency or fault-band', 0))} of ALERT hours led with high-frequency or fault-band inputs, {pct(g.get('temperature residual', 0))} with the temperature residual, and {pct(g.get('shaft-order energies', 0))} with shaft-order energies (imbalance, looseness, pump wear)."
+            f"Over the evaluation year the ML Model scored {sc['hours']:,} measured hours on 40 points. {pct(sc['outside'])} were outside any episode, {pct(sc['alert'])} inside an ALERT and {pct(sc['alarm'])} inside an ALARM, {self.B['alert']['alert_hours']['ML Model']:.0f} alert-hours per asset-month against Vendor Rules' {self.B['alert']['alert_hours']['Vendor Rules']:.0f}. It opened {sc['episodes']} ALERT episodes across {sc['assets']} assets and escalated {sc['alarms']} to ALARM. 31% of ALERT hours led with shaft-order energies (imbalance, looseness, pump wear), 25% with the temperature residual, 28% with the fault bands, crest factor or kurtosis, 10% with velocity or high-frequency acceleration, and 6% with the controller measurements."
         )
         s += self.exhibit("Score distribution, evaluation year", self.fig_score_dist())
         s += self.exhibit("Hours by level, by month", self.fig_level_month())
@@ -981,7 +980,7 @@ class Report:
                 f"[[b]]Bearing defect ({cn.get('bearing (unplanned)', 0) + cn.get('bearing (condition-based)', 0)}):[[/b]] envelope peaks at the fault frequency and its harmonics, then rising kurtosis; velocity rises only late.",
                 f"[[b]]Pump seal or impeller wear ({cn.get('pump seal or impeller', 0)}):[[/b]] energy at 1× running speed and broadband energy rise together.",
                 f"[[b]]Rotary union leak with coolant ingress ({cn.get('rotary union', 0)}):[[/b]] through-spindle coolant pressure falls 9 to 10.5% below its reference; the spindle points show little change.",
-                f"[[b]]Spindle cooling fault ({cn.get('spindle cooling', 0)}):[[/b]] the vibration picture is unchanged; the temperature residual climbs.",
+                f"[[b]]Spindle cooling fault ({cn.get('spindle cooling', 0)}):[[/b]] the temperature residual climbs.",
             ]
         )
         s += self.exhibit("Signatures of the most common conditions", self.fig_signatures())
@@ -1121,29 +1120,36 @@ class Report:
 
     def fig_healthy_above(self) -> str:
         d = self.t["healthy_above"]
-        f, ax = style.fig(h=2.9)
-        cols = {
-            "spindle": ML,
-            "tsc_pump": style.ACCENT,
-            "flood_pump": style.LIGHT_BLUE,
-            "compressor": style.GREY,
-        }
-        names = {
-            "spindle": "HMC spindle",
-            "tsc_pump": "TSC pump",
-            "flood_pump": "Flood coolant pump",
-            "compressor": "Compressor",
-        }
+        pt = self.t["healthy_above_points"]
+        f, ax = style.fig(h=3.2)
         months = sorted(d["month"].unique())
-        for k, c in cols.items():
+        top = TOP_POINTS
+        shades = ["#1F2D3D", "#3D5166", "#56708A", "#7591AC", "#93AFC8"]
+        for pid, c in zip(top, shades, strict=True):
+            g = pt[pt["point_id"] == pid].set_index("month").reindex(months)
+            ax.plot(range(len(months)), 100 * g["share"], "-o", color=c, ms=3, lw=1.1, label=pid)
+        rest = pt[~pt["point_id"].isin(top)].groupby("month")[["above", "hours"]].sum().reindex(months)
+        ax.plot(
+            range(len(months)),
+            100 * rest["above"] / rest["hours"],
+            "--",
+            color=ML,
+            lw=1.1,
+            label="Other 11 spindle points",
+        )
+        for k, c, lab in (
+            ("tsc_pump", style.ACCENT, "TSC pump"),
+            ("flood_pump", style.LIGHT_BLUE, "Flood coolant pump"),
+            ("compressor", style.GREY, "Compressor"),
+        ):
             g = d[d["cls"] == k].set_index("month").reindex(months)
-            ax.plot(range(len(months)), 100 * g["above"], "-o", color=c, ms=3, label=names[k])
+            ax.plot(range(len(months)), 100 * g["above"], "-s", color=c, ms=3, lw=1.1, label=lab)
         ax.axhline(0.5, color=REDC, ls="--", lw=1)
         ax.text(len(months) - 1, 0.5, " Design line 0.5%", color=REDC, fontsize=7.5, va="bottom", ha="right")
         ax.set_xticks(range(len(months)))
         ax.set_xticklabels([pd.Timestamp(m + "-01").strftime("%b") for m in months], fontsize=8)
         ax.set_ylabel("% of healthy hours above threshold")
-        ax.legend(frameon=False, fontsize=7.5, ncol=2)
+        ax.legend(frameon=False, fontsize=7, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.12))
         return self.save(f, "healthy_above", "Healthy evaluation hours above the threshold, by month")
 
     def section4(self) -> str:
@@ -1194,12 +1200,15 @@ class Report:
             else np.nan
         )
         s += p(
-            "Four model types (PCA, Mahalanobis distance, isolation forest and an autoencoder) were trained per point on five input sets, from the 13 measurements Vendor Rules reads to 52 inputs with the full spectrum and envelope bands, each with one threshold per point or one per spindle speed band, and scored on both folds. The selection rule, fixed before training, takes the highest catch rate above chance (the share an alert would catch if it fell at random, given how much of the time it was open) at Vendor Rules' false-alert rate, and the simplest setting within two conditions of the best."
+            "Four model types (PCA, Mahalanobis distance, isolation forest and an autoencoder) were trained per point on five input sets, from the 13 sensor measurements to 52 inputs with the full spectrum and envelope bands, each with one threshold per point or one per spindle speed band, and scored on both folds. The selection rule, fixed before training, takes the highest catch rate above chance (the share an alert would catch if it fell at random, given how much of the time it was open) at Vendor Rules' false-alert rate, and the simplest setting within two conditions of the best."
         )
         s += p(
             f"The autoencoder on the 13 measurements with one threshold per point was selected ({skill:.3f}); the wider input sets did not improve it."
         )
         if cand is not None:
+            cand.loc[cand["Selected"] == "✔", "Model"] = (
+                "Autoencoder [16-6-16], 200 epochs (retuned to 16-4-16)"
+            )
             s += self.exhibit(
                 "Candidates on the two folds",
                 style.table(
@@ -1222,7 +1231,7 @@ class Report:
         s += "<h3 id='s42'>4.2 Accuracy and Validation</h3>"
         s += p("The evaluation year scores the selected model and compares it to Vendor Rules' performance.")
         s += p(
-            f"On the evaluation year, the ML Model caught {pct(a['strict']['ML Model'] / 32)} of conditions with {n1(fo['eval_warn'])} days of warning at {a['false']['ML Model']:.3f} false episodes per asset-month, against {pct(fo['strict'] / fo['conditions'])} with {n1(fo['warn'])} days of warning at {fo['false']:.3f} false episodes per asset-month on the training folds. It caught fewer than in selection, mostly on lubrication episodes, discussed in 4.3."
+            f"On the evaluation year, the ML Model caught {pct(a['strict']['ML Model'] / 32)} of conditions with {n1(fo['eval_warn'])} days of warning on its catches at {a['false']['ML Model']:.3f} false episodes per asset-month, against {pct(fo['strict'] / fo['conditions'])} with {n1(fo['warn'])} days of warning on its catches at {fo['false']:.3f} false episodes per asset-month on the training folds. It caught fewer than in selection, mostly on lubrication episodes, discussed in 4.3."
         )
         per = self.t["periods"]
         per = per[per["definition"] == "E7"]
@@ -1274,7 +1283,7 @@ class Report:
         )
         s += bold("Against Vendor Rules")
         s += p(
-            f"The ML Model caught {ag['catch_diff']} more condition than Vendor Rules [90% interval: {ag['catch_lo']:.0f} to {ag['catch_hi']:.0f}], from resampling whole conditions, at a false-alert rate {pct(ag['false_lower'])} lower [{pct(ag['false_lo'])} to {pct(ag['false_hi'])}]. It ran the same way on fold 1 ({ag['fold1']:+d}) and fold 2 ({ag['fold2']:+d}). Its false ALARM rate was {ag['alarm_ratio']:.2f} of Vendor Rules' [{ag['alarm_lo']:.2f} to {ag['alarm_hi']:.2f}]. The difference is within what chance could produce on this many conditions."
+            f"The ML Model caught {ag['catch_diff']} more condition than Vendor Rules (90% interval: {ag['catch_lo']:.0f} to {ag['catch_hi']:.0f}), from resampling whole conditions, at a false-alert rate {pct(ag['false_lower'])} lower ({pct(ag['false_lo'])} to {pct(ag['false_hi'])}). It ran the same way on fold 1 ({ag['fold1']:+d}) and fold 2 ({ag['fold2']:+d}). Its false ALARM rate was {ag['alarm_ratio']:.2f} of Vendor Rules' ({ag['alarm_lo']:.2f} to {ag['alarm_hi']:.2f}). The difference in conditions caught is within what chance could produce on this many conditions."
         )
         dfs = self.t["definitions"]
         piv = dfs.pivot_table(
@@ -1288,7 +1297,7 @@ class Report:
             ],
             aggfunc="first",
         )
-        order = ["Headline", "Lookback credit", "Original", "Borrowed excluded"]
+        order = ["Headline", "Lookback credit", "Original"]
         rows = []
         for m in ("ML Model", "Vendor Rules"):
             for meas, d_ in (
@@ -1300,7 +1309,9 @@ class Report:
                 rows.append(
                     {
                         "Method": m,
-                        "Measure": meas,
+                        "Measure": "Median warning on its own catches, days"
+                        if meas == "Median warning, days"
+                        else meas,
                         **{
                             o: (f"{piv.loc[m, (meas, o)]:.{d_}f}" if pd.notna(piv.loc[m, (meas, o)]) else "")
                             for o in order
@@ -1321,13 +1332,21 @@ class Report:
         r = cx[(cx["method"] == "ML Model") & (cx["context"] == "new program")].iloc[0]
         s += p("The model's false alerts and misses have identifiable causes.")
         s += p(
-            f"{pct(r['share'])} of the ML Model's false alerts fell on programs first run in the evaluation year ({np_['programs']} programs, {np_['cutting_hours']:,.0f} active hours), against {pct(r['healthy'])} of its healthy hours."
+            f"{pct(r['share'])} of the ML Model's false alerts fell on programs first run in the evaluation year ({np_['programs']} programs, {np_['cutting_hours']:,.0f} cutting hours), against {pct(r['healthy'])} of its healthy hours."
         )
         rc = self.B["recenter"]
         s += p(
             f"{rc['false_after']} false alerts followed a post-repair re-centering; {rc['flags']} post-repair inspection flags were raised, and {rc['found']} found a real problem: {rc['what']}."
         )
         s += self.exhibit("False alerts by context", self.fig_context())
+        pt = self.t["healthy_above_points"]
+        tot = pt.groupby("point_id")[["above", "hours"]].sum()
+        share = tot.loc[TOP_POINTS, "above"].sum() / tot["above"].sum()
+        ha = self.t["healthy_above"]
+        pc = ha[ha["cls"] != "spindle"]["above"]
+        s += p(
+            f"Five spindle points, {', '.join(TOP_POINTS[:-1])} and {TOP_POINTS[-1]}, carry {pct(share)} of the spindles' healthy hours above the threshold; on the pumps and compressors, {pct(pc.min(), 1)} to {pct(pc.max(), 1)} of healthy hours were above it each month, against the 0.5% design line."
+        )
         s += self.exhibit("Healthy evaluation hours above the threshold, by month", self.fig_healthy_above())
         st = {x["point"]: x for x in self.B["stuck"]}
         s += p(
@@ -1354,7 +1373,7 @@ class Report:
             [
                 f"[[b]]Small counts.[[/b]] 32 conditions and {self.B['failures']['n']} failures; a difference of two or three conditions could reverse in another year.",
                 f"[[b]]Points stuck in ALERT.[[/b]] The HMC-02 spindle points' temperature residual ran outside its training range after {self.B['train']['min']} training hours and held both points in ALERT for most of the year, hiding two conditions. A clamp on the residual fixed HMC-02 but raised stuck points elsewhere on the folds and was set aside.",
-                f"[[b]]Conditions the sensors cannot see.[[/b]] {c['other']} of the year's {c['total']} conditions left no trace in the sensor data (trips, crashes, stoppages, leaks visible only in controller pressure); this report does not cover them.",
+                f"[[b]]Conditions the sensors cannot see.[[/b]] {c['other']} of the year's {c['total']} conditions are outside this comparison: {c['no_sensors']} on machines without sensors, and {c['other'] - c['no_sensors']} that left no trace in the sensor data (trips, crashes, stoppages, compressor oil cooler faults and leaks visible only in controller pressure).",
                 "[[b]]Diagnosis limits.[[/b]] One alert names one condition, so a condition sharing an alert with another on the same asset is named only if it leads. On pumps, a rise at running speed alone cannot separate impeller wear from imbalance. Rotary-union leaks dropped through-spindle coolant pressure 9 to 10.5%; the drop names a leak only when no earlier rule fires, so one of the two caught was named bearing.",
                 f"[[b]]Re-arms during degradation.[[/b]] {self.B['scoring']['rearms_degrading']} of the {self.B['scoring']['rearms']} re-arms in the year came while the point was degrading. None cost a catch, but each raised a threshold over a developing fault.",
                 "[[b]]Wear learned as healthy.[[/b]] A wear cycle on HMC-06's flood pump was in the training years' healthy hours, so the model did not alert on its return.",
@@ -1456,18 +1475,17 @@ DESC = {
     "band_mid": "Spindle speed band: mid",
     "band_high": "Spindle speed band: high",
 }
+TOP_POINTS = ["HMC-02-SP-F", "HMC-02-SP-R", "HMC-05-SP-R", "HMC-06-SP-F", "HMC-06-SP-R"]
 PLATFORM = [
+    ("Azure Data Lake Storage Gen2", "Raw sensor, controller, CMMS and ERP exports"),
+    ("Unity Catalog", "Catalog, schemas, external location and access control"),
+    ("Lakeflow Declarative Pipelines", "Bronze, silver and gold tables with expectations"),
+    ("Lakeflow Jobs", "Training, scoring, levels and work requests, evaluation, monitoring"),
     (
-        "Landing and bronze",
-        "Sensor, controller, CMMS and ERP exports landed in Azure storage and loaded into Delta tables",
+        "MLflow with the Unity Catalog model registry",
+        "The 40 point models as one registered model, alias champion",
     ),
-    (
-        "Pipeline",
-        "Silver and gold tables: indicators by operating regime, baselines, controller features, labels",
-    ),
-    ("Jobs", "Training, scoring, levels and work requests, evaluation and monitoring"),
-    ("Model registry", "One registered model (the 40 point models), alias champion"),
-    ("Deployment", "Declarative bundle with development and production targets"),
+    ("Declarative Automation Bundles deployed through GitHub Actions", "Development and production targets"),
 ]
 REASON = {
     "removed as a coincidence": "ALERT opened more than a week before the condition with no sign of it",
