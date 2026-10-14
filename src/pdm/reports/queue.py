@@ -18,17 +18,26 @@ import pandas as pd
 
 from pdm import log
 from pdm.config import load_config
-from pdm.features import kinematics
 from pdm.features.burst import ExtractionSettings
 from pdm.reports import queue_bursts as qb
 from pdm.reports import queue_svg as sv
-from pdm.reports.queue_state import BANDS, METHODS, RANK, TZ, QueueState, asset_kind, local, machine_of
+from pdm.reports.queue_state import (
+    BANDS,
+    METHODS,
+    RANK,
+    TZ,
+    QueueState,
+    asset_kind,
+    local,
+    located_band,
+    machine_of,
+)
 from pdm.reports.style import DOCS
 
 LOG = log.get_logger("pdm.reports.queue")
 PRODUCT = "Maintenance Center"
 USER = "maint.planner"
-LEVEL_CLASS = {"ALARM": "red", "ALERT": "amber", "WATCH": "gray", "OK": "gray"}
+LEVEL_CLASS = {"ALARM": "red", "ALERT": "amber", "OK": "gray"}
 TYPE_LABEL = {
     "pm": "PM",
     "inspection": "Inspection",
@@ -100,6 +109,25 @@ def cause_label(cause: str | None) -> str:
 
 def request_number(rid: str) -> str:
     return str(rid).replace("|", "-")
+
+
+def suspected(wr: pd.Series) -> str:
+    """Family and location as the queue shows them: "Bearing, outer race"; "Bearing, location not determined";
+    other families by name."""
+    fam = str(wr["suspected_condition"])
+    if fam != "bearing":
+        return family_label(fam)
+    loc = located_band(wr["suspected_detail"])
+    return f"Bearing, {loc}" if loc else "Bearing, location not determined"
+
+
+def measured(wr: pd.Series) -> str:
+    """The D2 detail's measured values, for the detail header."""
+    d = str(wr["suspected_detail"] or "")
+    for prefix in ("outer race ", "inner race ", "ball ", "cage ", "location unknown (no dominant band) "):
+        if d.startswith(prefix):
+            d = d[len(prefix) :]
+    return d.strip().removeprefix("(").removesuffix(")").replace(") (", "; ")
 
 
 def family_label(s: str) -> str:
@@ -182,15 +210,6 @@ class Page:
 
     def notes(self, asset: str, ml: Any) -> list[str]:
         out = []
-        w = self.q.watch
-        w = w[
-            (w["asset_id"] == asset)
-            & (w["hour_utc"] > self.T - pd.Timedelta(hours=24))
-            & (w["hour_utc"] <= self.T)
-        ]
-        if ml is None and len(w):
-            first = w["hour_utc"].min()
-            out.append(f"ML Model WATCH since {local(first, '%Y-%m-%d %H:%M')}")
         seg = self.q.segments
         for pid in self.q.points(asset):
             s = seg[(seg["point_id"] == pid) & (seg["segment_start"] <= self.T)].sort_values("segment_start")
@@ -225,7 +244,7 @@ class Page:
     def queue_table(self, rows: list[dict[str, Any]]) -> str:
         head = (
             "<tr><th>Asset</th><th>Vendor Rules<div class='sub'>Triggers inspection</div></th><th>ML Model <span class='tag'>Shadow</span></th>"
-            "<th>Leading indicator</th><th>Suspected condition</th><th>Recommended inspection</th><th>Work request / work order</th></tr>"
+            "<th>Leading indicator</th><th>Suspected condition (ML Model)</th><th>Recommended inspection</th><th>Work request / work order</th></tr>"
         )
         filt = (
             "<tr class='filters'>"
@@ -248,16 +267,8 @@ class Page:
                 if ml
                 else "<span class='muted'>OK</span>"
             )
-            if wr is not None:
-                cond = f"<b>{h(family_label(wr['suspected_condition']))}</b>" + (
-                    f"<div class='sub'>{h(wr['suspected_detail'])}</div>" if wr["suspected_detail"] else ""
-                )
-                insp = h(family_label(str(wr["recommended_inspection"])))
-            else:
-                cond, insp = (
-                    "<span class='muted'>Not diagnosed</span>",
-                    "<span class='muted'>Not specified</span>",
-                )
+            cond = f"<b>{h(suspected(wr))}</b>" if wr is not None else "<span class='muted'>-</span>"
+            insp = h(self.inspection(v, wr))
             notes = self.notes(a, ml)
             only = "" if v else " <span class='tag only'>ML Model only</span>"
             note_html = "".join(f"<div class='note'>{h(n)}</div>" for n in notes)
@@ -269,11 +280,30 @@ class Page:
                 "vendor": v.level if v else "OK",
                 "ml": ml.level if ml else "OK",
                 "suspected": None if wr is None else wr["suspected_condition"],
+                "suspected_cell": suspected(wr) if wr is not None else "-",
+                "inspection": self.inspection(v, wr),
                 "request": None if wr is None else request_number(wr["request_id"]),
                 "notes": notes,
             }
         cols = "".join(f"<col style='width:{w}'>" for w in ("15%", "9%", "9%", "14%", "20%", "15%", "18%"))
         return f"<table class='queue'><colgroup>{cols}</colgroup><thead>{head}{filt}</thead><tbody>{''.join(body)}</tbody></table>"
+
+    @staticmethod
+    def inspection(v: Any, wr: pd.Series | None) -> str:
+        """The D2 work request's recommended inspection where the ML Model is open; on Vendor Rules-only rows, from
+        the rules that opened the episode: velocity or HF acceleration, a vibration route check; a fault band, an
+        envelope check; temperature, a temperature check."""
+        if wr is not None:
+            return family_label(str(wr["recommended_inspection"]))
+        rules = {x.split("_")[0] for x in str(v.trigger_rules).split(",") if x}
+        out = []
+        if rules & {"vel", "hf", "zone"}:
+            out.append("vibration route check")
+        if "envelope" in rules:
+            out.append("envelope check")
+        if "temp" in rules:
+            out.append("temperature check")
+        return family_label(", ".join(out)) if out else "Vibration route check"
 
     def ok_list(self) -> str:
         ok = [a for a in self.q.assets if a not in self.lv]
@@ -331,23 +361,13 @@ class Page:
                 for r in s.itertuples():
                     ev.append((r.segment_start, f"Re-centered, {self.q.point_label(pid)}", sv.MUTED))
                     if r.plausibility_flag:
-                        ev.append((r.level_ready, f"Plausibility flag, {self.q.point_label(pid)}", sv.MUTED))
-            wt = self.q.watch
-            wt = wt[
-                (wt["asset_id"] == asset)
-                & (wt["hour_utc"] >= self.t0)
-                & (wt["reason"] == "unpersisted exceedance")
-            ]
-            open_eps = e[e["method"] == "ml_model"]
-            starts = []
-            last = None
-            for t in sorted(wt["hour_utc"]):
-                inside = ((open_eps["opened"] <= t) & (open_eps["closed"] > t)).any()
-                if not inside and (last is None or t - last > pd.Timedelta(hours=72)):
-                    starts.append(t)
-                last = t
-            for t in starts:
-                ev.append((t, "WATCH", sv.MUTED))
+                        ev.append(
+                            (
+                                r.level_ready,
+                                f"Post-repair inspection flag, {self.q.point_label(pid)}",
+                                sv.MUTED,
+                            )
+                        )
         return sorted(ev, key=lambda x: x[0])
 
     def _chart(self, title: str, unit: str, chart: sv.TimeChart, level: str) -> str:
@@ -360,7 +380,7 @@ class Page:
     def _new(self, asset: str, score: bool = False, log: bool = False) -> sv.TimeChart:
         c = sv.TimeChart(self.t0, self.T, log=log)
         for ts, text, col in self.events(asset, score):
-            c.event(ts, text, col)
+            c.event(ts, text if score else None, col)
         return c
 
     def score_chart(self, asset: str) -> str:
@@ -388,15 +408,7 @@ class Page:
         c.fit(np.array([1.0]))
         c.hline(self.t0, self.T, 1.0, sv.MUTED, "4 3", "Threshold")
         lvl = self.lv.get(asset, {}).get("ml_model")
-        level = (
-            lvl.level
-            if lvl
-            else (
-                "WATCH"
-                if self.notes(asset, None) and any("WATCH" in n for n in self.notes(asset, None))
-                else "OK"
-            )
-        )
+        level = lvl.level if lvl else "OK"
         return self._chart("ML Model score (shadow)", "score / threshold" + self._who(asset), c, level)
 
     def _who(self, asset: str) -> str:
@@ -554,6 +566,8 @@ class Page:
             s = seg[(seg["point_id"] == pid) & (seg["segment_start"] <= self.T)].sort_values("segment_start")
             for j, r in enumerate(s.itertuples()):
                 final = j == len(s) - 1
+                if not final:
+                    continue
                 a = max(r.level_ready, self.t0) if pd.notna(r.level_ready) else None
                 b = s["segment_start"].iloc[j + 1] if j + 1 < len(s) else self.T
                 if a is None or min(b, self.T) <= a:
@@ -694,13 +708,19 @@ class Page:
             f, a = qb.envelope_resultant(arr, self.xs.fs, band, self.xs)
             return f, a, speed, hour, src
 
-        rf, ra, _, rh, _ = spec("reference")
+        rf, ra, rspeed, rh, _ = spec("reference")
+        got = {role: spec(role) for role in ("alert", "current")}
+        # one order range for both panels, inside both bursts' envelope bands, so the markers align
+        o = {k: getattr(orders, k) for k, _, _ in BANDS}
+        omax = 3.4 * max(o["bpfo"], o["bpfi"])
+        for _, _, speed, hour, _ in got.values():
+            band = qb.band_at(self.q.sensor_events, pid, hour)
+            omax = min(omax, (band[1] - band[0]) / speed)
         panels = []
         srcs = {}
         for role, title in (("alert", "At the alert"), ("current", "Current")):
-            f, a, speed, hour, src = spec(role)
+            f, a, speed, hour, src = got[role]
             srcs[role] = src
-            fz = kinematics.fault_frequencies_hz(orders, speed)
             st = rows[(rows["point_id"] == pid) & (rows["hour_utc"] == hour) & (rows["axis"] == "res")]
             L = self.q.vendor_limits(pid, hour)
             markers = []
@@ -715,16 +735,14 @@ class Page:
                 lim = L.get(f"env_{k}_alert", np.nan)
                 col = sv.AMBER if pd.notna(lim) and val >= lim else sv.GRAY
                 for hm in (1, 2, 3):
-                    markers.append((hm * fz[k], name if hm == 1 else f"{hm}x{name}", col, hm == 1))
-            band = qb.band_at(self.q.sensor_events, pid, hour)
-            fmax = min(band[1] - band[0], 3.4 * max(fz["bpfo"], fz["bpfi"]))
+                    markers.append((hm * o[k], name if hm == 1 else f"{hm}x{name}", col, hm == 1))
             panels.append(
                 f"<div class='chartbox half'><div class='ctitle'>{title} <span class='unit'>{local(hour, '%Y-%m-%d %H:%M')} · {speed * 60:,.0f} rpm · gray: healthy reference {local(rh, '%Y-%m-%d')}</span></div>"
-                f"{sv.spectrum(f, a, rf, ra, fmax, markers)}</div>"
+                f"{sv.spectrum(f / speed, a, rf / rspeed, ra, omax, markers, unit='orders')}</div>"
             )
         self.facts["assets"][asset]["bursts"] = srcs
         return (
-            f"<div class='sec'><div class='sech'>Envelope spectrum <span class='unit'>{h(self.q.point_label(pid))} point, g</span></div>"
+            f"<div class='sec'><div class='sech'>Envelope spectrum <span class='unit'>{h(self.q.point_label(pid))} point, g, x axis in orders of running speed</span></div>"
             f"<div class='row2'>{''.join(panels)}</div></div>"
         )
 
@@ -745,17 +763,13 @@ class Page:
                 f"<div class='hchip'><span class='hl'>{name}{tag}</span>{chip(lv.level)}{extra}</div>"
             )
         if wr is not None:
-            cond = f"{h(family_label(wr['suspected_condition']))}" + (
-                f" <span class='muted'>({h(wr['suspected_detail'])})</span>" if wr["suspected_detail"] else ""
+            cond = h(suspected(wr)) + (
+                f" <span class='muted'>· {h(measured(wr))}</span>" if measured(wr) else ""
             )
-            insp = h(family_label(str(wr["recommended_inspection"])))
             req = f"<span id='wr-{h(a)}'>{h(request_number(wr['request_id']))}</span> <span class='tag'>Shadow</span> <span class='muted'>created {local(wr['created'], '%Y-%m-%d %H:%M')}</span>"
         else:
-            cond, insp, req = (
-                "<span class='muted'>Not diagnosed</span>",
-                "<span class='muted'>Not specified</span>",
-                "<span class='muted'>None</span>",
-            )
+            cond, req = "<span class='muted'>-</span>", "<span class='muted'>None</span>"
+        insp = h(self.inspection(v, wr))
         ow = self.q.open_work_orders(a)
         wos = (
             ", ".join(
@@ -822,22 +836,9 @@ class Page:
 
     # ------------------------------------------------------------------ page
     def pick(self, rows: list[dict[str, Any]]) -> str:
-        """The asset for the screenshots: most sections; then both methods at ALERT or above; then D2 naming a
-        bearing with a location (then a bearing); then the most charts; then queue order."""
-
-        def key(r: dict[str, Any]) -> tuple:
-            f = self.facts["assets"][r["asset"]]
-            both = r["v"] is not None and r["ml"] is not None
-            wr = r["wr"]
-            located = (
-                wr is not None
-                and wr["suspected_condition"] == "bearing"
-                and "unknown" not in str(wr["suspected_detail"])
-            )
-            bearing = wr is not None and wr["suspected_condition"] == "bearing"
-            return (-f["sections"], not both, not located, not bearing, -f["charts"])
-
-        return sorted(rows, key=key)[0]["asset"]
+        """The asset for the screenshots: the developing condition that set the snapshot hour."""
+        sc = self.q.snapshot_choice.get("showcase")
+        return sc["asset_id"] if sc else rows[0]["asset"]
 
     def html(self) -> str:
         rows = self.rows()

@@ -213,6 +213,9 @@ class TimeChart:
         out = []
         for d in evs:
             tx = float(self.x(pd.Timestamp(d["ts"])))
+            if d["text"] is None:
+                out.append((tx, -1, "", None, d["color"]))
+                continue
             wv = text_w(d["text"])
             anchor, a, b = "start", tx + 3, tx + 3 + wv
             if b > x1:
@@ -310,6 +313,11 @@ class TimeChart:
                 inside.extend(self._series_paths(d))
         p.append(f'<g clip-path="url(#c{title_id})">' + "".join(inside) + "</g>")
         for tx, r, anchor, text, color in evs:
+            if text is None:
+                p.append(
+                    f'<line x1="{tx:.1f}" x2="{tx:.1f}" y1="{y0}" y2="{y1}" stroke="{color}" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.7"/>'
+                )
+                continue
             p.append(
                 f'<line x1="{tx:.1f}" x2="{tx:.1f}" y1="{self.mt + r * ROW + 4:.1f}" y2="{y1}" stroke="{color}" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.7"/>'
             )
@@ -327,7 +335,27 @@ class TimeChart:
                     yt + 3,
                 )
             )
+        # limit labels at the right edge, stacked by line height so none overlap
+        hl = sorted((d for k, d in texts if k == "hline"), key=lambda d: d["y"])
+        ys: list[float] = []
+        for d in hl:
+            want = d["y"] - 3
+            ys.append(max(want, ys[-1] + ROW) if ys else want)
+        if ys and ys[-1] > y1 - 3:
+            shift = ys[-1] - (y1 - 3)
+            ys = [y - shift for y in ys]
+        for i in range(1, len(ys)):
+            ys[i] = max(ys[i], ys[i - 1] + ROW)
+        for d, yb in zip(hl, ys, strict=True):
+            wv = text_w(d["text"])
+            yb = max(yb, y0 + 11)
+            p.append(
+                f'<text class="lbl" x="{x1 - 3:.1f}" y="{yb:.1f}" text-anchor="end" fill="{d["color"]}">{esc(d["text"])}</text>'
+            )
+            self.placer.take((x1 - 3 - wv, yb - 11, x1 - 3, yb + 3))
         for kind, d in texts:
+            if kind == "hline":
+                continue
             wv = text_w(d["text"])
             if kind == "hline":
                 cands = [
@@ -463,6 +491,7 @@ def spectrum(
     markers: list[tuple[float, str, str, bool]],
     width: int = 520,
     height: int = 200,
+    unit: str = "Hz",
 ) -> str:
     """Envelope spectrum (blue) over the healthy reference (gray), with fault-frequency markers
     (frequency, label, color, labeled)."""
@@ -495,7 +524,7 @@ def spectrum(
     for tv in nice_ticks(0, fmax, 5):
         xx = float(X(tv))
         p.append(f'<text class="tick" x="{xx:.1f}" y="{y1 + 13}" text-anchor="middle">{fmt(tv)}</text>')
-    p.append(f'<text class="tick" x="{x1}" y="{y1 + 23}" text-anchor="end">Hz</text>')
+    p.append(f'<text class="tick" x="{x1}" y="{y1 + 23}" text-anchor="end">{esc(unit)}</text>')
     p.append(f'<rect x="{x0}" y="{y0}" width="{x1 - x0}" height="{y1 - y0}" fill="none" stroke="{AXIS}"/>')
     p.append(
         '<path d="M'

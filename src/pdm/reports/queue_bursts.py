@@ -74,8 +74,11 @@ def checks(state: Any, cache: Path = CACHE) -> dict[str, Any]:
     rows["hour_utc"] = pd.to_datetime(rows["hour_utc"], utc=True)
     plan = _plan(cache)
     ident, values = [], []
+    planned = set(zip(plan["point_id"], plan["hour_utc"], strict=True))
     for r in rendered:
         pid, hour = r["point_id"], pd.Timestamp(r["hour_utc"])
+        if (pid, hour) not in planned:
+            continue  # rendered for an earlier snapshot; not on the page
         with np.load(r["path"]) as z:
             a32, a64, shaft = np.asarray(z["accel_g"]), np.asarray(z["accel_g64"]), float(z["shaft_hz"])
         ret = plan[(plan["point_id"] == pid) & (plan["hour_utc"] == hour) & plan["retained"].notna()]

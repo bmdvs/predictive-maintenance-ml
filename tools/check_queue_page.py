@@ -74,7 +74,17 @@ def expected() -> dict[str, dict[str, str]]:
         d["Vendor Rules" if r.method == "vendor_rules" else "ML Model"] = lvl
         if r.method == "ml_model":
             cid = f"{r.asset_id}|{r.opened:%Y%m%d%H}"
-            d["suspected"] = wr.at[cid, "suspected_condition"] if cid in wr.index else "missing"
+            if cid in wr.index:
+                fam, det = wr.at[cid, "suspected_condition"], str(wr.at[cid, "suspected_detail"] or "")
+                loc = next(
+                    (x for x in ("outer race", "inner race", "ball", "cage") if det.startswith(x)), None
+                )
+                d["suspected"] = fam
+                d["cell"] = (
+                    f"bearing, {loc or 'location not determined'}" if fam == "bearing" else fam.lower()
+                )
+            else:
+                d["suspected"] = d["cell"] = "missing"
     return out
 
 
@@ -91,6 +101,9 @@ def main() -> int:
         res["scroll_width"] = sw
         if sw[0] > sw[1]:
             res["problems"].append(f"horizontal scroll at {WIDTH}: {sw}")
+        text = page.evaluate("document.body.innerText") + page.content()
+        if "WATCH" in text:
+            res["problems"].append("WATCH appears on the page")
         rows = page.locator("tr.qrow")
         assets = [rows.nth(i).get_attribute("data-asset") for i in range(rows.count())]
         res["rows"] = assets
@@ -128,14 +141,30 @@ def main() -> int:
             )
             w = want.get(a, {})
             chips = {c["name"]: c["level"] for c in head["chips"]}
-            sus = (head["suspected"] or "").split(" (")[0].strip().lower()
+            sus = (head["suspected"] or "").split("·")[0].strip().lower()
+            cell = (
+                rows.filter(has=page.locator(f"xpath=self::*[@data-asset='{a}']"))
+                .first.locator("td")
+                .nth(4)
+                .inner_text()
+                .strip()
+                .lower()
+            )
+            insp = (
+                rows.filter(has=page.locator(f"xpath=self::*[@data-asset='{a}']"))
+                .first.locator("td")
+                .nth(5)
+                .inner_text()
+                .strip()
+            )
             ok_chips = chips.get("Vendor Rules") == w.get("Vendor Rules") and chips.get("ML Model") == w.get(
                 "ML Model"
             )
             ok_rows = row_chips == (w.get("Vendor Rules"), w.get("ML Model"))
-            ok_sus = (w.get("suspected") is None and sus == "not diagnosed") or sus == str(
-                w.get("suspected")
-            ).lower()
+            want_cell = w.get("cell", "-") if w.get("ML Model") != "OK" else "-"
+            ok_sus = sus == want_cell and cell == want_cell
+            if not insp or insp.lower().startswith("not "):
+                res["problems"].append(f"{a}: recommended inspection empty: '{insp}'")
             sections = page.evaluate(
                 "(d) => [...d.querySelectorAll('.sech')].map(x => x.childNodes[0].textContent.trim())", el
             )
@@ -149,6 +178,8 @@ def main() -> int:
                 "prod": w,
                 "chips_match": ok_chips and ok_rows,
                 "suspected_page": sus,
+                "suspected_cell": cell,
+                "inspection": insp,
                 "suspected_match": ok_sus,
                 "scroll": sw2,
             }
@@ -158,7 +189,7 @@ def main() -> int:
             if not (ok_chips and ok_rows):
                 res["problems"].append(f"{a}: chips {chips} row {row_chips} prod {w}")
             if not ok_sus:
-                res["problems"].append(f"{a}: suspected '{sus}' prod '{w.get('suspected')}'")
+                res["problems"].append(f"{a}: suspected header '{sus}' cell '{cell}' prod '{want_cell}'")
             if sel != a:
                 res["problems"].append(f"{a}: row not highlighted")
             if sw2[0] > sw2[1]:

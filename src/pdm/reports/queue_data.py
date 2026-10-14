@@ -122,6 +122,8 @@ def fetch_all(cache: Path = CACHE) -> dict[str, int]:
         "discharge": "SELECT * FROM pdm.gold.compressor_discharge_daily",
         "controller_daily": "SELECT machine_id, local_date, thermistor_residual_c FROM pdm.gold.controller_health_daily "
         "WHERE machine_id LIKE 'HMC-%'",
+        "conditions": "SELECT wo_id, asset_id, condition_type, failure_code, wo_type, confirmed_ts, credit_ts "
+        "FROM pdm.gold.eval_conditions",
         "sensors": "SELECT point_id, asset_id, location, bearing, install_date, remount_dates FROM pdm.bronze.reg_sensors",
         "bearings": "SELECT * FROM pdm.bronze.reg_bearings",
         "sensor_events": "SELECT point_id, ts, event, detail FROM pdm.bronze.cm_sensor_events",

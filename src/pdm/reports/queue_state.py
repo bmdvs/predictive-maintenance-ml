@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from pdm.advisory import requests as adv
 from pdm.config import load_config
 from pdm.features import kinematics
 from pdm.reports.queue_data import CACHE
@@ -26,6 +27,7 @@ SPAN = (
     pd.Timestamp("2026-07-01 00:00", tz=TZ).tz_convert("UTC"),
 )
 MIN_ALERT, MIN_ALARM = 4, 2
+CONFIRM_DAYS = 45
 TREND_DAYS, HISTORY_DAYS, RECENT_DAYS = 90, 365, 7
 METHODS = {"vendor_rules": "Vendor Rules", "ml_model": "ML Model"}
 POINT_CLASS = {
@@ -86,6 +88,15 @@ def local(ts: Any, fmt: str = "%Y-%m-%d") -> str:
     return t.tz_convert(TZ).strftime(fmt)
 
 
+LOCATIONS = ("outer race", "inner race", "ball", "cage")
+
+
+def located_band(detail: object) -> str | None:
+    """The bearing location a D2 detail names from its dominant fault band, or None (no dominant band)."""
+    d = str(detail or "")
+    return next((x for x in LOCATIONS if d.startswith(x)), None)
+
+
 def asset_kind(asset: str) -> str:
     return "compressor" if asset.startswith("CMP") else KIND[asset.split("-")[-1]]
 
@@ -138,24 +149,74 @@ class QueueState:
         return out
 
     @cached_property
+    def conditions(self) -> pd.DataFrame:
+        c = self.t("conditions")
+        c["confirmed_ts"] = utc(c["confirmed_ts"])
+        c["family"] = [
+            adv.family_of(t, a, False) for t, a in zip(c["condition_type"], c["asset_id"], strict=True)
+        ]
+        return c
+
+    def developing(self, ts: pd.Timestamp, located: bool) -> list[dict[str, Any]]:
+        """Assets at the hour with a condition confirmed within the following 45 days, both methods at ALERT or
+        above, and a D2 work request naming the confirmed family (with a located fault band when asked)."""
+        c = self.conditions
+        c = c[(c["confirmed_ts"] > ts) & (c["confirmed_ts"] <= ts + pd.Timedelta(days=CONFIRM_DAYS))]
+        out = []
+        lv = self.levels(ts)
+        for r in c.sort_values("confirmed_ts").itertuples():
+            m = lv.get(r.asset_id, {})
+            if "vendor_rules" not in m or "ml_model" not in m:
+                continue
+            wr = self.work_request(r.asset_id, m["ml_model"])
+            if wr is None or wr["suspected_condition"] != r.family:
+                continue
+            loc = located_band(wr["suspected_detail"])
+            if located and not loc:
+                continue
+            out.append(
+                {
+                    "asset_id": r.asset_id,
+                    "wo_id": r.wo_id,
+                    "family": r.family,
+                    "confirmed_ts": r.confirmed_ts,
+                    "location": loc,
+                }
+            )
+        return out
+
+    @cached_property
     def snapshot_choice(self) -> dict[str, Any]:
         """The latest hour from April 1 to June 30, 2026 (local) with at least 4 ALERTs and 2 ALARMs open across
-        both methods; otherwise the hour with the most ALARMs, then ALERTs, then the latest."""
+        both methods and at least one asset where a condition confirmed within the following 45 days is
+        developing, both methods are at ALERT or above and the D2 work request names the confirmed family with a
+        located fault band; without a qualifying hour, the located-band requirement is dropped; without one
+        still, the latest hour meeting the counts. (Was: the counts alone, then the most ALARMs and ALERTs.)"""
         hours = pd.date_range(SPAN[0], SPAN[1] - pd.Timedelta(hours=1), freq="h")
-        rows = [{"ts": h, **self.counts_at(h)} for h in hours]
-        d = pd.DataFrame(rows)
+        d = pd.DataFrame([{"ts": h, **self.counts_at(h)} for h in hours])
         q = d[(d["ALERT"] >= MIN_ALERT) & (d["ALARM"] >= MIN_ALARM)]
-        rule = "latest qualifying hour"
-        if q.empty:
-            q, rule = (
-                d.sort_values(["ALARM", "ALERT", "ts"]).tail(1),
-                "fallback: most ALARMs, then ALERTs, then latest",
-            )
+        for located, rule in (
+            (True, "counts and a developing condition named with a located band"),
+            (False, "counts and a developing condition named by family (located band dropped)"),
+        ):
+            for r in q.sort_values("ts", ascending=False).itertuples():
+                dev = self.developing(r.ts, located)
+                if dev:
+                    n = sum(1 for h in q["ts"] if self.developing(h, located)) if located else None
+                    return {
+                        "ts": r.ts,
+                        "rule": rule,
+                        "showcase": dev[0],
+                        "developing": dev,
+                        "qualifying_hours": n,
+                        **{k: getattr(r, k) for k in d.columns if k != "ts" and k.isidentifier()},
+                        **{k: int(q.loc[q["ts"] == r.ts, k].iloc[0]) for k in d.columns if k != "ts"},
+                    }
         r = q.iloc[-1]
         return {
             "ts": r["ts"],
-            "rule": rule,
-            "qualifying_hours": int(len(q)),
+            "rule": "counts only",
+            "showcase": None,
             **{k: r[k] for k in d.columns if k != "ts"},
         }
 
