@@ -79,7 +79,7 @@ D2_DEFAULTS: dict[str, float] = {
     "hf_db": 3.0,
     "ord2_db": 3.0,
     "ord_hi_db": 3.0,
-    "tsc_drop_z": 3.0,
+    "tsc_drop_share": 0.05,  # 2026-11-01: was tsc_drop_z 3.0 (the z of the time-weighted TSC drop)
 }
 
 
@@ -214,7 +214,7 @@ def d2_measures(
     """D2 inputs over the case's open interval (to the case close, or to `end` while it is open, so the
     suspected condition updates while the episode is open): the maximum over days and the asset's points
     of the daily medians of each band, HF and order change in dB, kurtosis and crest factor z and the
-    temperature residual change, and the TSC pressure drop z."""
+    temperature residual change, the TSC pressure drop z and the TSC pump-on pressure drop share."""
     a = pd.Timestamp(case["opened"]).floor("D")
     b = min(pd.Timestamp(case["closed"]) if pd.notna(case["closed"]) else end, end)
     v = vib[vib["point_id"].isin(points) & (vib["day"] >= a) & (vib["day"] <= b)]
@@ -236,6 +236,9 @@ def d2_measures(
         s = c[c["indicator"] == "tsc_drop"]
         if len(s):
             out["tsc_drop"] = float(s["z"].max())
+        s = c[c["indicator"] == "tsc_drop_share"]
+        if len(s) and s["value"].notna().any():
+            out["tsc_drop_share"] = float(s["value"].max())
     return out
 
 
@@ -294,9 +297,11 @@ def suspected_d2(m: dict[str, float], kind: str, th: dict[str, float]) -> tuple[
             return "misalignment", f"2x +{o2:.1f} dB"
         if pd.notna(o3) and o3 >= th["ord_hi_db"]:
             return "looseness", f"orders 3 to 10 +{o3:.1f} dB"
-    tsc = m.get("tsc_drop", np.nan)
-    if kind == "spindle" and pd.notna(tsc) and tsc >= th["tsc_drop_z"]:
-        return "rotary union", f"tsc_drop z {tsc:.1f}"
+    # rotary union (2026-11-01): the TSC pump-on pressure drop share against its reference at or above
+    # tsc_drop_share (was the z of the time-weighted TSC drop at tsc_drop_z 3.0)
+    share = m.get("tsc_drop_share", np.nan)
+    if kind == "spindle" and pd.notna(share) and share >= th["tsc_drop_share"]:
+        return "rotary union", f"TSC pump-on pressure {100 * share:.1f}% below reference"
     return "unclassified", ""
 
 

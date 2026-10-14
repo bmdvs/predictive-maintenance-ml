@@ -236,7 +236,8 @@ def test_d2_rule_order_and_measures():
     m = {"db_env_bpfo": 1.0, "db_env_bpfi": 1.0, "db_env_bsf": 1.0, "temp_dc": 4.0, "db_hf": 3.0}
     assert adv.suspected_d2(m, "spindle", th)[0] == "lubrication"
     assert adv.suspected_d2({**m, "db_hf": 0.2}, "spindle", th)[0] == "spindle cooling"
-    assert adv.suspected_d2({"tsc_drop": 4.0}, "spindle", th)[0] == "rotary union"
+    assert adv.suspected_d2({"tsc_drop_share": 0.06}, "spindle", th)[0] == "rotary union"
+    assert adv.suspected_d2({"tsc_drop_share": 0.001}, "spindle", th)[0] == "unclassified"
     assert adv.suspected_d2({}, "spindle", th)[0] == "unclassified"
 
 

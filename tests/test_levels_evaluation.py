@@ -274,3 +274,24 @@ def test_comparison_scope_by_condition_type():
         }
     )
     assert list(ev.in_comparison_scope(c, cfg)) == [True, False, False, True, False]
+
+
+def test_miss_inside_an_episode_opened_before_the_window():
+    t = pd.Timestamp("2026-03-01", tz="UTC")
+    r = pd.Series({"credit_ts": t, "asset_key": "HMC-02-SP", "condition_type": "rotary union"})
+    eps = pd.DataFrame(
+        {
+            "asset_id": ["HMC-02-SP"],
+            "opened": [t - pd.Timedelta(days=200)],
+            "closed": [t + pd.Timedelta(days=5)],
+        }
+    )
+    empty = pd.DataFrame(columns=["asset_id", "hour_utc", "state", "score", "threshold"])
+    gaps = pd.DataFrame(columns=["asset_id", "hour_utc"])
+    assert (
+        r2.miss_reason(r, "ml_model", empty, 120.0, gaps, eps)
+        == "inside an episode opened more than 120 days earlier"
+    )
+    assert r2.miss_reason(r, "ml_model", empty, 120.0, gaps) == "signature outside the inputs"
+    late = eps.assign(opened=[t - pd.Timedelta(days=30)])
+    assert r2.miss_reason(r, "ml_model", empty, 120.0, gaps, late) == "signature outside the inputs"

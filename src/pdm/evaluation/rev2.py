@@ -329,14 +329,23 @@ def miss_reason(
     scores: pd.DataFrame,
     window_days: float,
     gap_hours: pd.DataFrame,
+    episodes: pd.DataFrame | None = None,
 ) -> str:
-    """Why a method missed a condition: point re-centering (the ML Model scored nothing on the asset in the
-    window because a level was forming or flagged), dropout (no measured hours in the last 7 days), no
+    """Why a method missed a condition: inside an episode opened more than the catch window earlier (an
+    episode on the asset open at the confirmation that opened before the window; added 2026-11-01), point
+    re-centering (the ML Model scored nothing on the asset in the window because a level was forming or
+    flagged), dropout (no measured hours in the last 7 days), no
     precursor in the inputs (scores or indicators inside the healthy range throughout the window),
     precursor under the threshold (exceedances that did not persist), or signature outside the inputs
     (controller-only conditions on an instrumented asset)."""
     t = r["credit_ts"]
     a = t - pd.Timedelta(days=window_days)
+    if episodes is not None and len(episodes):
+        e = episodes[
+            (episodes["asset_id"] == r["asset_key"]) & (episodes["opened"] < a) & (episodes["closed"] > t)
+        ]
+        if len(e):
+            return f"inside an episode opened more than {window_days:g} days earlier"
     s = scores[(scores["asset_id"] == r["asset_key"]) & (scores["hour_utc"] >= a) & (scores["hour_utc"] < t)]
     if r["condition_type"] in ("spindle cooling", "rotary union", "crash", "compressor trip"):
         return "signature outside the inputs"

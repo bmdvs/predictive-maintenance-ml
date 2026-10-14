@@ -1457,7 +1457,7 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     sc["hour_utc"] = _utc(sc["hour_utc"])
     gaps = sc[["asset_id", "hour_utc"]]
     ct["ml_miss_reason"] = [
-        None if r["ml_alert_caught"] else r2.miss_reason(r, "ml_model", sc, window, gaps)
+        None if r["ml_alert_caught"] else r2.miss_reason(r, "ml_model", sc, window, gaps, r2.alert_view(ml))
         for _, r in ct.iterrows()
     ]
     vend_ex = load_inputs(store, cfg, span[1])["vendor"]
@@ -1465,7 +1465,9 @@ def evaluation_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     vkeys = set(zip(vend_ex["asset_id"], vend_ex["ts"].dt.floor("h"), strict=True))
     vsc["vendor_over"] = [(a, t) in vkeys for a, t in zip(vsc["asset_id"], vsc["hour_utc"], strict=True)]
     ct["vendor_miss_reason"] = [
-        None if r["vendor_alert_caught"] else r2.miss_reason(r, "vendor_rules", vsc, window, gaps)
+        None
+        if r["vendor_alert_caught"]
+        else r2.miss_reason(r, "vendor_rules", vsc, window, gaps, r2.alert_view(vd))
         for _, r in ct.iterrows()
     ]
     store.write_pd(ct, "gold", "eval_conditions")

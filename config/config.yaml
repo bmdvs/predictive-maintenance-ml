@@ -700,7 +700,7 @@ advisory:                                 # 10.9 controller signals for diagnosi
       hf_db: 1.43                         # 99th percentile of the daily-median HF dB change on spindle points (at or above: HF up)
       ord2_db: 1.14                       # 99th percentile of the daily-median 2x dB change on compressor points
       ord_hi_db: 2.97                     # 99th percentile of the daily-median orders 3 to 10 dB change on pump and compressor points
-      tsc_drop_z: 3.0                     # unchanged from the current rules (advisory z)
+      tsc_drop_share: 0.01                # 99th percentile of the daily pump-on pressure drop share against its reference (14 to 44 days earlier) on healthy training days of the 8 HMC machines (1,664 machine-days before the training cutoff, outside 120 days before to 1 day after every confirmed condition on the machine's spindle or TSC pump, rotary-union conditions included, so no rotary-union case sets it); adopted 2026-11-01 (no correctly named condition turned wrong on the folds or the evaluation year); was tsc_drop_z: 3.0 (unchanged from the current rules, advisory z)
 
 evaluation:                               # [fixed] 12, chance levels
   alert_precision_window_days: 30

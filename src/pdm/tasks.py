@@ -637,6 +637,22 @@ def _controller_daily_z(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
     chh = chh[chh["hour_utc"] < end]
     a = cfg["advisory"]["tsc_pressure_reference_days"]
     parts.append(adv.tsc_drop_daily(chh, (a[0], a[1])))
+    # D2 rotary union (2026-11-01): the daily pump-on pressure drop share against its reference, as a value
+    po = store.read_pd(
+        "silver", "controller_hourly", ["machine_id", "hour_utc", "coolant_pressure_pump_on_bar"]
+    )
+    po["hour_utc"] = _utc(po["hour_utc"])
+    ps = adv.tsc_pressure_daily(po[po["hour_utc"] < end], (a[0], a[1]))
+    parts.append(
+        pd.DataFrame(
+            {
+                "entity": ps["machine_id"],
+                "local_date": ps["local_date"],
+                "indicator": "tsc_drop_share",
+                "value": ps["drop_share"],
+            }
+        )
+    )
     cd = store.read_pd("gold", "compressor_discharge_daily")
     parts.append(
         pd.DataFrame(
