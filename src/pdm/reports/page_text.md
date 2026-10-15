@@ -316,9 +316,8 @@ It is deployed from a Declarative Automation Bundle with development and product
 
 ### 1. Summary
 
-The monitoring rule calls for a review and full refit of the ML Model after each month from August to April and of Controller Health after August to October, January, February, May and June. Both verdicts come mainly from alert rates measured against low training-reference rates, where one alert more or less moves the ratio across the 0.5 to 2.0 band:
-- the ML Model's rate ran at 1.3 to 4.7 times its reference of 0.084 alerts per asset-month;
-- Controller Health's reference is 0.017 alerts per asset-month.
+The monitoring rule calls for a review and full refit of the ML Model after September and October. The verdict comes mainly from catch shares of 0.50, 0.33 and 0.50 in August, September and October against a training reference of 0.79, while alert rates stayed near theirs:
+- the ML Model's rate ran at 0.4 to 1.5 times its reference of 0.267 alerts per asset-month.
 
 The drift trigger fired in every month without changing the verdict. Version 13 passed its promotion gates once and stayed champion for the year. A full refit is a review step and was not run within the record.
 
@@ -342,7 +341,7 @@ Vendor Rules stayed within their band in every month but August, at 0.14 to 0.61
 Feature drift flagged 10 to 19 of the 40 points each month. The largest distances were on the HMC-07 TSC pump and the HMC-01 flood pump.
 
 The drift trigger fired for two reasons:
-- **Score drift:** 32% to 58% of point scores drifted each month, above the 30% share.
+- **Score drift:** 37% to 63% of point scores drifted each month, above the 30% share.
 - **Feature drift:** 24% to 37% of point-features drifted, above the 30% share in 10 of the 12 months.
 
 Data-quality exceptions ran at 19 to 29 point-months a month, 278 in all. Most are isolated implausible rows spread across all 40 points; the compressors, which take no measurement while idle, account for 96.
@@ -351,7 +350,7 @@ Data-quality exceptions ran at 19 to 29 point-months a month, 278 in all. Most a
 
 **Exhibit: Data quality by point and month**
 
-#### 2.3 Model updates and baseline resets
+#### 2.3 Champion and re-centering
 
 - **Model versions.** Version 13 passed all five gates once and was champion for the whole year. Its false-episode rate was 0.042 against a 0.411 limit.
 - **Re-centering.** 32 points on 22 assets were re-centered 54 times after repairs or a remount; the plausibility check flagged five, on the HMC-01, HMC-03 and HMC-08 spindles.

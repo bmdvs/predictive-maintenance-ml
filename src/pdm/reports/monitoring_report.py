@@ -1,9 +1,12 @@
 """The monitoring report (docs/reports/monitoring_report.html): the page text of section C with its exhibits.
 
-Inputs: the prod monitoring tables of the version 13 run (build/monitoring_cache: event performance, retraining
-decision, references, feature drift, data quality, re-centering events, the champion's registry tags), the monthly
-evaluation on the headline definitions (build/report_data/monitoring_month.parquet, the same evaluation as the
-model report), config.yaml and the page text. Outputs: the report and its figures.
+Inputs: the prod monitoring tables of the version 13 run (build/monitoring_cache: event performance, feature
+drift, data quality, re-centering events, the champion's registry tags), the monthly evaluation on the headline
+definitions (build/report_data/monitoring_month.parquet, the same evaluation as the model report), the rebased
+references, score drift and verdicts (build/report_data/monitoring_references, monitoring_score_drift and
+monitoring_decision: the ML Model's alert-rate and score references from the fold-2 model's out-of-sample scores,
+reference catch shares on the headline definitions over the training folds), config.yaml and the page text.
+Outputs: the report and its figures.
 """
 
 from __future__ import annotations
@@ -25,9 +28,8 @@ DATA = paths.REPO_ROOT / "build" / "report_data"
 MONTHS = tuple(pd.date_range("2025-07-01", "2026-06-01", freq="MS").strftime("%Y-%m"))
 MONTH_LABEL = {m: pd.Timestamp(m + "-01").strftime("%b %Y") for m in MONTHS}
 SHORT = {m: pd.Timestamp(m + "-01").strftime("%b") for m in MONTHS}
-METHODS = ("Vendor Rules", "ML Model", "Controller Health")
-HEADLINE = ("ML Model", "Vendor Rules")
-COLOR = {"Vendor Rules": style.DARK_GREY, "ML Model": style.BRAND_BLUE, "Controller Health": style.ACCENT}
+METHODS = ("Vendor Rules", "ML Model")
+COLOR = {"Vendor Rules": style.DARK_GREY, "ML Model": style.BRAND_BLUE}
 TZ = "America/Chicago"
 
 
@@ -45,9 +47,13 @@ class MonitoringReport:
         self.thr = mon["drift"]["feature_threshold"]
         self.share = mon["drift"]["feature_share_drifted"]
         self.perf = _read("event_performance")
-        self.rd = _read("retraining_decision")
-        self.ref = _read("references").set_index("method")
-        self.drift = _read("feature_drift")
+        self.rd = pd.read_parquet(DATA / "monitoring_decision.parquet")
+        self.ref = pd.read_parquet(DATA / "monitoring_references.parquet").set_index("method")
+        fd = _read("feature_drift")
+        self.drift = pd.concat(
+            [fd[fd["feature"] != "nbm_score"], pd.read_parquet(DATA / "monitoring_score_drift.parquet")],
+            ignore_index=True,
+        )
         self.mm = pd.read_parquet(DATA / "monitoring_month.parquet")
         dq = _read("data_quality_monthly")
         self.dq = dq[dq["month"].isin(MONTHS)].copy()
@@ -76,15 +82,12 @@ class MonitoringReport:
         return r.iloc[0] if len(r) else None
 
     def recall(self, method: str, month: str) -> float:
-        """Catch share on the headline definitions for the ML Model and Vendor Rules; prod's for Controller Health."""
+        """Catch share on the headline definitions."""
         h = self.headline(method, month)
-        if h is not None:
-            return h["caught"] / h["conditions"] if h["conditions"] else np.nan
-        p = self.perf[(self.perf["method"] == method) & (self.perf["month"] == month)]
-        return float(p["recall"].iat[0])
+        return h["caught"] / h["conditions"] if h["conditions"] else np.nan
 
     def check_verdicts(self) -> None:
-        """The retraining verdict with the headline catch shares equals prod's verdict in every month."""
+        """The verdicts read in equal the rule applied here to the headline catch shares and the references."""
         tol = self.d.cfg["monitoring"]["tolerance"]["recall_drop"]
         need = self.d.cfg["monitoring"]["consecutive_months"]
         for m in METHODS:
@@ -133,7 +136,7 @@ class MonitoringReport:
         return out
 
     def rates(self) -> str:
-        f, axs = style.fig(h=2.9, w=8.6, ncols=3, sharey=False)
+        f, axs = style.fig(h=2.9, w=6.4, ncols=2, sharey=False)
         x = np.arange(len(MONTHS))
         for ax, m in zip(axs, METHODS, strict=True):
             p = self.perf[self.perf["method"] == m].set_index("month").reindex(MONTHS)
@@ -165,28 +168,18 @@ class MonitoringReport:
                 p = self.perf[(self.perf["method"] == m) & (self.perf["month"] == mo)].iloc[0]
                 r = self.rd[(self.rd["method"] == m) & (self.rd["month"] == mo)].iloc[0]
                 h = self.headline(m, mo)
-                if h is not None:
-                    caught, warn = int(h["caught"]), h["warning_days_median"]
-                    extra = (
-                        h["false_per_asset_month"],
-                        h["false_alarms_per_asset_month"],
-                        h["alert_hours_per_asset_month"],
-                    )
-                else:
-                    caught = "" if pd.isna(p.recall) else int(round(p.recall * p.conditions))
-                    warn, extra = p.lead_days_median, (np.nan, np.nan, np.nan)
                 rows.append(
                     {
                         "Method": m,
                         "Month": MONTH_LABEL[mo],
                         "Conditions": int(p.conditions),
-                        "Caught": caught,
-                        "Median warning, days": warn,
+                        "Caught": int(h["caught"]),
+                        "Median warning, days": h["warning_days_median"],
                         "Alerts": int(p.alerts),
                         "Alerts per asset-month": p.alerts_per_asset_month,
-                        "False alerts per asset-month": extra[0],
-                        "False ALARMs per asset-month": extra[1],
-                        "Alert-hours per asset-month": extra[2],
+                        "False alerts per asset-month": h["false_per_asset_month"],
+                        "False ALARMs per asset-month": h["false_alarms_per_asset_month"],
+                        "Alert-hours per asset-month": h["alert_hours_per_asset_month"],
                         "Ratio to reference": r.alerts_rate_ratio,
                         "Primary trigger": "fires" if bool(r.primary_trigger) else "",
                     }
@@ -309,10 +302,11 @@ class MonitoringReport:
     def rule(self) -> str:
         tol = self.d.cfg["monitoring"]["tolerance"]
         win = str(self.ref["reference_window"].iat[0])
+        ml_win = str(self.ref.at["ML Model", "rate_window"])
         rows = [
             (
                 "Primary trigger",
-                f"Catch share more than {tol['recall_drop']:.2f} below the training reference ({win}), or alerts per asset-month outside {self.lo} to {self.hi} times the training reference rate, for {self.d.cfg['monitoring']['consecutive_months']} consecutive months",
+                f"Catch share more than {tol['recall_drop']:.2f} below the reference catch share on the training folds (July 2024 to June 2025), or alerts per asset-month outside {self.lo} to {self.hi} times the training reference rate ({win}; for the ML Model, the fold-2 model's alerts from {ml_win}), for {self.d.cfg['monitoring']['consecutive_months']} consecutive months",
             ),
             (
                 "Secondary trigger",
@@ -360,7 +354,7 @@ class MonitoringReport:
             [
                 (
                     "Training reference",
-                    f"{win}, the last six months of training, for points not re-centered after its start",
+                    f"{win}, the last six months of training, for points not re-centered after its start; the ML Model score from the fold-2 model, scored from {self.ref.at['ML Model', 'rate_window'].split(' to ')[0]}",
                 ),
                 (
                     "Re-centering plus scored days",
@@ -439,7 +433,7 @@ class MonitoringReport:
         self.text("Data-quality exceptions ran")
         x("Exhibit: Feature drift by point", self.heatmap())
         x("Exhibit: Data quality by point", self.quality())
-        self.h(3, "2.3 Model updates and baseline resets", "s23", True)
+        self.h(3, "2.3 Champion and re-centering", "s23", True)
         self.text("Model versions.")
         x("Exhibit: Champion,", style.table(self.versions(), {"Rate": 3, "Limit": 3}))
         x("Exhibit: Post-repair re-centering", self.resets())

@@ -1749,7 +1749,8 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     """Monthly monitoring over the twelve shadow-year months, reported and not acted on: event performance
     and alert rates by method, drift of the indicators and the ML Model score against references from the
     last six months of training (re-centered after each repair or remount: the re-centering window plus
-    the first scored days with no open episode on the point), data quality, and the retraining rule's
+    the first scored days with no open episode on the point; the ML Model's alert-rate and score references
+    from the fold-2 model's out-of-sample scores in that window), data quality, and the retraining rule's
     verdict each month. Also gold.scoring_log for the inference profile, with its baseline from the
     reference window, and a refresh of the data profiles. Skipped while the shadow year is held out.
     (Revision 2; originally the shadow quarter, with references from the validation period.)"""
@@ -1826,24 +1827,28 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
     perf["alerts_per_asset_month"] = perf["alerts_per_asset_month"].fillna(0.0)
     store.write_pd(perf.assign(as_of=str(end)), "monitoring", "event_performance")
 
-    # references: the last six months of training
+    # references: the last six months of training; the ML Model's from the fold-2 model's out-of-sample
+    # episodes over the part of the window fold 2 scores (2026-11-02; was the final model's in-sample
+    # training episodes over the whole window)
     tr = lev[lev["period"] == "training"]
+    f2 = lev[lev["period"] == "fold 2"]
+    ml_span = (max(ref_a, splits.folds(cfg)[1]["score"][0]), ref_b)
     ref_eps = {
-        "ML Model": tr[tr["method"] == "ml_model"],
+        "ML Model": f2[f2["method"] == "ml_model"],
         "Vendor Rules": tr[tr["method"] == "vendor_rules"],
         "Controller Health": ch,
     }
-    ref_conds = r2.conditions_in(conds, (ref_a, ref_b))
     reference = {}
     for m, e in ref_eps.items():
         n = machines if m == "Controller Health" else n_assets
+        span = ml_span if m == "ML Model" else (ref_a, ref_b)
         r, _ = r2.method_row(
             m,
             "ALERT",
             r2.alert_view(e) if m != "Controller Health" else e.assign(point_id=""),
-            ref_conds,
+            r2.conditions_in(conds, span),
             conds,
-            (ref_a, ref_b),
+            span,
             n,
             catch_w,
             ctx,
@@ -1897,7 +1902,16 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         rebase[pid] = mon.drift_references(
             wins, allsc.loc[allsc["point_id"] == pid, "hour_utc"], intervals, end, days
         )
-    sc_drift = allsc.rename(columns={"score": mon.SCORE_FEATURE})
+    # score drift reference: the fold-2 model's out-of-sample scores in the reference window (2026-11-02; was
+    # the final model's in-sample training scores)
+    fs2 = store.read_pd("gold", "ml_fold_scores", ["point_id", "hour_utc", "state", "score", "fold"])
+    fs2["hour_utc"] = _utc(fs2["hour_utc"])
+    fs2 = fs2[(fs2["fold"] == 2) & (fs2["state"] == "scored")]
+    fs2 = fs2[(fs2["hour_utc"] >= ref_a) & (fs2["hour_utc"] < ref_b)]
+    shadow_sc = allsc[allsc["hour_utc"] >= b["shadow"][0]]
+    sc_drift = pd.concat([fs2.drop(columns=["fold"]), shadow_sc], ignore_index=True).rename(
+        columns={"score": mon.SCORE_FEATURE}
+    )
     drift = pd.concat(
         [
             mon.feature_drift(ind, feats, base_months, months, rebase),
