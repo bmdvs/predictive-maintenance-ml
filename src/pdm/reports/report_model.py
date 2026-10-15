@@ -80,11 +80,11 @@ class Report:
 
     # ------------------------------------------------------------------ section 1
     def fig_layers(self) -> str:
-        f, ax = plt.subplots(figsize=(8.8, 4.4))
+        f, ax = plt.subplots(figsize=(8.8, 2.9))
         ax.set_axis_off()
         ax.set_xlim(0, 10)
-        ax.set_ylim(0.45, 6.2)
-        pilot, existing, new, plain = "#D6E2EC", "#E6E6E6", "#F3E3C6", "white"
+        ax.set_ylim(3.4, 5.85)
+        existing, new, plain = "#E6E6E6", "#F3E3C6", "white"
 
         def box(x, y, w, h, t, s="", fc=plain, dashed=False, bold_=True):
             ax.add_patch(
@@ -115,48 +115,31 @@ class Report:
                 )
             )
 
-        ys = [5.2 - 0.85 * i for i in range(6)]
-        ax.add_patch(
-            Rectangle(
-                (0.15, ys[1] - 0.4), 2.1, ys[0] - ys[1] + 1.12, fc="none", ec=style.ACCENT, lw=1.0, ls=":"
-            )
-        )
-        ax.text(
-            1.2,
-            ys[0] + 0.43,
-            "Sensor pilot",
-            ha="center",
-            va="center",
-            fontsize=7.5,
-            color=style.ACCENT,
-            fontweight="bold",
-        )
-        box(0.3, ys[0], 1.8, 0.55, "HMCs (8)", "Bottleneck", pilot)
-        box(0.3, ys[1], 1.8, 0.55, "Compressors (4)", "", pilot)
-        for y_, (t, n) in zip(
-            ys[2:], (("VMCs", 16), ("Lathes", 10), ("Mill-turns", 4), ("Grinders", 2)), strict=True
-        ):
-            box(0.3, y_, 1.8, 0.55, f"{t} ({n})", "", plain, bold_=False)
+        box(0.3, 5.05, 1.8, 0.55, "HMCs (8)", "Bottleneck", plain)
+        box(0.3, 4.25, 1.8, 0.55, "Compressors (4)", "", plain)
         box(2.75, 4.65, 2.55, 0.8, "Wireless sensor data", "Vibration and temperature on 40 points", plain)
-        arrow((2.12, ys[0]), (2.73, 4.8))
-        arrow((2.12, ys[1]), (2.73, 4.5))
-        box(5.85, 5.35, 2.0, 0.75, "ML Model", "One ML model per sensor point", new, dashed=True)
-        box(5.85, 3.95, 2.0, 0.75, "Vendor Rules", "Threshold alerts", existing)
-        arrow((5.32, 4.85), (5.83, 5.3), dashed=True)
-        arrow((5.32, 4.45), (5.83, 4.0))
-        box(8.2, 3.95, 1.75, 0.75, "Maintenance queue", "", plain)
-        arrow((7.87, 3.95), (8.18, 3.95))
-        handles = [Patch(fc=c, ec=style.DARK_GREY, lw=0.6) for c in (pilot, existing, new)]
+        arrow((2.12, 5.05), (2.73, 4.8))
+        arrow((2.12, 4.25), (2.73, 4.5))
+        box(5.85, 5.35, 2.0, 0.75, "Vendor Rules", "Threshold alerts", existing)
+        box(5.85, 3.95, 2.0, 0.75, "ML Model", "One ML model per sensor point", new, dashed=True)
+        arrow((5.32, 4.85), (5.83, 5.3))
+        arrow((5.32, 4.45), (5.83, 4.0), dashed=True)
+        box(8.2, 5.35, 1.75, 0.75, "Maintenance queue", "", plain)
+        arrow((7.87, 5.35), (8.18, 5.35))
+        handles = [
+            Patch(fc=existing, ec=style.DARK_GREY, lw=0.6),
+            Patch(fc=new, ec=style.DARK_GREY, lw=0.8, ls="--"),
+        ]
         f.legend(
             handles,
-            ["Sensor pilot", "Existing Monitoring Layer", "New Monitoring Layer"],
+            ["Existing Monitoring Layer", "New Monitoring Layer"],
             loc="lower center",
-            ncol=3,
+            ncol=2,
             frameon=False,
             fontsize=8,
         )
-        f.tight_layout(rect=(0, 0.06, 1, 1))
-        return self.save(f, "layers", "Machines and Equipment, Data Sources & Monitoring Layers")
+        f.tight_layout(rect=(0, 0.1, 1, 1))
+        return self.save(f, "layers", "Condition Monitoring Pilot Architecture")
 
     def fig_types(self) -> str:
         d = self.t["conds_by_type"]
@@ -170,6 +153,17 @@ class Report:
             if c in x:
                 ax.barh(x.index, x[c], left=left, color=col, label=c, height=0.62)
                 left += x[c].to_numpy()
+        multi = (x[[c for c in cols if c in x]] > 0).sum(axis=1).to_numpy() > 1
+        lft = np.zeros(len(x))
+        for c in cols:
+            if c not in x:
+                continue
+            for i, v in enumerate(x[c].to_numpy()):
+                if v and multi[i]:
+                    ax.text(
+                        lft[i] + v / 2, i, f"{int(v)}", ha="center", va="center", fontsize=8, color="white"
+                    )
+            lft += x[c].to_numpy()
         for i, v in enumerate(left):
             ax.text(v + 0.15, i, f"{int(v)}", va="center", fontsize=9)
         ax.set_xlabel("Conditions")
@@ -182,7 +176,7 @@ class Report:
         ou = sorted(b["other_util"])
         s = "<h2 id='s1'>1. Condition Monitoring Overview</h2>"
         s += p(
-            f"The shop runs 40 CNC machines and four compressors that supply the plant's air. Its eight HMCs are the bottleneck: they carry {pct(b['hmc_share'], 1)} of the shop's cutting hours at {pct(b['hmc_util'])} utilization, against {round(100 * ou[0])} to {round(100 * ou[-1])}% for the other machine classes, and an hour of HMC downtime costs ${b['margin']:.0f} in contribution margin, {b['ratio']:.2f}x the average for the rest of the fleet."
+            f"The shop runs 40 CNC machines and four compressors that supply the plant's air. Its eight HMCs are the bottleneck: they carry {pct(b['hmc_share'], 1)} of the shop's cutting hours at {pct(b['hmc_util'])} utilization, against {round(100 * ou[0])}% to {round(100 * ou[-1])}% for the other machine classes, and an hour of HMC downtime costs ${b['margin']:.0f} in contribution margin, {b['ratio']:.2f}x the average for the rest of the fleet."
         )
         s += p(
             "In July 2023 the shop began a pilot of sensor-based condition monitoring on the HMC cell and the compressors: wireless sensors on 40 points, monitored as 28 assets (each HMC's spindle, through-spindle coolant (TSC) pump and flood coolant pump, and each compressor)."
@@ -191,10 +185,12 @@ class Report:
         s += p(
             f"Through the pilot, the sensor data has been monitored by the [[b]]Vendor Rules[[/b]] layer, the sensor vendor's threshold alerts based on limits over baseline. These alerts led to {ti['alert_driven']} machine inspections from July 2023 to June 2025, and {pct(ti['alert_driven_nff'])} of those inspections found nothing wrong. To improve these results, the pilot's second phase adds the [[b]]ML Model[[/b]] layer, replacing Vendor Rules' relatively simple thresholds with an anomaly detection machine learning model. [[b]]This report evaluates the ML Model against Vendor Rules over the evaluation year (July 2025 to June 2026).[[/b]]"
         )
-        s += self.exhibit("Machines and Equipment, Data Sources & Monitoring Layers", self.fig_layers())
+        s += self.exhibit("Condition Monitoring Pilot Architecture", self.fig_layers())
         s += bold("Conditions in the Evaluation Year")
+        hc = self.B["conditions_hmc_cmp"]
+        ctrl = c["cooler"] + c["ru_leak"]
         s += p(
-            f"{c['total']} conditions were confirmed from July 2025 to June 2026. {c['in_scope']} were on the instrumented assets and showed in the sensor data; the comparison in section 2 is on those. The other {c['other']} were on machines without sensors ({c['no_sensors']}), were compressor oil cooler faults ({c['cooler']}), showed only in controller data ({c['ru_leak']} rotary union leaks without coolant ingress), or had no precursor in any data ({c['no_precursor']} trips, crashes and stoppages)."
+            f"Across the eight HMCs and four compressors, {hc['total']} conditions were confirmed from July 2025 to June 2026. {c['in_scope']} were on the sensor points and showed in the sensor data; the comparison in section 2 is on those. Of the other {hc['total'] - c['in_scope']}, {NUM.get(hc['no_sensor'], hc['no_sensor'])} was on an HMC axis which has no sensor, {NUM.get(ctrl, ctrl)} showed only in the machine's controller data ({NUM.get(c['cooler'], c['cooler'])} compressor oil cooler faults and {NUM.get(c['ru_leak'], c['ru_leak'])} rotary union leaks without coolant ingress), and {NUM.get(c['no_precursor'], c['no_precursor'])} had no precursor signature in any data (sudden trips, crashes and stoppages)."
         )
         s += self.exhibit("Sensor-detectable conditions by type, evaluation year", self.fig_types())
         return s
@@ -214,8 +210,8 @@ class Report:
                 k = a["strict"][m]
                 x.bar(i, k, color=cols[i])
                 x.bar(i, 32 - k, bottom=k, color=cols[i], alpha=0.25)
-                x.text(i, k / 2, f"{k}", ha="center", va="center", color="white", fontweight="bold")
-                x.text(i, 32 + 0.5, "of 32", ha="center", fontsize=8)
+                x.text(i, k / 2, f"{k}", ha="center", va="center", color="white", fontsize=9)
+                x.text(i, 32 + 0.5, "of 32", ha="center", fontsize=9)
             x.set_xticks([0, 1])
             x.set_xticklabels(names)
             x.set_ylim(0, 36)
@@ -361,23 +357,16 @@ class Report:
 
     def panel_titles(self) -> dict[str, str]:
         cd = self.t["conditions"].set_index("wo_id")
-        tl = self._tl()
-        ml2 = tl[(tl["asset"] == "HMC-02-SP") & (tl["lane"] == "ML Model") & (tl["kind"] == "ALERT")]
-        lg = ml2.loc[(ml2["end"] - ml2["start"]).idxmax()]
-        ins = tl[(tl["asset"] == "HMC-08-SP") & tl["kind"].str.startswith("inspection")]
-        nff = int((ins["kind"] == "inspection, nothing found").sum())
         return {
-            "HMC-01-CP": f"HMC-01-CP: the ML Model alone caught the flood-pump bearing failure, {cd.at['HMC-01-WO00027', 'ml_warn']:.0f} days ahead",
-            "HMC-06-CP": f"HMC-06-CP: Vendor Rules alone caught the flood-pump wear, {cd.at['HMC-06-WO00035', 'vr_warn']:.0f} days ahead; the ML Model raised no ALERT",
-            "HMC-03-SP": f"HMC-03-SP: both caught the spindle bearing failure, the ML Model {cd.at['HMC-03-WO00051', 'ml_warn']:.0f} days ahead and Vendor Rules {cd.at['HMC-03-WO00051', 'vr_warn']:.0f}",
-            "HMC-02-SP": f"HMC-02-SP: the ML Model's longest ALERT, open {(lg['end'] - lg['start']).total_seconds() / 86400:.0f} days from {loc_date(lg['start'])} to {loc_date(lg['end'])}",
-            "HMC-08-SP": f"HMC-08-SP: {len(ins)} Vendor Rules inspections, {nff} of which found nothing",
+            "HMC-04-SP": f"Rotary union leak. ML Model caught {cd.at['HMC-04-WO00024', 'ml_warn']:.0f} days ahead, Vendor Rules raised no ALERT.",
+            "HMC-06-CP": f"Flood pump wear. Vendor Rules caught {cd.at['HMC-06-WO00035', 'vr_warn']:.0f} days ahead, ML Model raised no ALERT.",
+            "HMC-01-TSC": f"TSC pump bearing defect. ML Model caught {cd.at['HMC-01-WO00024', 'ml_warn']:.0f} days ahead, Vendor Rules {cd.at['HMC-01-WO00024', 'vr_warn']:.0f} days ahead.",
         }
 
     def fig_panels(self) -> str:
         tl = self._tl()
         titles = self.panel_titles()
-        f, axs = plt.subplots(len(titles), 1, figsize=(8.8, 1.32 * len(titles) + 0.7), sharex=True)
+        f, axs = plt.subplots(len(titles), 1, figsize=(8.8, 1.32 * len(titles) + 0.8), sharex=True)
         for i, (ax, (asset, title)) in enumerate(zip(axs, titles.items(), strict=True)):
             ticks, labels = [], []
             self._lanes(ax, tl, asset, 0.0, ticks, labels)
@@ -388,8 +377,8 @@ class Report:
             self._xaxis(ax, labels=i == len(titles) - 1)
             ax.tick_params(axis="x", labelbottom=i == len(titles) - 1)
         self._legend(f, top=True)
-        f.tight_layout(rect=(0, 0, 1, 0.93))
-        return self.save(f, "timeline", "Alerts, inspections and conditions on five assets, evaluation year")
+        f.tight_layout(rect=(0, 0, 1, 0.9))
+        return self.save(f, "timeline", "Alerts, inspections and conditions on three assets, evaluation year")
 
     def fig_timeline(self, assets: list[str], name: str, title: str) -> str:
         tl = self._tl()
@@ -485,6 +474,7 @@ class Report:
             "looseness": "Looseness",
         }
         f, ax = style.fig(h=3.4, grid="x")
+        ax.xaxis.grid(False)
         fams = list(names)
         for i, fam in enumerate(fams):
             r = g[g["family"] == fam]
@@ -543,8 +533,8 @@ class Report:
         s += p(
             f"Had the shop acted on the ML Model's ALERTs instead of Vendor Rules', it would have spent {ins['saved']:.0f} fewer hours on inspections of false alerts."
         )
-        s += self.exhibit("ML Model vs. Vendor Rule: ALERTS", self.fig_levels("ALERT"))
-        s += self.exhibit("ML Model vs Vendor Rule: ALARMS", self.fig_levels("ALARM"))
+        s += self.exhibit("ML Model vs. Vendor Rules: ALERTS", self.fig_levels("ALERT"))
+        s += self.exhibit("ML Model vs. Vendor Rules: ALARMS", self.fig_levels("ALARM"))
         s += bold("Detection at ALERT")
         s += p(
             "ALERT is the level at which each method calls for an inspection, so this is the detection comparison. Over the evaluation year, only Vendor Rules' ALERTs triggered inspections in the maintenance queue. The ML Model ran in the background, where its results were recorded and not acted on, so its effectiveness could be measured against Vendor Rules."
@@ -567,7 +557,7 @@ class Report:
             "A condition counts as caught when an ALERT was open on the asset in the 30 days before confirmation and had opened within the 120 days before it. An ALERT that opened more than 7 days before the condition began, with no sign of degradation on the asset, is deemed coincidental and not counted."
         )
         s += p(
-            f"Of the 32 conditions, the ML Model's ALERTs caught {a['strict']['ML Model']} and Vendor Rules' {a['strict']['Vendor Rules']}. {a['both']} conditions were caught by both models."
+            f"[[b]]Of the 32 conditions, the ML Model's ALERTs caught {a['strict']['ML Model']} and Vendor Rules' {a['strict']['Vendor Rules']}[[/b]]. {a['both']} conditions were caught by both models."
         )
         s += ul(
             [
@@ -577,12 +567,10 @@ class Report:
             ]
         )
         s += p(
-            "The chart below shows five conditions and a range of outcomes: a condition only the ML Model caught, one only Vendor Rules caught, one both caught, the ML Model's longest ALERT, and the asset with the most inspections that found nothing. The full chart across all conditions is found in the appendix"
+            "The chart below shows three conditions and a range of outcomes: a condition only the ML Model caught, one only Vendor Rules caught, and one that both caught. The full chart across all monitored assets is found in the appendix"
         )
         s += self.exhibit(
-            "Alerts, inspections and conditions on five assets, evaluation year",
-            self.fig_panels(),
-            "Spindles and compressors carry two sensor points; each lane shows the higher level of the two at each hour.",
+            "Alerts, inspections and conditions on three assets, evaluation year", self.fig_panels()
         )
         s += p(
             f"Vendor Rules raised {ins['vr_n']} false alerts, which took {ins['vr_hours']:.0f} inspection hours. The ML Model raised {ins['ml_n']}, which would have taken about {ins['ml_hours']:.0f} hours at the same labor per false alert. At their peak month, inspections took {pct(ins['vr_peak_share'], 1)} (Vendor Rules) and {pct(ins['ml_peak_share'], 1)} (ML Model) of the three technicians' available hours."
@@ -623,7 +611,7 @@ class Report:
         fnd = int((fr["vr_alarm_before"] & (fr["found"] > 0)).sum())
         noi = int((fr["vr_alarm_before"] & (fr["inspections"] == 0)).sum())
         s += p(
-            f"The ML Model's ALARMs were more accurate than Vendor Rules: {pct(al['share']['ML Model'])} of its {al['n']['ML Model']} ALARMs had a confirmed condition, against {pct(al['share']['Vendor Rules'])} of Vendor Rules' {al['n']['Vendor Rules']} ALARMs, and it produced a {pct(1 - al['false']['ML Model'] / al['false']['Vendor Rules'])} lower false-alarm rate ({al['false']['ML Model']:.3f} against {al['false']['Vendor Rules']:.3f}). On the sensor data alone, which both models read, the ML Model's false-alarm rate was even lower, at {al['false_sensor_ml']:.3f}. This accuracy came at the expense of warning time: the ML Model's ALARMs gave a median of {n1(al['warn']['ML Model'])} days of warning against Vendor Rules' {n1(al['warn']['Vendor Rules'])} days on the {al['warn']['n']} conditions that both layers escalated."
+            f"[[b]]The ML Model's ALARMs were more accurate than Vendor Rules[[/b]]: {pct(al['share']['ML Model'])} of its {al['n']['ML Model']} ALARMs had a confirmed condition, against {pct(al['share']['Vendor Rules'])} of Vendor Rules' {al['n']['Vendor Rules']} ALARMs, and it produced a {pct(1 - al['false']['ML Model'] / al['false']['Vendor Rules'])} lower false-alarm rate ({al['false']['ML Model']:.3f} against {al['false']['Vendor Rules']:.3f}). On the sensor data alone, which both models read, the ML Model's false-alarm rate was even lower, at {al['false_sensor_ml']:.3f}. This accuracy came at the expense of warning time: the ML Model's ALARMs gave a median of {n1(al['warn']['ML Model'])} days of warning against Vendor Rules' {n1(al['warn']['Vendor Rules'])} days on the {al['warn']['n']} conditions that both layers escalated."
         )
         s += p(
             f"Vendor Rules ALARMed before {fl['vr_alarm_before']} of the {fl['n']} unplanned failures, and the failures still happened: the inspections it triggered found no fault in {nff}, found the problem without preventing the failure in {fnd}, and no inspection was raised in the other {noi}."
@@ -1408,6 +1396,7 @@ DESC = {
     "band_mid": "Spindle speed band: mid",
     "band_high": "Spindle speed band: high",
 }
+NUM = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
 TYPE_LABEL = {
     "lubrication": "Lubrication",
     "bearing (unplanned)": "Bearing failure",
