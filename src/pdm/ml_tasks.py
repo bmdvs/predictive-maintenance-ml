@@ -1902,16 +1902,18 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
         rebase[pid] = mon.drift_references(
             wins, allsc.loc[allsc["point_id"] == pid, "hour_utc"], intervals, end, days
         )
-    # score drift reference: the fold-2 model's out-of-sample scores in the reference window (2026-11-02; was
-    # the final model's in-sample training scores)
-    fs2 = store.read_pd("gold", "ml_fold_scores", ["point_id", "hour_utc", "state", "score", "fold"])
+    # score drift: score over its own model's threshold, the reference from the fold-2 model's out-of-sample
+    # scores in the reference window (2026-11-02; was the raw score, the reference the final model's in-sample
+    # training scores)
+    fs2 = store.read_pd(
+        "gold", "ml_fold_scores", ["point_id", "hour_utc", "state", "score", "threshold", "fold"]
+    )
     fs2["hour_utc"] = _utc(fs2["hour_utc"])
     fs2 = fs2[(fs2["fold"] == 2) & (fs2["state"] == "scored")]
     fs2 = fs2[(fs2["hour_utc"] >= ref_a) & (fs2["hour_utc"] < ref_b)]
     shadow_sc = allsc[allsc["hour_utc"] >= b["shadow"][0]]
-    sc_drift = pd.concat([fs2.drop(columns=["fold"]), shadow_sc], ignore_index=True).rename(
-        columns={"score": mon.SCORE_FEATURE}
-    )
+    sc_drift = pd.concat([fs2.drop(columns=["fold"]), shadow_sc], ignore_index=True)
+    sc_drift[mon.SCORE_FEATURE] = sc_drift["score"] / sc_drift["threshold"]
     drift = pd.concat(
         [
             mon.feature_drift(ind, feats, base_months, months, rebase),

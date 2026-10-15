@@ -116,7 +116,8 @@ print("version 13 score drift reproduced, rows", len(sd_in), "max abs difference
 assert dev < 1e-9
 f2w = f2s[(f2s["state"] == "scored") & (f2s["hour_utc"] >= ref_a) & (f2s["hour_utc"] < ref_b)]
 out_sc = pd.concat([f2w, shs[shs["state"] == "scored"]], ignore_index=True)
-sd_out = mon.feature_drift(out_sc.rename(columns={"score": F}), [F], base_months, months, rebase)
+out_sc[F] = out_sc["score"] / out_sc["threshold"]  # each model's score over its own threshold
+sd_out = mon.feature_drift(out_sc, [F], base_months, months, rebase)
 print(
     "rebased score drift rows",
     len(sd_out),

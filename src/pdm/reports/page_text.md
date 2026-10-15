@@ -316,8 +316,7 @@ It is deployed from a Declarative Automation Bundle with development and product
 
 ### 1. Summary
 
-The monitoring rule calls for a review and full refit of the ML Model after September and October. The verdict comes mainly from catch shares of 0.50, 0.33 and 0.50 in August, September and October against a training reference of 0.79, while alert rates stayed near theirs:
-- the ML Model's rate ran at 0.4 to 1.5 times its reference of 0.267 alerts per asset-month.
+The monitoring rule calls for a review and full refit of the ML Model after September and October. The verdict comes mainly from catch shares of 0.50, 0.33 and 0.50 in August, September and October against a training reference of 0.79, while the ML Model's alert rate ran at 0.4 to 1.5 times its reference of 0.267 alerts per asset-month.
 
 The drift trigger fired in every month without changing the verdict. Version 13 passed its promotion gates once and stayed champion for the year. A full refit is a review step and was not run within the record.
 
