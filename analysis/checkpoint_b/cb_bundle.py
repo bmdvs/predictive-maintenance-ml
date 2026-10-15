@@ -109,12 +109,27 @@ ons = C.truth_onsets(c43).set_index("wo_id")["truth_onset"]
 c43["onset"] = [o if pd.notna(o) else ons.get(w, pd.NaT) for o, w in zip(own, c43["wo_id"], strict=True)]
 
 
+CATCH_W = 120 * DAY  # the ALERT catch window
+ONSET_GAP = 7 * DAY  # E5: an opening this long before onset, with no degradation on the asset, is a coincidence
+
+
+def alarm_credits(r) -> pd.DataFrame:
+    """The conditions an ALARM gives credit to, under the ALERT catch rules (2026-11-02): confirmed at or after the
+    ALARM start, onset before the episode's close, the ALARM start no more than 120 days before confirmation, and
+    not more than 7 days before onset unless the asset showed degradation at the ALARM start."""
+    c = c43[(c43["asset_key"] == r.asset_id) & (c43["credit_ts"] >= r.start) & c43["onset"].notna() & (c43["onset"] < r.closed)]
+    c = c[(c["credit_ts"] - r.start) <= CATCH_W]
+    if not Q.present_at(deg_a.get(r.asset_id), r.start):
+        c = c[(c["onset"] - r.start) <= ONSET_GAP]
+    return c
+
+
 def alarms(m, sensor=False):
     e = LEV[m]
     col = "alarm_sensor_ts" if sensor else "alarm_ts"
     a = e[e[col].notna() & (e[col] >= SPAN[0]) & (e[col] < SPAN[1])].copy()
     a["start"] = a[col]
-    a["conds"] = [",".join(c43[(c43["asset_key"] == r.asset_id) & (c43["credit_ts"] >= r.start) & c43["onset"].notna() & (c43["onset"] < r.closed)]["wo_id"]) for r in a.itertuples()]
+    a["conds"] = [",".join(alarm_credits(r)["wo_id"]) for r in a.itertuples()]
     return a
 
 
@@ -128,8 +143,11 @@ for c in c43[c43["wo_id"].isin(cp["wo_id"])].itertuples():
         a = al[m][(al[m]["asset_id"] == c.asset_key) & al[m]["conds"].str.contains(c.wo_id)]
         w[m] = max(((c.credit_ts - max(x.start, c.onset)) / DAY for x in a.itertuples()), default=np.nan)
     wrows.append({"wo_id": c.wo_id, "asset": c.asset_key, "type": c.condition_type, "ml": w["ML Model"], "vr": w["Vendor Rules"]})
-wd = pd.DataFrame(wrows).dropna(subset=["ml", "vr"])
+wall = pd.DataFrame(wrows)
+wd = wall.dropna(subset=["ml", "vr"])
 B["alarm"] = {"n": {m: len(al[m]) for m in METH}, "with": {m: int((al[m]["conds"] != "").sum()) for m in METH},
+              "escalated": {m: int(wall[k].notna().sum()) for m, k in (("ML Model", "ml"), ("Vendor Rules", "vr"))},
+              "ml_in_vr": int((wall["ml"].notna() & wall["vr"].notna()).sum()),
               "share": {m: float((al[m]["conds"] != "").mean()) for m in METH}, "false": {m: float(fa[m] / AM) for m in METH}, "false_sensor_ml": float(fas / AM),
               "warn": {"ML Model": float(wd["ml"].median()), "Vendor Rules": float(wd["vr"].median()), "n": len(wd)}}
 tables["alarm_warn"] = wd
