@@ -106,14 +106,21 @@ class TimeChart:
         height: int = 170,
         log: bool = False,
         tz: str = "America/Chicago",
+        ylabel: str = "",
     ) -> None:
         self.t0, self.t1, self.w, self.h, self.log, self.tz = t0, t1, width, height, log, tz
-        self.ml, self.mr, self.mt, self.mb = 52, 14, 8, 22
+        self.ylabel = ylabel
+        self.ml, self.mr, self.mt, self.mb = 64 if ylabel else 52, 14, 8, 22
         self.parts: list[str] = []
         self.labels: list[tuple[str, dict]] = []
+        self.legend: list[tuple[str, str, str, str]] = []
         self.lo, self.hi = np.inf, -np.inf
         self.placer = Placer()
         self.top_rows = 0
+
+    def _key(self, kind: str, color: str, dash: str, label: str | None) -> None:
+        if label and (kind, color, dash, label) not in self.legend:
+            self.legend.append((kind, color, dash, label))
 
     # ---- scales
     def fit(self, values: np.ndarray, pad: float = 0.08) -> None:
@@ -166,7 +173,9 @@ class TimeChart:
         limits: list[tuple[pd.Series, str]] | None = None,
         width: float = 1.1,
         gap_hours: float = 30,
+        name: str | None = None,
     ) -> None:
+        self._key("line", color, "", name)
         self.labels.append(
             (
                 "series",
@@ -190,15 +199,20 @@ class TimeChart:
         dash: str = "4 3",
         label: str | None = None,
     ) -> None:
+        self._key("dash", color, dash, label)
         self.labels.append(
-            ("hline", {"t0": ts0, "t1": ts1, "v": v, "color": color, "dash": dash, "label": label})
+            (
+                "hline",
+                {"t0": ts0, "t1": ts1, "v": v, "color": color, "dash": dash, "label": None, "key": label},
+            )
         )
 
     def band(
         self, ts0: pd.Timestamp, ts1: pd.Timestamp, lo: float, hi: float, color: str, label: str | None = None
     ) -> None:
+        self._key("rect", color, "", label)
         self.labels.append(
-            ("band", {"t0": ts0, "t1": ts1, "lo": lo, "hi": hi, "color": color, "label": label})
+            ("band", {"t0": ts0, "t1": ts1, "lo": lo, "hi": hi, "color": color, "label": None})
         )
 
     def event(self, ts: pd.Timestamp, text: str, color: str = MUTED) -> None:
@@ -229,13 +243,40 @@ class TimeChart:
         self.top_rows = len(rows)
         return out
 
+    state_labels = ("Above the alert limit", "Above the alarm limit")
+
     def svg(self, title_id: str = "") -> str:
         evs = self._events_layout()
-        self.h = self.h + self.top_rows * ROW
+        for k, d in self.labels:
+            if k == "series" and d["limits"]:
+                st = self._states(d)
+                if (st == 1).any():
+                    self._key("line", AMBER, "", self.state_labels[0])
+                if (st == 2).any():
+                    self._key("line", RED, "", self.state_labels[1])
+        a_, b_ = self._domain()
+        shown = {
+            d["key"]
+            for k, d in self.labels
+            if k == "hline"
+            and d["v"] > (0 if self.log else -np.inf)
+            and a_ <= (math.log10(d["v"]) if self.log else d["v"]) <= b_
+        }
+        order = {"line": 0, "rect": 1, "dash": 2}
+        items = sorted(
+            [it for it in self.legend if it[0] != "dash" or it[3] in shown],
+            key=lambda it: 3 if it[3] in self.state_labels else order.get(it[0], 0),
+        )
+        leg, extra = legend_layout(items, self.ml, self.w - self.mr)
+        self.mb += extra
+        self.h = self.h + self.top_rows * ROW + extra
         x0, y0, x1, y1 = self.plot
         p = [
             f'<svg class="chart" viewBox="0 0 {self.w} {self.h}" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">'
         ]
+        if self.ylabel:
+            p.append(ylabel_svg(self.ylabel, (y0 + y1) / 2))
+        p.extend(legend_svg(leg, y1 + 24))
         a, b = self._domain()
         if self.log:
             ticks = [10**k for k in range(math.floor(a), math.ceil(b) + 1) if a <= k <= b]
@@ -391,6 +432,16 @@ class TimeChart:
         a, b = self._domain()
         return a, b
 
+    @staticmethod
+    def _states(d: dict) -> np.ndarray:
+        v = d["v"]
+        state = np.zeros(len(v), dtype=int)
+        for lim, level in d["limits"]:
+            lv = pd.Series(lim).reset_index(drop=True).astype(float).to_numpy()
+            hit = np.isfinite(lv) & (v.to_numpy() >= lv)
+            state = np.maximum(state, np.where(hit, 2 if level == "alarm" else 1, 0))
+        return state
+
     def _series_paths(self, d: dict) -> list[str]:
         ts, v = d["ts"], d["v"]
         if len(ts) == 0:
@@ -398,11 +449,7 @@ class TimeChart:
         xs = np.asarray(self.x(ts), dtype=float)
         ys = np.asarray(self.y(v.to_numpy()), dtype=float)
         hrs = pd.DatetimeIndex(ts).asi8 / 3.6e12
-        state = np.zeros(len(v), dtype=int)
-        for lim, level in d["limits"]:
-            lv = pd.Series(lim).reset_index(drop=True).astype(float).to_numpy()
-            hit = np.isfinite(lv) & (v.to_numpy() >= lv)
-            state = np.maximum(state, np.where(hit, 2 if level == "alarm" else 1, 0))
+        state = self._states(d)
         color = {0: d["color"], 1: AMBER, 2: RED}
         out, seg, cur = [], [], None
         for i in range(len(v)):
@@ -436,13 +483,71 @@ class TimeChart:
         return paths
 
 
-def bars(groups: list[dict], width: int = 520, height: int = 190) -> str:
-    """Grouped columns on a log scale: groups of {name, values: [(label, value, color)], limit}."""
-    ml, mr, mt, mb = 52, 10, 10, 34
+LEG_ROW = 14
+
+
+def legend_layout(
+    items: list[tuple[str, str, str, str]], x0: float, x1: float
+) -> tuple[list[tuple[float, int, tuple[str, str, str, str]]], float]:
+    """Legend items placed left to right in rows from x0, wrapping at x1; returns (x, row, item) and the
+    height the rows need."""
+    out, x, row = [], x0, 0
+    for it in items:
+        w = 20 + text_w(it[3]) + 14
+        if x > x0 and x + w > x1:
+            x, row = x0, row + 1
+        out.append((x, row, it))
+        x += w
+    return out, ((row + 1) * LEG_ROW + 6) if items else 0
+
+
+def legend_svg(placed: list[tuple[float, int, tuple[str, str, str, str]]], ytop: float) -> list[str]:
+    p = []
+    for x, row, (kind, color, dash, label) in placed:
+        yy = ytop + row * LEG_ROW + 5
+        if kind == "box":
+            p.append(f'<rect x="{x:.1f}" y="{yy - 4:.1f}" width="16" height="8" fill="{color}"/>')
+        elif kind == "rect":
+            p.append(
+                f'<rect x="{x:.1f}" y="{yy - 4:.1f}" width="16" height="8" fill="{color}" fill-opacity="0.25" stroke="{color}" stroke-opacity="0.5"/>'
+            )
+        else:
+            da = f' stroke-dasharray="{dash or "4 3"}"' if kind == "dash" else ""
+            p.append(
+                f'<line x1="{x:.1f}" x2="{x + 16:.1f}" y1="{yy:.1f}" y2="{yy:.1f}" stroke="{color}" stroke-width="{1.3 if kind == "dash" else 2}"{da}/>'
+            )
+        p.append(f'<text class="leg" x="{x + 20:.1f}" y="{yy + 3.5:.1f}">{esc(label)}</text>')
+    return p
+
+
+def ylabel_svg(text: str, ymid: float, x: float = 11) -> str:
+    return f'<text class="axl" transform="translate({x},{ymid:.1f}) rotate(-90)" text-anchor="middle">{esc(text)}</text>'
+
+
+def fmt_small(v: float) -> str:
+    if v >= 0.01:
+        return fmt(v)
+    m, e = f"{v:.1e}".split("e")
+    return f"{m}e{int(e)}"
+
+
+def bars(
+    groups: list[dict],
+    width: int = 1060,
+    height: int = 250,
+    ylabel: str = "",
+    legend: list[tuple[str, str, str, str]] | None = None,
+) -> str:
+    """Grouped columns on a log scale: groups of {name, values: [(label, value, color)], limit}, with each
+    column's label under it, its value above it, and a legend below."""
+    ml, mr, mt = 64 if ylabel else 52, 10, 18
+    leg, extra = legend_layout(legend or [], ml, width - mr)
+    mb = 46 + extra
+    height += extra
     vals = [v for g in groups for _, v, _ in g["values"] if v and v > 0] + [
         g["limit"] for g in groups if g.get("limit")
     ]
-    lo, hi = math.log10(min(vals)) - 0.25, math.log10(max(vals)) + 0.25
+    lo, hi = math.log10(min(vals)) - 0.25, math.log10(max(vals)) + 0.35
     x0, x1, y0, y1 = ml, width - mr, mt, height - mb
 
     def y(v: float) -> float:
@@ -451,6 +556,8 @@ def bars(groups: list[dict], width: int = 520, height: int = 190) -> str:
     p = [
         f'<svg class="chart" viewBox="0 0 {width} {height}" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">'
     ]
+    if ylabel:
+        p.append(ylabel_svg(ylabel, (y0 + y1) / 2))
     for k in range(math.floor(lo), math.ceil(hi) + 1):
         if lo <= k <= hi:
             yy = y(10**k)
@@ -462,22 +569,30 @@ def bars(groups: list[dict], width: int = 520, height: int = 190) -> str:
     for i, g in enumerate(groups):
         gx = x0 + i * gw
         n = len(g["values"])
-        bw = min(26, (gw - 24) / n)
-        start = gx + (gw - bw * n - 4 * (n - 1)) / 2
+        gap = 10
+        bw = min(84, (gw - 40 - gap * (n - 1)) / n)
+        start = gx + (gw - bw * n - gap * (n - 1)) / 2
         for j, (lab, v, col) in enumerate(g["values"]):
-            bx = start + j * (bw + 4)
+            bx = start + j * (bw + gap)
             yy = y(v)
             p.append(
                 f'<rect x="{bx:.1f}" y="{yy:.1f}" width="{bw:.1f}" height="{y1 - yy:.1f}" fill="{col}"><title>{esc(lab)}: {v:.3g} g²</title></rect>'
             )
+            p.append(
+                f'<text class="lbl" x="{bx + bw / 2:.1f}" y="{yy - 4:.1f}" text-anchor="middle" fill="{INK}">{fmt_small(v)}</text>'
+            )
+            p.append(
+                f'<text class="tick" x="{bx + bw / 2:.1f}" y="{y1 + 13}" text-anchor="middle">{esc(lab)}</text>'
+            )
         if g.get("limit"):
             yl = y(g["limit"])
             p.append(
-                f'<line x1="{start - 6:.1f}" x2="{start + n * (bw + 4) + 2:.1f}" y1="{yl:.1f}" y2="{yl:.1f}" stroke="{AMBER}" stroke-dasharray="4 3" stroke-width="1.2"/>'
+                f'<line x1="{start - 6:.1f}" x2="{start + n * (bw + gap) - gap + 6:.1f}" y1="{yl:.1f}" y2="{yl:.1f}" stroke="{AMBER}" stroke-dasharray="4 3" stroke-width="1.2"/>'
             )
         p.append(
-            f'<text class="tick" x="{gx + gw / 2:.1f}" y="{y1 + 14}" text-anchor="middle">{esc(g["name"])}</text>'
+            f'<text class="gname" x="{gx + gw / 2:.1f}" y="{y1 + 31}" text-anchor="middle">{esc(g["name"])}</text>'
         )
+    p.extend(legend_svg(leg, y1 + 44))
     p.append("</svg>")
     return "".join(p)
 
@@ -492,10 +607,15 @@ def spectrum(
     width: int = 520,
     height: int = 200,
     unit: str = "Hz",
+    ylabel: str = "",
+    legend: list[tuple[str, str, str, str]] | None = None,
 ) -> str:
     """Envelope spectrum (blue) over the healthy reference (gray), with fault-frequency markers
-    (frequency, label, color, labeled)."""
-    ml, mr, mt, mb = 52, 10, 8, 26
+    (frequency, label, color, labeled), the x-axis label centered under the plot and a legend below."""
+    ml, mr, mt = 64 if ylabel else 52, 10, 8
+    leg, extra = legend_layout(legend or [], ml, width - mr)
+    mb = 34 + extra
+    height += extra + 8
     placer = Placer()
     lab = [m for m in markers if m[3]]
     rows = 1 if not lab else 2
@@ -524,7 +644,12 @@ def spectrum(
     for tv in nice_ticks(0, fmax, 5):
         xx = float(X(tv))
         p.append(f'<text class="tick" x="{xx:.1f}" y="{y1 + 13}" text-anchor="middle">{fmt(tv)}</text>')
-    p.append(f'<text class="tick" x="{x1}" y="{y1 + 23}" text-anchor="end">{esc(unit)}</text>')
+    p.append(
+        f'<text class="axl" x="{(x0 + x1) / 2:.1f}" y="{y1 + 27}" text-anchor="middle">{esc(unit)}</text>'
+    )
+    if ylabel:
+        p.append(ylabel_svg(ylabel, (y0 + y1) / 2))
+    p.extend(legend_svg(leg, y1 + 36))
     p.append(f'<rect x="{x0}" y="{y0}" width="{x1 - x0}" height="{y1 - y0}" fill="none" stroke="{AXIS}"/>')
     p.append(
         '<path d="M'

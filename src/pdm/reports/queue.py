@@ -273,8 +273,8 @@ class Page:
             only = "" if v else " <span class='tag only'>ML Model only</span>"
             note_html = "".join(f"<div class='note'>{h(n)}</div>" for n in notes)
             body.append(
-                f"<tr class='qrow' data-asset='{h(a)}'><td><div class='aname'>{h(a)}{only}</div><div class='sub'>{h(self.q.asset_name(a))} · {h(self.q.location(a))}</div>{note_html}</td>"
-                f"<td>{vcell}</td><td>{mcell}</td><td>{h(self.leading(a, v, ml))}</td><td>{cond}</td><td>{insp}</td><td>{self.wo_cell(a, wr)}</td></tr>"
+                f"<tr class='qrow' data-asset='{h(a)}'><td><div class='aname'>{h(a)}{only}</div><div class='sub'>{h(self.q.asset_name(a))}</div></td>"
+                f"<td>{vcell}</td><td>{mcell}</td><td>{h(self.leading(a, v, ml))}</td><td>{cond}</td><td>{insp}</td><td>{self.wo_cell(a, wr)}{note_html}</td></tr>"
             )
             self.facts["assets"][a] = {
                 "vendor": v.level if v else "OK",
@@ -318,7 +318,7 @@ class Page:
                 else "No work orders"
             )
             items.append(
-                f"<tr><td class='aname'>{h(a)}</td><td>{h(self.q.asset_name(a))} · {h(self.q.location(a))}</td><td>{chip('OK')}</td><td class='muted'>{h(lw)}</td><td>{''.join(f'<div class=note>{h(x)}</div>' for x in n)}</td></tr>"
+                f"<tr><td class='aname'>{h(a)}</td><td>{h(self.q.asset_name(a))}</td><td>{chip('OK')}</td><td class='muted'>{h(lw)}</td><td>{''.join(f'<div class=note>{h(x)}</div>' for x in n)}</td></tr>"
             )
             self.facts.setdefault("ok", {})[a] = n
         return f"<details class='oklist'><summary>OK <span class='count'>{len(ok)} assets</span></summary><table class='plain'>{''.join(items)}</table></details>"
@@ -370,21 +370,22 @@ class Page:
                         )
         return sorted(ev, key=lambda x: x[0])
 
-    def _chart(self, title: str, unit: str, chart: sv.TimeChart, level: str) -> str:
+    def _chart(self, title: str, chart: sv.TimeChart, level: str) -> str:
         self.uid += 1
         return (
-            f"<div class='chartbox'><div class='ctitle'>{h(title)} <span class='unit'>{h(unit)}</span> {chip(level)}</div>"
+            f"<div class='chartbox'><div class='ctitle'>{h(title)} {chip(level)}</div>"
             f"{chart.svg(str(self.uid))}</div>"
         )
 
-    def _new(self, asset: str, score: bool = False, log: bool = False) -> sv.TimeChart:
-        c = sv.TimeChart(self.t0, self.T, log=log)
+    def _new(self, asset: str, ylabel: str, score: bool = False, log: bool = False) -> sv.TimeChart:
+        c = sv.TimeChart(self.t0, self.T, log=log, ylabel=ylabel)
         for ts, text, col in self.events(asset, score):
             c.event(ts, text if score else None, col)
         return c
 
     def score_chart(self, asset: str) -> str:
-        c = self._new(asset, score=True, log=True)
+        c = self._new(asset, "Score / threshold", score=True, log=True)
+        c.state_labels = ("Above threshold", "During an ALARM")
         sc = self.q.scores
         e = self.q.episodes
         e = e[(e["asset_id"] == asset) & (e["method"] == "ml_model") & e["alarm_ts"].notna()]
@@ -404,16 +405,16 @@ class Page:
                     (pd.Series(1.0, index=g.index), "alert"),
                     (pd.Series(np.where(alarm, 1.0, np.inf), index=g.index), "alarm"),
                 ],
+                name=self._pname(pid),
             )
         c.fit(np.array([1.0]))
         c.hline(self.t0, self.T, 1.0, sv.MUTED, "4 3", "Threshold")
         lvl = self.lv.get(asset, {}).get("ml_model")
         level = lvl.level if lvl else "OK"
-        return self._chart("ML Model score (shadow)", "score / threshold" + self._who(asset), c, level)
+        return self._chart("ML Model score (shadow)", c, level)
 
-    def _who(self, asset: str) -> str:
-        pts = self.q.points(asset)
-        return "" if len(pts) == 1 else ", " + " dark, ".join(self.q.point_label(p) for p in pts) + " light"
+    def _pname(self, pid: str) -> str:
+        return f"{self.q.point_label(pid)} point"
 
     def _windows(self, pid: str) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Series]]:
         w = self.q.vendor_windows
@@ -428,7 +429,7 @@ class Page:
         return out
 
     def measure_chart(self, asset: str, col: str, title: str, unit: str, lim: str | None) -> str:
-        c = self._new(asset)
+        c = self._new(asset, unit)
         ind = self.q.indicators
         pts = self.q.points(asset)
         multi = len(pts) > 1
@@ -458,7 +459,7 @@ class Page:
                             L[f"{lim}_alert"],
                             sv.AMBER,
                             "5 3",
-                            self._lab(name, "alert") if last_piece else None,
+                            self._lab(name, "alert limit") if last_piece else None,
                         )
                         c.hline(
                             a,
@@ -466,11 +467,17 @@ class Page:
                             L[f"{lim}_alarm"],
                             sv.RED,
                             "5 3",
-                            self._lab(name, "alarm") if last_piece else None,
+                            self._lab(name, "alarm limit") if last_piece else None,
                         )
                         c.fit(np.array([L[f"{lim}_alert"], L[f"{lim}_alarm"]]))
             c.fit(g[col].to_numpy())
-            c.series(g["hour_utc"], g[col], col_c, [(al, "alert"), (am, "alarm")] if lim else None)
+            c.series(
+                g["hour_utc"],
+                g[col],
+                col_c,
+                [(al, "alert"), (am, "alarm")] if lim else None,
+                name=self._pname(pid),
+            )
             last = g.dropna(subset=[col]).tail(1)
             if len(last) and lim:
                 vv = float(last[col].iloc[0])
@@ -478,14 +485,14 @@ class Page:
                     worst = "ALARM"
                 elif vv >= float(al.iloc[last.index[0]]) and worst != "ALARM":
                     worst = "ALERT"
-        return self._chart(title, unit + self._who(asset), c, worst)
+        return self._chart(title, c, worst)
 
     @staticmethod
     def _lab(name: str, what: str) -> str:
         return f"{name}{what}" if name else what.capitalize()
 
     def temp_chart(self, asset: str) -> str:
-        c = self._new(asset)
+        c = self._new(asset, "°C")
         ind = self.q.indicators
         pts = self.q.points(asset)
         multi = len(pts) > 1
@@ -517,7 +524,7 @@ class Page:
                     s.temp_warning_c,
                     sv.AMBER,
                     "5 3",
-                    f"{name}alert" if multi and not self._same_temp(pts) else "Alert",
+                    f"{name}alert limit" if multi and not self._same_temp(pts) else "Alert limit",
                 )
                 c.hline(
                     self.t0,
@@ -525,7 +532,7 @@ class Page:
                     s.temp_alarm_c,
                     sv.RED,
                     "5 3",
-                    f"{name}alarm" if multi and not self._same_temp(pts) else "Alarm",
+                    f"{name}alarm limit" if multi and not self._same_temp(pts) else "Alarm limit",
                 )
             v = g["temp_c"].where(~g["implausible"].fillna(False).astype(bool))
             c.fit(v.to_numpy())
@@ -540,6 +547,7 @@ class Page:
                     (pd.Series(s.temp_warning_c, index=g.index), "alert"),
                     (pd.Series(s.temp_alarm_c, index=g.index), "alarm"),
                 ],
+                name=self._pname(pid),
             )
             last = v.dropna().tail(1)
             if len(last):
@@ -547,13 +555,13 @@ class Page:
                     worst = "ALARM"
                 elif float(last.iloc[0]) >= s.temp_warning_c and worst != "ALARM":
                     worst = "ALERT"
-        return self._chart("Housing temperature", "°C" + self._who(asset), c, worst)
+        return self._chart("Housing temperature", c, worst)
 
     def _same_temp(self, pts: list[str]) -> bool:
         return len({self.q.vendor_settings(p).temp_warning_c for p in pts}) == 1
 
     def resid_chart(self, asset: str) -> str:
-        c = self._new(asset)
+        c = self._new(asset, "°C")
         sc = self.q.scores
         lr = pd.read_parquet(self.q.cache / "level_rows.parquet")
         lr["hour_utc"] = pd.to_datetime(lr["hour_utc"], utc=True)
@@ -590,8 +598,8 @@ class Page:
                     c.fit(np.array([lo, hi]))
             v = g["temp_resid_c"].where(g["state"].isin(["scored", "plausibility"]))
             c.fit(v.to_numpy())
-            c.series(g["hour_utc"], v, sv.POINT_COLORS[i])
-        return self._chart("Temperature residual", "°C" + self._who(asset), c, "OK")
+            c.series(g["hour_utc"], v, sv.POINT_COLORS[i], name=self._pname(pid))
+        return self._chart("Temperature residual", c, "OK")
 
     def controller_charts(self, asset: str) -> list[str]:
         kind = asset_kind(asset)
@@ -637,10 +645,10 @@ class Page:
         d = d[(d["ts"] >= self.t0) & (d["ts"] <= self.T)].sort_values("ts")
         if d[vcol].notna().sum() == 0:
             return ""
-        c = self._new(asset)
+        c = self._new(asset, unit)
         c.fit(d[vcol].to_numpy())
-        c.series(d["ts"], d[vcol], sv.POINT_COLORS[0], gap_hours=72)
-        return self._chart(title, unit, c, "OK")
+        c.series(d["ts"], d[vcol], sv.POINT_COLORS[0], gap_hours=72, name="Daily value")
+        return self._chart(title, c, "OK")
 
     # ------------------------------------------------------------------ detail: bands and spectrum
     def _plan(self, asset: str) -> dict[str, dict[str, Any]]:
@@ -674,7 +682,7 @@ class Page:
                 {
                     "name": f"{name} ({loc.lower()})",
                     "values": [
-                        ("Healthy level", base, sv.REF),
+                        ("Baseline", base, sv.REF),
                         ("Since alert opened", since, col_of(since)),
                         ("Past 7 days", week, col_of(week)),
                     ],
@@ -684,9 +692,16 @@ class Page:
         if not groups:
             return ""
         self.facts["assets"][asset]["bands"] = [g["name"] for g in groups]
+        cols = {c for g in groups for _, _, c in g["values"][1:]}
+        leg = [("dash", sv.AMBER, "4 3", "Vendor Rules envelope limit")]
+        if sv.AMBER in cols:
+            leg.append(("box", sv.AMBER, "", "Above the limit"))
+        if sv.GRAY in cols:
+            leg.append(("box", sv.GRAY, "", "Below the limit"))
+        leg.append(("box", sv.REF, "", "Baseline"))
         return (
-            f"<div class='sec'><div class='sech'>Fault-band energies <span class='unit'>{h(self.q.point_label(pid))} point, envelope, g² · columns: healthy level, average since the alert opened, past 7 days · dashed: Vendor Rules envelope limit</span></div>"
-            f"<div class='chartbox narrow'>{sv.bars(groups, width=760, height=200)}</div></div>"
+            f"<div class='sec'><div class='sech'>Fault-band energies <span class='unit'>{h(self.q.point_label(pid))} point</span></div>"
+            f"<div class='chartbox'>{sv.bars(groups, ylabel='g²', legend=leg)}</div></div>"
         )
 
     def spectrum_section(self, asset: str) -> str:
@@ -736,13 +751,21 @@ class Page:
                 col = sv.AMBER if pd.notna(lim) and val >= lim else sv.GRAY
                 for hm in (1, 2, 3):
                     markers.append((hm * o[k], name if hm == 1 else f"{hm}x{name}", col, hm == 1))
+            leg = [
+                ("line", sv.BLUE, "", "Envelope spectrum"),
+                ("line", sv.REF, "", f"Healthy reference, {local(rh, '%Y-%m-%d')}"),
+            ]
+            if any(m[2] == sv.AMBER for m in markers):
+                leg.append(("dash", sv.AMBER, "3 2", "Fault frequency, band above the Vendor Rules limit"))
+            if any(m[2] == sv.GRAY for m in markers):
+                leg.append(("dash", sv.GRAY, "3 2", "Fault frequency, band below the limit"))
             panels.append(
-                f"<div class='chartbox half'><div class='ctitle'>{title} <span class='unit'>{local(hour, '%Y-%m-%d %H:%M')} · {speed * 60:,.0f} rpm · gray: healthy reference {local(rh, '%Y-%m-%d')}</span></div>"
-                f"{sv.spectrum(f / speed, a, rf / rspeed, ra, omax, markers, unit='orders')}</div>"
+                f"<div class='chartbox half'><div class='ctitle'>{title} <span class='unit'>{local(hour, '%Y-%m-%d %H:%M')} · {speed * 60:,.0f} rpm</span></div>"
+                f"{sv.spectrum(f / speed, a, rf / rspeed, ra, omax, markers, unit='Orders of running speed', ylabel='g', legend=leg)}</div>"
             )
         self.facts["assets"][asset]["bursts"] = srcs
         return (
-            f"<div class='sec'><div class='sech'>Envelope spectrum <span class='unit'>{h(self.q.point_label(pid))} point, g, x axis in orders of running speed</span></div>"
+            f"<div class='sec'><div class='sech'>Envelope spectrum <span class='unit'>{h(self.q.point_label(pid))} point</span></div>"
             f"<div class='row2'>{''.join(panels)}</div></div>"
         )
 
@@ -877,13 +900,12 @@ class Page:
         )
         top = (
             f"<div class='top'><span class='prod'>{PRODUCT}</span><span class='site'>Plant 1</span><span class='grow'></span>"
-            f"<span class='asof'>Data as of {local(self.T, '%Y-%m-%d %H:%M')} CT</span><span class='user'><span class='av'>MP</span>{USER}</span></div>"
+            f"<span class='asof'>Created by Brian Davis&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;Data as of {local(self.T, '%Y-%m-%d %H:%M')} CT</span><span class='user'><span class='av'>MP</span>{USER}</span></div>"
         )
         bar = "<div class='bar'><div class='crumb'>Maintenance Queue</div><div class='search'><input type='text' placeholder='Search assets, work orders' readonly></div></div>"
         return (
             "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>Maintenance Queue · {PRODUCT}</title><style>{CSS}</style></head><body>"
-            "<div class='byline'>Created by Brian Davis</div>"
             f"<div class='frame'>{top}<div class='body'><div class='rail'>{nav}</div><div class='main'>{bar}{strip}{table}{ok}"
             f"<div id='details'>{details}</div></div></div></div><script>const DEFAULT={json.dumps(default)};{JS}</script></body></html>"
         )
@@ -891,9 +913,8 @@ class Page:
 
 CSS = """
 :root{--ink:#2b3038;--muted:#69717c;--line:#d9dde2;--soft:#f4f5f7;--rail:#272d36;--amber:#c77700;--amberbg:#fdf1dc;--red:#c8322b;--redbg:#fbe4e2;--gray:#6d7681;--graybg:#eceef1;}
-*{box-sizing:border-box}html,body{margin:0;background:#e9ebee;color:var(--ink);font:12px/1.35 "Segoe UI",-apple-system,Roboto,Helvetica,Arial,sans-serif}
-.byline{max-width:1440px;margin:0 auto;padding:6px 12px 4px;font-size:11px;color:var(--muted)}
-.frame{max-width:1440px;margin:0 auto 24px;background:#fff;border:1px solid var(--line)}
+*{box-sizing:border-box}html,body{margin:0;background:#fff;color:var(--ink);font:12px/1.35 "Segoe UI",-apple-system,Roboto,Helvetica,Arial,sans-serif}
+.frame{max-width:1440px;margin:0 auto 24px;background:#fff}
 .top{display:flex;align-items:center;gap:14px;height:34px;padding:0 12px;border-bottom:1px solid var(--line);background:#fff}
 .prod{font-weight:700;font-size:13px;letter-spacing:.2px}.site{color:var(--muted);border-left:1px solid var(--line);padding-left:12px}.grow{flex:1}
 .asof{color:var(--muted)}.user{display:flex;align-items:center;gap:6px;color:var(--ink)}.av{display:inline-flex;width:20px;height:20px;border-radius:50%;background:#59616c;color:#fff;font-size:9px;align-items:center;justify-content:center}
@@ -926,7 +947,7 @@ table.kv{width:auto}table.kv td{padding:2px 12px 2px 0;vertical-align:top}table.
 .sec{padding:6px 10px 8px;border-bottom:1px solid var(--line)}.sec:last-child{border-bottom:0}.sech{font-weight:600;margin-bottom:4px}.unit{font-weight:400;color:var(--muted);font-size:11px}
 .chartbox{border:1px solid #eceef1;margin:4px 0 6px;padding:3px 4px 0}.ctitle{font-weight:600;font-size:11.5px;margin:2px 2px 0;display:flex;gap:6px;align-items:center}
 .chartbox.narrow{max-width:780px}.row2{display:flex;gap:8px}.chartbox.half{flex:1;min-width:0}
-svg.chart{display:block}svg .tick{font-size:9.5px;fill:#7a828d}svg .lbl{font-size:10px;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}
+svg.chart{display:block}svg .tick{font-size:9.5px;fill:#7a828d}svg .lbl{font-size:10px;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}svg .leg{font-size:10px;fill:#4a515b}svg .axl{font-size:10px;fill:#4a515b}svg .gname{font-size:10.5px;font-weight:600;fill:#4a515b}
 .mono{font-family:Consolas,"SFMono-Regular",Menlo,monospace;font-size:11px}.hist tr.flash td{background:#fff6dd}
 """
 
