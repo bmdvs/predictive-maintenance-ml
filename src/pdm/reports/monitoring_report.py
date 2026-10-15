@@ -1,7 +1,9 @@
 """The monitoring report (docs/reports/monitoring_report.html): the page text of section C with its exhibits.
 
-Inputs: the Data object (gold and monitoring snapshot tables, registry metadata) and the page text.
-Outputs: the report and its figures.
+Inputs: the prod monitoring tables of the version 13 run (build/monitoring_cache: event performance, retraining
+decision, references, feature drift, data quality, re-centering events, the champion's registry tags), the monthly
+evaluation on the headline definitions (build/report_data/monitoring_month.parquet, the same evaluation as the
+model report), config.yaml and the page text. Outputs: the report and its figures.
 """
 
 from __future__ import annotations
@@ -11,15 +13,26 @@ import json
 import numpy as np
 import pandas as pd
 
+from pdm import paths
 from pdm.reports import style
-from pdm.reports.data import END, LABEL, METHODS, Q2, Data, local
+from pdm.reports.data import Data
 from pdm.reports.model_report import exhibit_title
 from pdm.reports.text import PageText
 
 S = "C"
-MONTHS = ("2026-04", "2026-05", "2026-06")
-MONTH_LABEL = {m: pd.Timestamp(m + "-01").strftime("%B") for m in MONTHS}
-WINDOW_ONLY_LABEL = "window only"
+CACHE = paths.REPO_ROOT / "build" / "monitoring_cache"
+DATA = paths.REPO_ROOT / "build" / "report_data"
+MONTHS = tuple(pd.date_range("2025-07-01", "2026-06-01", freq="MS").strftime("%Y-%m"))
+MONTH_LABEL = {m: pd.Timestamp(m + "-01").strftime("%b %Y") for m in MONTHS}
+SHORT = {m: pd.Timestamp(m + "-01").strftime("%b") for m in MONTHS}
+METHODS = ("Vendor Rules", "ML Model", "Controller Health")
+HEADLINE = ("ML Model", "Vendor Rules")
+COLOR = {"Vendor Rules": style.DARK_GREY, "ML Model": style.BRAND_BLUE, "Controller Health": style.ACCENT}
+TZ = "America/Chicago"
+
+
+def _read(name: str) -> pd.DataFrame:
+    return pd.read_parquet(CACHE / f"{name}.parquet")
 
 
 class MonitoringReport:
@@ -31,12 +44,16 @@ class MonitoringReport:
         self.lo, self.hi = mon["tolerance"]["alerts_per_asset_month_ratio"]
         self.thr = mon["drift"]["feature_threshold"]
         self.share = mon["drift"]["feature_share_drifted"]
-        self.perf = d.m("event_performance")
-        self.rd = d.m("retraining_decision")
-        self.drift = d.m("feature_drift")
-        dq = d.m("data_quality_monthly")
+        self.perf = _read("event_performance")
+        self.rd = _read("retraining_decision")
+        self.ref = _read("references").set_index("method")
+        self.drift = _read("feature_drift")
+        self.mm = pd.read_parquet(DATA / "monitoring_month.parquet")
+        dq = _read("data_quality_monthly")
         self.dq = dq[dq["month"].isin(MONTHS)].copy()
         self.dq["exception"] = (self.dq["implausible_rows"] > 0) | (self.dq["no_measurement_share"] > 0.30)
+        self.points = sorted(self.dq["point_id"].unique())
+        self.check_verdicts()
 
     # ---------------------------------------------------------------- page assembly
     def text(self, start: str) -> None:
@@ -54,12 +71,30 @@ class MonitoringReport:
         return style.save(f, f"monitoring_{name}", name, up=1)
 
     # ---------------------------------------------------------------- derived
-    def reference_rate(self, method: str) -> float:
-        p = self.perf[self.perf["method"] == method].merge(
-            self.rd[self.rd["method"] == method][["month", "alerts_rate_ratio"]], on="month"
-        )
-        p = p[p["alerts_rate_ratio"] > 0]
-        return float((p["alerts_per_asset_month"] / p["alerts_rate_ratio"]).median()) if len(p) else 0.0
+    def headline(self, method: str, month: str) -> pd.Series | None:
+        r = self.mm[(self.mm["method"] == method) & (self.mm["month"] == month)]
+        return r.iloc[0] if len(r) else None
+
+    def recall(self, method: str, month: str) -> float:
+        """Catch share on the headline definitions for the ML Model and Vendor Rules; prod's for Controller Health."""
+        h = self.headline(method, month)
+        if h is not None:
+            return h["caught"] / h["conditions"] if h["conditions"] else np.nan
+        p = self.perf[(self.perf["method"] == method) & (self.perf["month"] == month)]
+        return float(p["recall"].iat[0])
+
+    def check_verdicts(self) -> None:
+        """The retraining verdict with the headline catch shares equals prod's verdict in every month."""
+        tol = self.d.cfg["monitoring"]["tolerance"]["recall_drop"]
+        need = self.d.cfg["monitoring"]["consecutive_months"]
+        for m in METHODS:
+            streak = 0
+            ref = float(self.ref.at[m, "recall"])
+            for x in self.rd[self.rd["method"] == m].sort_values("month").itertuples():
+                r = self.recall(m, x.month)
+                bad = (pd.notna(r) and ref - r > tol) or not (self.lo <= x.alerts_rate_ratio <= self.hi)
+                streak = streak + 1 if bad else 0
+                assert (streak >= need) == bool(x.retrain), (m, x.month)
 
     @property
     def point_drift(self) -> pd.DataFrame:
@@ -75,45 +110,48 @@ class MonitoringReport:
 
     # ---------------------------------------------------------------- exhibits
     def tiles(self) -> str:
-        m = "model_layer_instrumented"
-        ref = self.reference_rate(m)
+        m = "ML Model"
+        ref = float(self.ref.at[m, "alerts_per_asset_month"])
         pdr = self.point_drift
         out = ""
         for mo in MONTHS:
             p = self.perf[(self.perf["method"] == m) & (self.perf["month"] == mo)].iloc[0]
-            recall = (
-                "no conditions"
-                if pd.isna(p.recall)
-                else f"{int(round(p.recall * p.conditions))} of {int(p.conditions)}"
+            h = self.headline(m, mo)
+            caught = (
+                "no conditions" if not h["conditions"] else f"{int(h['caught'])} of {int(h['conditions'])}"
             )
             items = [
-                ("Event recall", recall),
-                ("Alerts per asset-month", f"{p.alerts_per_asset_month:.2f} against {ref:.2f}"),
-                ("Points flagged for drift", f"{int(pdr[pdr['month'] == mo]['flagged'].sum())} of 20"),
+                ("Conditions caught", caught),
+                ("Alerts per asset-month", f"{p.alerts_per_asset_month:.2f} against {ref:.3f}"),
+                (
+                    "Points flagged for drift",
+                    f"{int(pdr[pdr['month'] == mo]['flagged'].sum())} of {len(self.points)}",
+                ),
                 ("Data-quality exceptions", str(int(self.dq[self.dq["month"] == mo]["exception"].sum()))),
             ]
-            out += f"<div class='kpi-head'>{MONTH_LABEL[mo]} 2026</div>" + style.tiles(items)
+            out += f"<div class='kpi-head'>{MONTH_LABEL[mo]}</div>" + style.tiles(items)
         return out
 
     def rates(self) -> str:
-        f, axs = style.fig(h=2.9, w=8.6, ncols=4, sharey=False)
+        f, axs = style.fig(h=2.9, w=8.6, ncols=3, sharey=False)
         x = np.arange(len(MONTHS))
         for ax, m in zip(axs, METHODS, strict=True):
             p = self.perf[self.perf["method"] == m].set_index("month").reindex(MONTHS)
-            ref = self.reference_rate(m)
+            ref = float(self.ref.at[m, "alerts_per_asset_month"])
             ax.axhspan(self.lo * ref, self.hi * ref, color="#E6EEF4", lw=0, label="Tolerance band")
-            ax.axhline(ref, color=style.DARK_GREY, lw=1, ls="--", label="Validation rate")
+            ax.axhline(ref, color=style.DARK_GREY, lw=1, ls="--", label="Training reference rate")
             ax.plot(
                 x,
                 p["alerts_per_asset_month"],
                 marker="o",
-                color=style.METHOD_COLOR[m],
-                lw=1.6,
-                label="Shadow month",
+                ms=3,
+                color=COLOR[m],
+                lw=1.4,
+                label="Evaluation month",
             )
             ax.set_xticks(x)
-            ax.set_xticklabels([MONTH_LABEL[mo][:3] for mo in MONTHS], fontsize=8)
-            ax.set_title(LABEL[m], fontsize=9)
+            ax.set_xticklabels([SHORT[mo][0] for mo in MONTHS], fontsize=8)
+            ax.set_title(m, fontsize=9)
             ax.set_ylim(0, max(0.65, float(p["alerts_per_asset_month"].max()) * 1.15, self.hi * ref * 1.1))
         axs[0].set_ylabel("Alerts per asset-month", fontsize=8)
         f.tight_layout(rect=(0, 0.1, 1, 1))
@@ -126,136 +164,140 @@ class MonitoringReport:
             for mo in MONTHS:
                 p = self.perf[(self.perf["method"] == m) & (self.perf["month"] == mo)].iloc[0]
                 r = self.rd[(self.rd["method"] == m) & (self.rd["month"] == mo)].iloc[0]
+                h = self.headline(m, mo)
+                if h is not None:
+                    caught, warn = int(h["caught"]), h["warning_days_median"]
+                    extra = (
+                        h["false_per_asset_month"],
+                        h["false_alarms_per_asset_month"],
+                        h["alert_hours_per_asset_month"],
+                    )
+                else:
+                    caught = "" if pd.isna(p.recall) else int(round(p.recall * p.conditions))
+                    warn, extra = p.lead_days_median, (np.nan, np.nan, np.nan)
                 rows.append(
                     {
-                        "Method": LABEL[m],
+                        "Method": m,
                         "Month": MONTH_LABEL[mo],
                         "Conditions": int(p.conditions),
-                        "Caught": "" if pd.isna(p.recall) else int(round(p.recall * p.conditions)),
-                        "Median warning, days": p.lead_days_median,
+                        "Caught": caught,
+                        "Median warning, days": warn,
                         "Alerts": int(p.alerts),
                         "Alerts per asset-month": p.alerts_per_asset_month,
-                        "Ratio to validation": r.alerts_rate_ratio,
+                        "False alerts per asset-month": extra[0],
+                        "False ALARMs per asset-month": extra[1],
+                        "Alert-hours per asset-month": extra[2],
+                        "Ratio to reference": r.alerts_rate_ratio,
                         "Primary trigger": "fires" if bool(r.primary_trigger) else "",
                     }
                 )
         return style.table(
             pd.DataFrame(rows),
-            {"Median warning, days": 1, "Alerts per asset-month": 2, "Ratio to validation": 2},
+            {
+                "Median warning, days": 1,
+                "Alerts per asset-month": 2,
+                "False alerts per asset-month": 3,
+                "False ALARMs per asset-month": 3,
+                "Alert-hours per asset-month": 0,
+                "Ratio to reference": 2,
+            },
             cls="data nowrap1",
         )
 
-    def heatmap(self) -> str:
-        hm = self.point_drift.pivot(index="point_id", columns="month", values="over").reindex(
-            columns=list(MONTHS)
-        )
-        f, ax = style.fig(h=5.0, w=6.4)
+    def _heat(self, hm: pd.DataFrame, name: str, label: str, vmax: float, fmt: str) -> str:
+        f, ax = style.fig(h=8.6, w=8.6)
         ax.grid(False)
-        im = ax.imshow(hm.to_numpy(dtype=float), aspect="auto", cmap="Oranges", vmin=0, vmax=1)
+        im = ax.imshow(hm.to_numpy(dtype=float), aspect="auto", cmap="Oranges", vmin=0, vmax=vmax)
         ax.set_yticks(range(len(hm)))
         ax.set_yticklabels(hm.index, fontsize=7)
         ax.set_xticks(range(len(MONTHS)))
-        ax.set_xticklabels([MONTH_LABEL[mo] for mo in MONTHS], fontsize=8)
+        ax.set_xticklabels([SHORT[mo] for mo in MONTHS], fontsize=8)
         for i in range(hm.shape[0]):
             for j in range(hm.shape[1]):
                 v = hm.iat[i, j]
                 ax.text(
                     j,
                     i,
-                    "" if pd.isna(v) else f"{v:.1f}",
+                    "" if pd.isna(v) else format(v, fmt),
                     ha="center",
                     va="center",
-                    fontsize=6.5,
-                    color="white" if v > 0.6 else "#222222",
+                    fontsize=6,
+                    color="white" if pd.notna(v) and v > 0.6 * vmax else "#222222",
                 )
-        cb = f.colorbar(im, ax=ax, shrink=0.6)
-        cb.set_label("Share of features drifted", fontsize=8)
+        cb = f.colorbar(im, ax=ax, shrink=0.5)
+        cb.set_label(label, fontsize=8)
         cb.ax.tick_params(labelsize=7)
-        return self.img(f, "feature_drift")
+        return self.img(f, name)
+
+    def heatmap(self) -> str:
+        hm = self.point_drift.pivot(index="point_id", columns="month", values="over").reindex(
+            index=self.points, columns=list(MONTHS)
+        )
+        return self._heat(hm, "feature_drift", "Share of features drifted", 1.0, ".1f")
 
     def quality(self) -> str:
-        q = self.dq.pivot_table(
-            index="point_id", columns="month", values=["no_measurement_share", "implausible_rows"]
+        nm = self.dq.pivot_table(index="point_id", columns="month", values="no_measurement_share").reindex(
+            index=self.points, columns=list(MONTHS)
         )
-        f, ax = style.fig(h=3.0, w=8.6)
-        nm = q["no_measurement_share"].reindex(columns=list(MONTHS))
-        x = np.arange(len(nm))
-        for k, (mo, colr) in enumerate(
-            zip(MONTHS, (style.LIGHT_BLUE, style.ACCENT, style.BRAND_BLUE), strict=True)
-        ):
-            ax.bar(x + (k - 1) * 0.27, nm[mo] * 100, width=0.27, color=colr, label=MONTH_LABEL[mo])
-        ax.axhline(30, color=style.RED, lw=0.8, ls="--", label="Exception level")
-        ax.set_xticks(x)
-        ax.set_xticklabels(nm.index, rotation=60, ha="right", fontsize=7)
-        ax.set_ylabel("No-measurement share, %", fontsize=8)
-        f.tight_layout(rect=(0, 0.1, 1, 1))
-        f.legend(*ax.get_legend_handles_labels(), loc="lower center", ncol=4, frameon=False, fontsize=8)
-        img = self.img(f, "data_quality")
-        ex = self.dq[self.dq["exception"]]
-        t = ex.pivot_table(
-            index="point_id", columns="month", values="implausible_rows", aggfunc="sum"
-        ).reindex(columns=list(MONTHS))
-        nmx = ex.pivot_table(
-            index="point_id", columns="month", values="no_measurement_share", aggfunc="max"
-        ).reindex(columns=list(MONTHS))
+        img = self._heat(100 * nm, "data_quality", "No-measurement share, %", 100.0, ".0f")
         rows = []
-        for p in t.index:
-            row = {"Point": p}
-            for mo in MONTHS:
-                v, s = t.at[p, mo], nmx.at[p, mo]
-                if pd.isna(v):
-                    row[MONTH_LABEL[mo]] = ""
-                    continue
-                parts = [f"{int(v)} implausible"] if v > 0 else []
-                if s > 0.30:
-                    parts.append(f"{s:.0%} no measurement")
-                row[MONTH_LABEL[mo]] = ", ".join(parts)
-            rows.append(row)
-        return img + style.table(pd.DataFrame(rows))
-
-    def versions(self) -> pd.DataFrame:
-        reg = json.loads(self.d.st.file("mlflow/registry.json").read_text(encoding="utf-8"))
-        name = next(iter(reg))
-        champion = str(reg[name]["aliases"].get("champion"))
-        rows = []
-        for v in reg[name]["versions"]:
-            tg = v["tags"]
-            if tg.get("false_episodes_month", "") < "2026-04":
+        for p, g in self.dq.groupby("point_id"):
+            ex = g[g["exception"]]
+            if not len(ex):
                 continue
             rows.append(
                 {
-                    "Cycle": pd.Timestamp(tg["false_episodes_month"] + "-01").strftime("%B %Y"),
-                    "Version": int(v["version"]),
+                    "Point": p,
+                    "Months with implausible rows": int((ex["implausible_rows"] > 0).sum()),
+                    "Implausible rows": int(ex["implausible_rows"].sum()),
+                    "Months above 30% no measurement": int((ex["no_measurement_share"] > 0.30).sum()),
+                }
+            )
+        return img + style.table(pd.DataFrame(rows))
+
+    def versions(self) -> pd.DataFrame:
+        mv = json.loads((CACHE / "registry_v13.json").read_text(encoding="utf-8"))
+        mv = mv.get("model_version", mv)
+        tg = {x["key"]: x["value"] for x in mv.get("tags", [])}
+        champion = any(a.get("alias") == "champion" for a in mv.get("aliases", []))
+        return pd.DataFrame(
+            [
+                {
+                    "Version": int(mv["version"]),
+                    "Settings": tg.get("settings", ""),
                     "Selection": tg.get("gate_selection", ""),
                     "Parity": tg.get("gate_parity", ""),
-                    "Segments": tg.get("gate_segments", ""),
+                    "Points": tg.get("gate_points", ""),
+                    "Numerics": tg.get("gate_numerics", ""),
                     "False episodes": tg.get("gate_false_episodes", ""),
                     "Rate": float(tg["false_episodes_rate"]),
-                    "Budget": float(tg["false_episodes_budget"]),
+                    "Limit": float(tg["false_episodes_limit"]),
                     "Status": tg.get("status", "").replace("_", " "),
-                    "Champion at the record end": "yes" if str(v["version"]) == champion else "",
+                    "Champion for the year": "yes" if champion else "",
                 }
-            )
-        return pd.DataFrame(rows).sort_values("Version")
+            ]
+        )
 
     def resets(self) -> str:
-        nm = self.d.g("nbm_models")
-        nm["segment_start"] = pd.to_datetime(nm["segment_start"], utc=True)
-        r = nm[(nm["segment_start"] >= Q2) & (nm["segment_start"] < END)].sort_values(
-            ["segment_start", "point_id"]
-        )
-        wo = self.d.wo
-        rows = []
-        for x in r.itertuples():
-            rows.append(
-                {
-                    "Point": x.point_id,
-                    "Baseline start": local(x.segment_start),
-                    "Reason": str(x.reason).replace("_", " "),
-                    "Drift reference": self.reference_of(x.point_id),
-                }
-            )
-        _ = wo
+        r = _read("recentering_events")
+        for c in ("segment_start", "level_ready"):
+            r[c] = pd.to_datetime(r[c], utc=True)
+        r = r.sort_values(["segment_start", "point_id"])
+
+        def loc(ts: pd.Timestamp) -> str:
+            return "" if pd.isna(ts) else ts.tz_convert(TZ).strftime("%Y-%m-%d")
+
+        rows = [
+            {
+                "Point": x.point_id,
+                "Start": loc(x.segment_start),
+                "Reason": str(x.reason).replace("_", " "),
+                "Level set": loc(x.level_ready) or "no level by the record end",
+                "Plausibility flag": "flagged" if bool(x.plausibility_flag) else "",
+                "Drift reference in June": self.reference_of(x.point_id),
+            }
+            for x in r.itertuples()
+        ]
         return style.table(pd.DataFrame(rows))
 
     def reference_of(self, point: str) -> str:
@@ -265,10 +307,12 @@ class MonitoringReport:
         return str(r.iat[0])
 
     def rule(self) -> str:
+        tol = self.d.cfg["monitoring"]["tolerance"]
+        win = str(self.ref["reference_window"].iat[0])
         rows = [
             (
                 "Primary trigger",
-                f"Event recall more than {self.d.cfg['monitoring']['tolerance']['recall_drop']:.2f} below the validation recall, or alerts per asset-month outside {self.lo} to {self.hi} times the validation rate, for {self.d.cfg['monitoring']['consecutive_months']} consecutive months",
+                f"Catch share more than {tol['recall_drop']:.2f} below the training reference ({win}), or alerts per asset-month outside {self.lo} to {self.hi} times the training reference rate, for {self.d.cfg['monitoring']['consecutive_months']} consecutive months",
             ),
             (
                 "Secondary trigger",
@@ -281,30 +325,28 @@ class MonitoringReport:
             ("Action", str(self.rd.loc[self.rd["retrain"].astype(bool), "action"].iat[0]).capitalize()),
         ]
         rule = style.table(pd.DataFrame(rows, columns=["Part", "Definition"]))
-        rd = self.rd.copy()
         rows = []
-        for x in rd.itertuples():
-            if x.method not in METHODS:
-                continue
-            rows.append(
-                {
-                    "Method": LABEL[x.method],
-                    "Month": MONTH_LABEL[x.month],
-                    "Recall": x.recall,
-                    "Validation recall": x.recall_reference,
-                    "Alert-rate ratio": x.alerts_rate_ratio,
-                    "Primary": "fires" if x.primary_trigger else "",
-                    "Feature drift share": x.drift_share,
-                    "Score drift share": x.score_drift_share,
-                    "Secondary": "fires" if x.secondary_trigger else "",
-                    "Retrain": "yes" if x.retrain else "",
-                }
-            )
+        for m in METHODS:
+            for x in self.rd[self.rd["method"] == m].sort_values("month").itertuples():
+                rows.append(
+                    {
+                        "Method": m,
+                        "Month": MONTH_LABEL[x.month],
+                        "Catch share": self.recall(m, x.month),
+                        "Reference catch share": float(self.ref.at[m, "recall"]),
+                        "Alert-rate ratio": x.alerts_rate_ratio,
+                        "Primary": "fires" if x.primary_trigger else "",
+                        "Feature drift share": x.drift_share,
+                        "Score drift share": x.score_drift_share,
+                        "Secondary": "fires" if x.secondary_trigger else "",
+                        "Retrain": "yes" if x.retrain else "",
+                    }
+                )
         return rule + style.table(
             pd.DataFrame(rows),
             {
-                "Recall": 2,
-                "Validation recall": 2,
+                "Catch share": 2,
+                "Reference catch share": 2,
                 "Alert-rate ratio": 2,
                 "Feature drift share": 3,
                 "Score drift share": 3,
@@ -313,19 +355,20 @@ class MonitoringReport:
         )
 
     def references(self) -> str:
+        win = str(self.ref["reference_window"].iat[0])
         defs = pd.DataFrame(
             [
                 (
-                    "Validation",
-                    "July 2025 to March 2026, for points not re-baselined after the validation start",
+                    "Training reference",
+                    f"{win}, the last six months of training, for points not re-centered after its start",
                 ),
                 (
-                    "Re-baseline window plus scored days",
-                    "For a point re-baselined after the validation start: its latest post-repair re-baseline window that passed the post-repair check plus the first 30 scored days with no open case on the point",
+                    "Re-centering plus scored days",
+                    "For a point re-centered after a repair or remount: its re-centering window plus the first 30 scored days with no open episode on the point",
                 ),
                 (
                     "Window only",
-                    "The re-baseline window alone when a case opens within those 30 days; the window is not scored, so the point has no score drift and feature drift is against the narrow window",
+                    "The re-centering window alone when an episode opens within those 30 days; the window is not scored, so the point has no score drift and feature drift is against the narrow window",
                 ),
                 (
                     "Compared hours",
@@ -335,67 +378,71 @@ class MonitoringReport:
             columns=["Reference", "Definition"],
         )
         last = self.drift.sort_values("month").groupby("point_id")["reference"].last()
-        pts = sorted(self.d.sensors["point_id"])
-        ref = pd.DataFrame({"Point": pts, "Reference in June": [last.get(p, "still forming") for p in pts]})
+        ref = pd.DataFrame(
+            {"Point": self.points, "Reference in June": [last.get(p, "still forming") for p in self.points]}
+        )
         return style.table(defs) + style.table(ref)
 
     def per_point(self) -> str:
         f = self.drift[self.drift["feature"] != "nbm_score"]
-        g = (
+        share = (
             f.assign(over=f["wasserstein_scaled"] > self.thr)
-            .groupby(["point_id", "month"])
-            .agg(share=("over", "mean"), median=("wasserstein_scaled", "median"))
+            .groupby(["point_id", "month"])["over"]
+            .mean()
+            .unstack()
+            .reindex(index=self.points, columns=list(MONTHS))
         )
-        sc = self.drift[self.drift["feature"] == "nbm_score"].set_index(["point_id", "month"])[
-            "wasserstein_scaled"
-        ]
-        rows = []
-        for p in sorted(self.d.sensors["point_id"]):
-            row = {"Point": p}
-            for mo in MONTHS:
-                row[f"{MONTH_LABEL[mo]} feature share"] = g["share"].get((p, mo), np.nan)
-                row[f"{MONTH_LABEL[mo]} score"] = sc.get((p, mo), np.nan)
-            rows.append(row)
-        drift = style.table(pd.DataFrame(rows), {c: 2 for r in rows[:1] for c in r if c != "Point"})
-        q = self.dq.pivot_table(
-            index="point_id", columns="month", values=["no_measurement_share", "implausible_rows"]
+        sc = (
+            self.drift[self.drift["feature"] == "nbm_score"]
+            .set_index(["point_id", "month"])["wasserstein_scaled"]
+            .unstack()
+            .reindex(index=self.points, columns=list(MONTHS))
         )
-        rows = []
-        for p in q.index:
-            row = {"Point": p}
-            for mo in MONTHS:
-                row[f"{MONTH_LABEL[mo]} no measurement, %"] = 100 * q[("no_measurement_share", mo)].get(
-                    p, np.nan
-                )
-                row[f"{MONTH_LABEL[mo]} implausible"] = int(q[("implausible_rows", mo)].get(p, 0))
-            rows.append(row)
-        dq = style.table(pd.DataFrame(rows), {c: 0 for r in rows[:1] for c in r if c != "Point"})
-        return drift + dq
+        nm = 100 * self.dq.pivot_table(
+            index="point_id", columns="month", values="no_measurement_share"
+        ).reindex(index=self.points, columns=list(MONTHS))
+        im = (
+            self.dq.pivot_table(index="point_id", columns="month", values="implausible_rows", aggfunc="sum")
+            .reindex(index=self.points, columns=list(MONTHS))
+            .fillna(0)
+        )
+        out = ""
+        for title, t, dec in (
+            ("Feature drift share", share, 2),
+            ("Score drift, scaled distance", sc, 2),
+            ("No measurement, %", nm, 0),
+            ("Implausible rows", im, 0),
+        ):
+            df = t.rename(columns=SHORT).reset_index().rename(columns={"point_id": "Point"})
+            out += f"<div class='kpi-head'>{title}</div>" + style.table(
+                df, {SHORT[m]: dec for m in MONTHS}, cls="data nowrap1"
+            )
+        return out
 
     # ---------------------------------------------------------------- page
     def build(self) -> str:
         t, x = self.t, self.exhibit
         self.h(2, "1. Summary", "s1")
         self.text("The monitoring rule calls for")
-        self.text("The drift trigger fired in April")
+        self.text("The drift trigger fired in every")
         x("Exhibit: Monitoring by month", self.tiles())
         self.parts.append("<h2 id='s2'>2. Monitoring results</h2>")
         self.toc.append(("s2", "2. Monitoring results"))
         self.h(3, "2.1 Performance and alert rates", "s21", True)
-        self.text("The model layer caught both conditions")
-        self.text("The vendor rules stayed within")
+        self.text("The ML Model caught")
+        self.text("Vendor Rules stayed within")
         x("Exhibit: Alerts per asset-month", self.rates())
         x("Exhibit: Event performance by month", self.performance())
         self.h(3, "2.2 Drift and data quality", "s22", True)
         self.text("Feature drift flagged")
         self.text("The drift trigger fired for two reasons")
-        self.text("Data-quality exceptions rose")
+        self.text("Data-quality exceptions ran")
         x("Exhibit: Feature drift by point", self.heatmap())
         x("Exhibit: Data quality by point", self.quality())
         self.h(3, "2.3 Model updates and baseline resets", "s23", True)
         self.text("Model versions.")
-        x("Exhibit: Champion per monthly cycle", style.table(self.versions(), {"Rate": 3, "Budget": 3}))
-        x("Exhibit: Post-repair baseline resets", self.resets())
+        x("Exhibit: Champion,", style.table(self.versions(), {"Rate": 3, "Limit": 3}))
+        x("Exhibit: Post-repair re-centering", self.resets())
         self.t.lines(S, "Appendix")
         self.parts.append("<h2 id='appendix'>Appendix</h2>")
         self.toc.append(("appendix", "Appendix"))
