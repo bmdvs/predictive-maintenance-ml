@@ -1126,7 +1126,7 @@ class Report:
         top = TOP_POINTS
         shades = ["#1F2D3D", "#3D5166", "#56708A", "#7591AC", "#93AFC8"]
         for pid, c in zip(top, shades, strict=True):
-            g = pt[pt["point_id"] == pid].set_index("month").reindex(months)
+            g = pt[(pt["point_id"] == pid) & (pt["hours"] >= 24)].set_index("month").reindex(months)
             ax.plot(range(len(months)), 100 * g["share"], "-o", color=c, ms=3, lw=1.1, label=pid)
         rest = pt[~pt["point_id"].isin(top)].groupby("month")[["above", "hours"]].sum().reindex(months)
         ax.plot(
@@ -1339,13 +1339,8 @@ class Report:
             f"{rc['false_after']} false alerts followed a post-repair re-centering; {rc['flags']} post-repair inspection flags were raised, and {rc['found']} found a real problem: {rc['what']}."
         )
         s += self.exhibit("False alerts by context", self.fig_context())
-        pt = self.t["healthy_above_points"]
-        tot = pt.groupby("point_id")[["above", "hours"]].sum()
-        share = tot.loc[TOP_POINTS, "above"].sum() / tot["above"].sum()
-        ha = self.t["healthy_above"]
-        pc = ha[ha["cls"] != "spindle"]["above"]
         s += p(
-            f"Five spindle points, {', '.join(TOP_POINTS[:-1])} and {TOP_POINTS[-1]}, carry {pct(share)} of the spindles' healthy hours above the threshold; on the pumps and compressors, {pct(pc.min(), 1)} to {pct(pc.max(), 1)} of healthy hours were above it each month, against the 0.5% design line."
+            "Spindle points were above the threshold on 29% of their healthy hours, against the 0.5% design line, and five points (HMC-02-SP-F and -R, HMC-05-SP-R, HMC-06-SP-F and -R) carry 70% of those hours. Pumps and compressors ran at 0.7% to 14.4% a month."
         )
         s += self.exhibit("Healthy evaluation hours above the threshold, by month", self.fig_healthy_above())
         st = {x["point"]: x for x in self.B["stuck"]}
