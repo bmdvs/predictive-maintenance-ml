@@ -370,10 +370,11 @@ class Page:
                         )
         return sorted(ev, key=lambda x: x[0])
 
-    def _chart(self, title: str, chart: sv.TimeChart, level: str) -> str:
+    def _chart(self, title: str, chart: sv.TimeChart, level: str, note: str = "") -> str:
         self.uid += 1
+        sub = f" <span class='unit'>{h(note)}</span>" if note else ""
         return (
-            f"<div class='chartbox'><div class='ctitle'>{h(title)} {chip(level)}</div>"
+            f"<div class='chartbox'><div class='ctitle'>{h(title)}{sub} {chip(level)}</div>"
             f"{chart.svg(str(self.uid))}</div>"
         )
 
@@ -595,7 +596,7 @@ class Page:
             v = g["temp_resid_c"].where(g["state"].isin(["scored", "plausibility"]))
             c.fit(v.to_numpy())
             c.series(g["hour_utc"], v, sv.POINT_COLORS[i], name=self._pname(pid))
-        return self._chart("Temperature residual", c, "OK")
+        return self._chart("Temperature residual", c, "OK", "(actual less expected, per ML Model)")
 
     def controller_charts(self, asset: str) -> list[str]:
         kind = asset_kind(asset)
@@ -750,11 +751,9 @@ class Page:
             leg = [
                 ("line", sv.BLUE, "", "Envelope spectrum"),
                 ("line", sv.REF, "", f"Healthy reference, {local(rh, '%Y-%m-%d')}"),
+                ("dash", sv.AMBER, "3 2", "Fault frequency, band above the Vendor Rules limit"),
+                ("dash", sv.GRAY, "3 2", "Fault frequency, band below the limit"),
             ]
-            if any(m[2] == sv.AMBER for m in markers):
-                leg.append(("dash", sv.AMBER, "3 2", "Fault frequency, band above the Vendor Rules limit"))
-            if any(m[2] == sv.GRAY for m in markers):
-                leg.append(("dash", sv.GRAY, "3 2", "Fault frequency, band below the limit"))
             panels.append(
                 f"<div class='chartbox half'><div class='ctitle'>{title} <span class='unit'>{local(hour, '%Y-%m-%d %H:%M')} · {speed * 60:,.0f} rpm</span></div>"
                 f"{sv.spectrum(f / speed, a, rf / rspeed, ra, omax, markers, unit='Orders of running speed', ylabel='g', legend=leg)}</div>"
