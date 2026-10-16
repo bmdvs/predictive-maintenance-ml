@@ -59,6 +59,11 @@ def bold(s: str) -> str:
     return f"<h4>{html.escape(s)}</h4>"
 
 
+def machine(asset: str) -> str:
+    """The machine an asset sits on: HMC-08-SP is on HMC-08; a compressor is its own machine."""
+    return "-".join(asset.split("-")[:2])
+
+
 def loc_date(ts: Any, fmt: str = "%b %-d, %Y") -> str:
     t = pd.Timestamp(ts)
     t = t.tz_localize("UTC") if t.tzinfo is None else t
@@ -378,6 +383,9 @@ class Report:
             "Failure",
         ]
         if repair:
+            # the example panels: no PM finding among them; the planned repair marks the confirmation
+            keep = [i for i, lab in enumerate(labs) if lab != "PM finding"]
+            hd, labs = [hd[i] for i in keep], [labs[i] for i in keep]
             hd.append(Line2D([], [], marker="s", ls="", mfc=style.BRAND_BLUE, mec=style.BRAND_BLUE))
             labs.append("Planned repair")
         f.legend(
@@ -408,7 +416,7 @@ class Report:
             ),
             (
                 "HMC-06-WO00036",
-                "Condition 4: Pump Seal or Impeller Wear",
+                "Condition 4: TSC Pump Seal Failure",
                 "Neither raised an alert beforehand and it ended in a failure",
             ),
         ]
@@ -471,8 +479,10 @@ class Report:
         """One timeline per example condition, each under its own title; the legend under the last."""
         tl = self._tl()
         rows = rows or self.panel_titles()
+        assets = self.t["conditions"].set_index("wo_id")["asset"]
         out = ""
         for i, (wo, head, sub) in enumerate(rows):
+            head = f"{head} ({machine(assets[wo])})"
             last = i == len(rows) - 1
             f, ax = plt.subplots(figsize=(8.8, 1.55 + (0.55 if last else 0)))
             self._cond_panel(ax, wo, tl)
@@ -643,7 +653,7 @@ class Report:
             "The ML Model was trained on the first two years of sensor data and has been live in production since July 2025. The results below are presented for the entire evaluation year (July 2025 through June 2026)."
         )
         s += p(
-            f"The ML Model achieved notable improvements over Vendor Rules. It caught {a['strict']['ML Model']} of 32 conditions compared to {a['strict']['Vendor Rules']} of 32; its ALERTs gave an {pct(longer)} longer warning time and produced a {pct(fewer)} lower false-alert rate. Had the shop acted on the ML Model's ALERTs instead of Vendor Rules', it would have spent {ins['saved']:.0f} fewer hours on inspections of false alerts."
+            f"The ML Model achieved notable improvements over Vendor Rules. It caught {a['strict']['ML Model']} of 32 conditions compared to {a['strict']['Vendor Rules']} of 32; its ALERTs gave an {pct(longer)} longer warning time and produced a {pct(fewer)} lower false-alert rate. Had the shop acted on the ML Model's ALERTs instead of Vendor Rules', it would have spent {ins['saved']:.0f} fewer hours on inspections of false alerts over the year."
         )
         s += self.exhibit("ML Model vs. Vendor Rules: ALERTS", self.fig_levels("ALERT"))
         s += p(
@@ -724,7 +734,7 @@ class Report:
         fnd = int((fr["vr_alarm_before"] & (fr["found"] > 0)).sum())
         noi = int((fr["vr_alarm_before"] & (fr["inspections"] == 0)).sum())
         s += p(
-            f"The ML Model's ALARMs were more accurate than Vendor Rules: {pct(al['share']['ML Model'])} of its {al['n']['ML Model']} ALARMs had a confirmed condition, against {pct(al['share']['Vendor Rules'])} of Vendor Rules' {al['n']['Vendor Rules']} ALARMs, and it produced a {pct(1 - al['false']['ML Model'] / al['false']['Vendor Rules'])} lower false-alarm rate ({al['false']['ML Model']:.3f} against {al['false']['Vendor Rules']:.3f}). On the sensor data alone, which both models read, the ML Model's false-alarm rate was even lower, at {al['false_sensor_ml']:.3f}. This accuracy came at the expense of warning time: the ML Model's ALARMs gave a median of {n1(al['warn']['ML Model'])} days of warning against Vendor Rules' {n1(al['warn']['Vendor Rules'])} days on the {al['warn']['n']} conditions that both layers escalated."
+            f"[[b]]The ML Model's ALARMs were more accurate than Vendor Rules[[/b]]: {pct(al['share']['ML Model'])} of its {al['n']['ML Model']} ALARMs had a confirmed condition, against {pct(al['share']['Vendor Rules'])} of Vendor Rules' {al['n']['Vendor Rules']} ALARMs, and it produced a {pct(1 - al['false']['ML Model'] / al['false']['Vendor Rules'])} lower false-alarm rate ({al['false']['ML Model']:.3f} against {al['false']['Vendor Rules']:.3f}). On the sensor data alone, which both models read, the ML Model's false-alarm rate was even lower, at {al['false_sensor_ml']:.3f}. This accuracy came at the expense of warning time: the ML Model's ALARMs gave a median of {n1(al['warn']['ML Model'])} days of warning against Vendor Rules' {n1(al['warn']['Vendor Rules'])} days on the {al['warn']['n']} conditions that both layers escalated."
         )
         s += p(
             f"Vendor Rules ALARMed before {fl['vr_alarm_before']} of the {fl['n']} unplanned failures, and the failures still happened: the inspections it triggered found no fault in {nff}, found the problem without preventing the failure in {fnd}, and no inspection was raised in the other {noi}."
@@ -732,7 +742,7 @@ class Report:
         s += bold("Condition Diagnosis")
         ru = {r["wo_id"]: r for r in self.B["ru"]["catches"]}
         s += p(
-            f"Work requests on the ML Model's ALERTs and ALARMs correctly diagnosed the confirmed condition on {d['strict_named']} of the {d['strict']} conditions it caught ({d['episodes_named']} of {d['episodes']} counted by alert)."
+            f"Work requests on the ML Model's ALERTs and ALARMs correctly diagnosed the confirmed condition on {d['strict_named']} of the {d['strict']} conditions it caught."
         )
         s += p(
             f"The ML Model's work requests were strongest on conditions with a distinct signature, naming all {d['bearing']} bearing defects ({d['bearing_located']} with the damaged component located), {d['lub_named']} of {d['lub']} lubrication episodes and both imbalance and looseness cases. It struggled where conditions overlapped or share a signal: 3 of 4 pump-wear cases were misnamed, mostly as imbalance; the 3 spindle cooling faults were named lubrication, the condition sharing their alert; and 1 of 2 rotary union leaks was named bearing despite a {100 * ru['HMC-03-WO00045']['drop share max']:.1f}% coolant pressure drop."
@@ -1323,7 +1333,7 @@ class Report:
             else np.nan
         )
         s += p(
-            "Four model types (PCA, Mahalanobis distance, isolation forest and an autoencoder) were trained per point on five input sets (20 models trained), from the 13 sensor measurements to a full set of 52 inputs with the entire spectrum and envelope bands. Each model was trained with one threshold per point or one per spindle speed band. Each model was then scored and selected by a fixed rule: take the highest catch rate above chance (the share an alert would catch if it fell at random, given how much of the time it was open) at Vendor Rules' false-alert rate; and, among those within two caught conditions of the best, choose the simplest model."
+            "Four model types (PCA, Mahalanobis distance, isolation forest and an autoencoder) were trained per sensor point on five input sets (20 models trained), from the 13 sensor measurements to a full set of 52 inputs with the entire spectrum and envelope bands. Each model was trained with one threshold per point or one per spindle speed band. Each model was then scored and selected by a fixed rule: take the highest catch rate above chance (the share an alert would catch if it fell at random, given how much of the time it was open) at Vendor Rules' false-alert rate; and, among those within two caught conditions of the best, choose the simplest model."
         )
         s += p(
             f"The autoencoder with the 13 measurements was selected (skill of {skill:.3f}); the wider input sets did not improve it. A full detail of what each design choice added in the training round is in the appendix."
@@ -1343,6 +1353,7 @@ class Report:
                         "Caught at operating point": 1,
                         "False episodes per asset-month": 3,
                     },
+                    cls="data ctrlast",
                 ),
             )
         s += "<h3 id='s42'>4.2 Accuracy and Validation</h3>"
@@ -1400,10 +1411,9 @@ class Report:
         fc = self.t["false_causes"]
         fm, fv = fc[fc["method"] == "ML Model"], fc[fc["method"] == "Vendor Rules"]
         lvl = fm[fm["cause"] == LEVEL_OUT]
-        rg = fv[fv["cause"] == REGIME_MISSING]
         n_ = fm["cause"].value_counts()
         s += p(
-            f"Half of the ML Model's false alert-hours came from sensor points whose healthy level moved outside the range it was trained on. {len(lvl)} of its {len(fm)} false alerts, across {lvl['lead_point'].nunique()} sensor points, opened this way, {pct(lvl['alert_hours'].sum() / fm['alert_hours'].sum())} of its {fm['alert_hours'].sum():,.0f} false alert-hours. Of the rest, {n_.get('Transient', 0)} were short crossings above threshold and {n_.get('Unexplained', 0)} had no identifiable cause. Vendor Rules raised twice the false alert-hours ({fv['alert_hours'].sum():,.0f}), {pct(rg['alert_hours'].sum() / fv['alert_hours'].sum())} of them when a load regime was missing from its 21-day baseline."
+            f"The ML Model raised half the false-alert hours as Vendor Rules ({fm['alert_hours'].sum():,.0f} vs. {fv['alert_hours'].sum():,.0f}). {pct(lvl['alert_hours'].sum() / fm['alert_hours'].sum())} of the ML Model's false alert-hours came from sensor points whose healthy level moved outside the range it was trained on. {len(lvl)} of its {len(fm)} false alerts, across {lvl['lead_point'].nunique()} sensor points, opened this way. Of the rest, {n_.get('Transient', 0)} were short crossings above threshold and {n_.get('Unexplained', 0)} had no identifiable cause."
         )
         s += self.exhibit("False alert-hours by cause, evaluation year", self.fig_false_causes())
         mi = self.t["misses"]
@@ -1576,6 +1586,9 @@ p.gap { margin-top: 28px; }
 .chart-title.panel-title { color: var(--text); margin-top: 26px; }
 .panel-sub { color: var(--text); font-size: 14px; text-align: center; margin: 2px 0 0; }
 table.data.ctr2 th:nth-child(2), table.data.ctr2 td:nth-child(2) { text-align: center; }
+table.data.ctr2, table.data.boxes { font-size: 15px; }
+table.data.even2 th { text-align: center; }
+table.data.ctrlast th:last-child, table.data.ctrlast td:last-child { text-align: center; }
 """
 
 
