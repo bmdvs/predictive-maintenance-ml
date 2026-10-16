@@ -6,7 +6,7 @@ A **Predictive Maintenance ML model** was built on the past three years of the s
 
 - **Results.** The table below compares the predictive maintenance model (ML Model) against the Vendor Rules method, which is the shop's existing condition monitoring layer. Vendor Rules applies fixed threshold alerts on sensor measurements: velocity, high-frequency acceleration and bearing fault bands, and its ALERTs and ALARMs drive maintenance requests. The ML Model ran in shadow mode beside Vendor Rules during the evaluation year (July 2025 to June 2026), with its ALERTs and ALARMs recorded and not acted on, in order to evaluate its performance.
   - Against 32 confirmed conditions, the ML Model caught 23 against Vendor Rules’ 22, with 41% fewer false alerts and 61% fewer false ALARMs.
-  - On the 18 conditions both methods caught, the ML Model's ALERTs gave a median 23.7 days of warning against 21.3
+  - On the 18 conditions both methods caught, the ML Model's ALERTs gave a median 23.7 days of warning against 21.3.
 
 <div align="center">
 
@@ -15,12 +15,12 @@ A **Predictive Maintenance ML model** was built on the past three years of the s
 | | Conditions caught | Median warning (days) | False ALERTs per asset-month | False ALARMs per asset-month | Inspection hours on false alerts |
 |:---|:---:|:---:|:---:|:---:|:---:|
 | Vendor Rules | 22 of 32 | 21.3 | 0.235 | 0.137 | 63 |
-| **ML Model** | **23 of 32** | **23.7** | **0.14** | **0.054** | **37** |
+| **ML Model** | **23 of 32** | **23.7** | **0.140** | **0.054** | **37** |
 
 </div>
 
-- **Purpose and use.** Each hour, the ML Model scores every sensor point against its learned normal behavior. It raises an ALERT (inspection needed) or an ALARM (urgent repair) and opens a work request with the suspected condition and a recommended inspection. During the evaluation year, Vendor Rules drove the maintenance queue and the ML Model's status was shown beside them. 
-- **Model training.** The model was trained on July 2023 to June 2025 and selected on expanding-window folds within that period. The evaluation year, July 2025 to June 2026, was held out until the model was chosen. The record holds 84 confirmed conditions: 52 in training and 32 in evaluation.
+- **Purpose and use.** Each hour, the ML Model scores every sensor point against its learned normal behavior. It raises an ALERT (inspection needed) or an ALARM (urgent repair) and opens a work request with the suspected condition and a recommended inspection. During the evaluation year, Vendor Rules drove the maintenance queue and the ML Model's status was shown beside it. 
+- **Model training.** The model was trained on July 2023 to June 2025 and selected on expanding-window folds within that period. The evaluation year, July 2025 to June 2026, was held out until the model was chosen. The record holds 84 confirmed conditions on the sensor points: 52 in training and 32 in evaluation.
   - An autoencoder (a neural network ML model) is trained for each sensor point and learns its normal behavior from 13 sensor measurements (velocity, high-frequency acceleration, envelope fault bands, shaft-order energies, crest factor, kurtosis and temperature), plus operating data from the machines' controllers.
   - The model is trained on the point's healthy hours and re-centered after each repair and sensor remount.
   - The model flags ALERTs above the 99.5th percentile of healthy scores, held for six hours. An open ALERT escalates to an ALARM when the asset also crosses a severity criterion for its class: velocity in the ISO danger zone, a late-stage bearing signature, a spindle or compressor temperature limit, or sustained pump cavitation.
@@ -32,9 +32,11 @@ A **Predictive Maintenance ML model** was built on the past three years of the s
 - **Production monitoring.** A monthly monitor tracks event recall, alert rates against Vendor Rules, feature and score drift, and data quality, alongside Databricks data profiling. Model retraining is evaluated each month based on set rules, as detailed in the [monitoring report](https://bmdvs.github.io/predictive-maintenance-ml/reports/monitoring_report.html).
 
 The Vendor Rules' and ML Model's statuses and work requests are presented in a [maintenance queue](https://bmdvs.github.io/predictive-maintenance-ml/) in the shop's CMMS, one row per asset at ALERT or ALARM:
+
 [![Maintenance queue](docs/screenshots/queue.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
 
 Clicking on an asset reveals a detail section showing measurement trends, fault-band energies, spectra and maintenance history:
+
 [![Maintenance queue asset detail](docs/screenshots/queue_detail.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
 
 ---
@@ -43,7 +45,7 @@ Clicking on an asset reveals a detail section showing measurement trends, fault-
 
 A precision machining shop runs 40 CNC machines. Its eight horizontal machining centers (HMCs) are the bottleneck: they carry 29% of the shop’s cutting hours at 71% utilization, and an hour of HMC downtime costs $185 in contribution margin, 1.7x the average for the rest of the fleet. Spindle and pump failures on the HMCs stop the shop's highest-margin work.
 
-In July 2023 the shop began a pilot of sensor-based condition monitoring on the HMC cell and the compressors: wireless sensors on 40 points, monitored as 28 assets (each HMC's spindle, through-spindle coolant (TSC) pump and flood coolant pump, and each compressor). These sensors were monitored by the sensor vendor's threshold alerts, Vendor Rules, alongside interval-based PM. Vendor Rules was found to produce a high rate of false-alerts: its ALERTs led to 204 machine inspections from July 2023 to June 2025, and 79% of those found nothing wrong.
+In July 2023 the shop began a pilot of sensor-based condition monitoring on the HMC cell and the compressors: wireless sensors on 40 points, monitored as 28 assets (each HMC's spindle, through-spindle coolant (TSC) pump and flood coolant pump, and each compressor). These sensors were monitored by the sensor vendor's threshold alerts, Vendor Rules, alongside interval-based PM. Vendor Rules was found to produce a high rate of false alerts: its ALERTs led to 204 machine inspections from July 2023 to June 2025, and 79% of those found nothing wrong.
 
 To lower this false alert rate, and to catch developing faults earlier, the pilot's second phase added the ML Model. Built on the same sensor record, it ran in shadow mode beside Vendor Rules over the evaluation year to prove its effectiveness.
 
@@ -56,6 +58,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 | 1 | Maintenance queue | The shop's CMMS maintenance queue: one row per asset at ALERT or ALARM under either method, with Vendor Rules' status, the ML Model's shadow status, the suspected condition and the work request. Each asset's detail section holds the ML Model score and measurement trends against Vendor Rules limits, fault-band energies, envelope spectra at the alert and now, controller signals and maintenance history. | [View](https://bmdvs.github.io/predictive-maintenance-ml/) |
 | 2 | Model report | Detection and warning against Vendor Rules, escalation to ALARM and diagnosis; the model overview and condition signatures; model selection, validation, false alerts and misses, and limitations; appendix on indicators, platform and the full timeline. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) |
 | 3 | Monitoring report | Monthly monitoring of the evaluation year against the retraining rule: event performance and alert rates by method, feature and score drift, data quality, the champion model and post-repair re-centering. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/monitoring_report.html) |
+
 ---
 
 ## Code
@@ -104,7 +107,7 @@ flowchart LR
   end
   subgraph JOB["Monthly Lakeflow job"]
     TRAIN["Train<br/>per-point models, controller health,<br/>survival, supervised gate"]
-    PROM["Promote<br/>Unity Catalog registry,<br/>champion alias, four gates"]
+    PROM["Promote<br/>Unity Catalog registry,<br/>champion alias, five gates"]
     SCORE["Score<br/>per-point scores, prognosis,<br/>fusion, advisory"]
     MON["Monitor<br/>evaluation, drift, data quality,<br/>retraining decision"]
   end
@@ -141,7 +144,7 @@ The datasets were generated to represent typical exports from a wireless vibrati
 - CMMS work orders and PM records;
 - ERP jobs and the asset register.
 
-The data is built from each machine's physical properties and published degradation mechanisms, in order to generate data that's as close to possible to real machine data. The faults were not shaped to suit either monitoring method, and neither the ML Model nor Vendor Rules plays any part in generating it.
+The data is built from each machine's physical properties and published degradation mechanisms, in order to generate data that's as close as possible to real machine data. The faults were not shaped to suit either monitoring method, and neither the ML Model nor Vendor Rules plays any part in generating it.
 
 - **Machines and operation.** Vibration bursts are synthesized at 25,600 samples a second from each point's kinematics: shaft speed from the controller, and bearing defect frequencies from the bearing geometry in the asset register. Spindle speed and cutting load follow the ERP's jobs and programs, so healthy levels shift with speed and rise with load, as they do on a real spindle. Housing temperature follows load and season in a climate-controlled shop.
 - **Degradation.** Each condition develops through its published signature:
@@ -154,6 +157,7 @@ The data is built from each machine's physical properties and published degradat
 - **Operating events that are not faults.** Heavy cuts, titanium jobs, new programs and coolant drift move the measurements without any condition behind them, as they do on a working floor.
 
 Realism checks test each mechanism against its published behavior, and the record was frozen before any model was trained. The generators are in [`generate/`](generate/) and the checks in [`generate/checks/`](generate/checks/).
+
 ---
 
 ## Running it locally
