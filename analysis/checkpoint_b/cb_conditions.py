@@ -42,6 +42,18 @@ conds = pd.DataFrame(
 for m, k in (("ML Model", "ml"), ("Vendor Rules", "vr")):
     conds[f"{k}_strict"] = conds["wo_id"].map(ctm[m]["strict"]).astype(bool)
     conds[f"{k}_warn"] = conds["wo_id"].map(ctm[m]["attributable_warning"]).astype(float)
+    # the episode credited with each strict catch: opening, last alert, close and ALARM start
+    ep = conds["wo_id"].map(ctm[m]["credited_episode"]).where(conds[f"{k}_strict"])
+    lv = LEV[m]
+    for col in ("opened", "last", "closed", "alarm_ts"):
+        conds[f"{k}_{col}"] = [lv.at[int(i), col] if pd.notna(i) else pd.NaT for i in ep]
+# how each condition was found: the PM or inspection its work order follows from (source_wo_id), and when
+wo_all = cb("cmms_work_orders").set_index("wo_id")
+src = conds["wo_id"].map(wo_all["source_wo_id"])
+conds["found_by"] = [
+    str(wo_all.at[s, "wo_type"]) if isinstance(s, str) and s in wo_all.index else "" for s in src
+]
+conds["found_ts"] = [wo_all.at[s, "opened"] if isinstance(s, str) and s in wo_all.index else pd.NaT for s in src]
 conds.to_parquet(OUT / "conditions.parquet", index=False)
 pd.set_option("display.width", 250)
 pd.set_option("display.max_columns", 20)
