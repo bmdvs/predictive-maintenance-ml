@@ -31,9 +31,10 @@ A **Predictive Maintenance ML model** was built on the past three years of the s
   - Full evaluation and technical detail are in the [model report's](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) appendix.
 - **Production monitoring.** A monthly monitor tracks event recall, alert rates against Vendor Rules, feature and score drift, and data quality, alongside Databricks data profiling. Model retraining is evaluated each month based on set rules, as detailed in the [monitoring report](https://bmdvs.github.io/predictive-maintenance-ml/reports/monitoring_report.html).
 
-The Vendor Rules' and ML Model's statuses and work requests are presented in a [maintenance queue](https://bmdvs.github.io/predictive-maintenance-ml/) in the shop's CMMS, one row per asset at ALERT or ALARM, with a detail section per asset showing measurement trends, fault-band energies, spectra and maintenance history:
-
+The Vendor Rules' and ML Model's statuses and work requests are presented in a [maintenance queue](https://bmdvs.github.io/predictive-maintenance-ml/) in the shop's CMMS, one row per asset at ALERT or ALARM:
 [![Maintenance queue](docs/screenshots/queue.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
+
+Clicking on an asset reveals a detail section showing measurement trends, fault-band energies, spectra and maintenance history:
 [![Maintenance queue asset detail](docs/screenshots/queue_detail.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
 
 ---
