@@ -199,11 +199,10 @@ class TimeChart:
         dash: str = "4 3",
         label: str | None = None,
     ) -> None:
-        self._key("dash", color, dash, label)
         self.labels.append(
             (
                 "hline",
-                {"t0": ts0, "t1": ts1, "v": v, "color": color, "dash": dash, "label": None, "key": label},
+                {"t0": ts0, "t1": ts1, "v": v, "color": color, "dash": dash, "label": label, "key": label},
             )
         )
 
@@ -489,15 +488,19 @@ LEG_ROW = 14
 def legend_layout(
     items: list[tuple[str, str, str, str]], x0: float, x1: float
 ) -> tuple[list[tuple[float, int, tuple[str, str, str, str]]], float]:
-    """Legend items placed left to right in rows from x0, wrapping at x1; returns (x, row, item) and the
-    height the rows need."""
+    """Legend items placed left to right in rows between x0 and x1, each row centered; returns (x, row, item)
+    and the height the rows need."""
     out, x, row = [], x0, 0
+    ends: dict[int, float] = {}
     for it in items:
         w = 20 + text_w(it[3]) + 14
         if x > x0 and x + w > x1:
             x, row = x0, row + 1
         out.append((x, row, it))
         x += w
+        ends[row] = x - 14
+    shift = {r: (x1 - e) / 2 for r, e in ends.items()}
+    out = [(xx + shift[r], r, it) for xx, r, it in out]
     return out, ((row + 1) * LEG_ROW + 6) if items else 0
 
 
