@@ -1,6 +1,6 @@
 # Machine Learning Model: Predictive Maintenance
 
-All code related to the ML model (training, scoring, alerting and evaluation) and data / ML engineering is found below in the Code section. 
+All code related to the ML model (training, scoring, alerting and evaluation) and data / ML engineering is organized below in the Code section. 
 
 <br> 
 
