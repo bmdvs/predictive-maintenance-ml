@@ -56,7 +56,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 | # | Deliverable | What it is | Links |
 |---|---|---|---|
 | 1 | Maintenance queue | The shop's CMMS maintenance queue: one row per asset at ALERT or ALARM under either method, with Vendor Rules' status, the ML Model's shadow status, the suspected condition and the work request. Each asset's detail section holds the ML Model score and measurement trends against Vendor Rules limits, fault-band energies, envelope spectra at the alert and now, controller signals and maintenance history. | [View](https://bmdvs.github.io/predictive-maintenance-ml/) |
-| 2 | Model report | Detection and warning against Vendor Rules, escalation to ALARM and diagnosis; the model overview and condition signatures; model selection, validation, false alerts and misses, and limitations; appendix on indicators, platform and the full timeline. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) |
+| 2 | Model report | Detection and warning against Vendor Rules, escalation to ALARM and diagnosis; the model overview, training data detail, scoring summary and condition signatures; model selection, validation, false alerts and misses, and limitations. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) |
 | 3 | Monitoring report | Monthly monitoring of the evaluation year against the retraining rule: event performance and alert rates by method, feature and score drift, data quality, the champion model and post-repair re-centering. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/monitoring_report.html) |
 
 ---
