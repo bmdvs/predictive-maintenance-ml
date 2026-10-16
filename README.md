@@ -78,15 +78,14 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 | File | What it does |
 |---|---|
-| [`databricks.yml`](databricks.yml), [`databricks/`](databricks/) | The Declarative Automation Bundle: dev and prod targets, the Lakeflow pipeline and the monthly job. |
-| [`src/pdm/entrypoints.py`](src/pdm/entrypoints.py), [`src/pdm/tasks.py`](src/pdm/tasks.py) | The job's Python wheel tasks: train, promote, score and monitor. |
-| `src/pdm/registry.py` | Champion and challenger promotion in the Unity Catalog model registry, with the five promotion gates. |
-| `src/pdm/monitoring/performance.py` | Monthly event performance per method, feature and score drift, and the retraining decision. |
-| `src/pdm/parity.py` | Runs the pipeline and every job task locally on the exports, checked against the workspace's tables. |
-| [`databricks/scripts/`](databricks/scripts/) | Unity Catalog setup, landing the exports, service principal grants and the data profiles, as reproducible CLI scripts. |
-| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lint and tests on every change, and bundle validation when workspace credentials are configured. |
-| [`src/pdm/reports/`](src/pdm/reports/) | Builds the queue, both reports and this README from the gold snapshot in [`data/gold_snapshot/`](data/gold_snapshot/). |
-
+| [`databricks/scripts/`](databricks/scripts/) | Sets up the platform: Unity Catalog, landing the exports, service principal grants and the data profiles, as reproducible CLI scripts. |
+| [`databricks.yml`](databricks.yml), [`databricks/`](databricks/) | Deploys the Declarative Automation Bundle: dev and prod targets, the Lakeflow pipeline and the monthly job. |
+| [`src/pdm/entrypoints.py`](src/pdm/entrypoints.py), [`src/pdm/tasks.py`](src/pdm/tasks.py) | Runs the monthly job as Python wheel tasks: train, promote, score and monitor. |
+| `src/pdm/registry.py` | Promotes the champion and challenger in the Unity Catalog model registry, through the five promotion gates. |
+| `src/pdm/monitoring/performance.py` | Monitors event performance per method, feature and score drift each month, and makes the retraining decision. |
+| [`src/pdm/reports/`](src/pdm/reports/) | Publishes the queue, both reports and this README from the gold snapshot in [`data/gold_snapshot/`](data/gold_snapshot/). |
+| `src/pdm/parity.py` | Tests the pipeline and every job task locally on the exports, checked against the workspace's tables. |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lints and tests every change, and validates the bundle when workspace credentials are configured. |
 ---
 
 ## How it works
