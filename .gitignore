@@ -1,0 +1,44 @@
+# Build specification and private notes
+CLAUDE.md
+DEVIATIONS.md
+
+# Generation archives and model registry
+runs/
+mlruns/
+
+# Data (samples are tracked)
+data/*
+!data/samples/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# Prefect and local state
+.prefect/
+*.duckdb
+*.duckdb.wal
+
+# Platform build specification merged into CLAUDE.md
+CLAUDE-azure-databricks.md
+
+# Databricks and Azure local state and credentials
+.databrickscfg
+.env
+*.azcred
+.databricks/
+
+# Local parity outputs
+exports/local_gold/
+
+# Mechanism additions merged into CLAUDE.md
+CLAUDE-run05-mechanisms.md
