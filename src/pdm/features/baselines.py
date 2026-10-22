@@ -1,9 +1,10 @@
 """Baseline statistics per healthy window and regime, and the fleet baseline sanity check.
 
 Inputs: the hourly indicator table restricted to healthy windows. Outputs: per window and regime the
-median, MAD, 5th and 95th percentiles of the baseline indicators; and per window the ratio of its key
-indicator medians to the median of its sister points' windows, flagged when outside the configured
-factor. Bronze only.
+median, MAD, 5th and 95th percentiles of the baseline indicators; and per window the sanity flags:
+the ratio of its key indicator medians to its sister points' (groups of three or more, high side only)
+and the rise across the window implied by the Theil-Sen trend of HF and envelope fault-band energy.
+Bronze only.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import numpy as np
 import pandas as pd
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
+from scipy.stats import theilslopes
 
 BASELINE_INDICATORS = [
     "accel_rms_g",
@@ -29,7 +31,8 @@ BASELINE_INDICATORS = [
     "env_bsf_1_g2",
     "env_ftf_1_g2",
 ]
-SANITY_INDICATORS = {"hf_rms_g": "hf_rms_g", "vel_rms_mm_s": "vel_rms_mm_s", "env_fault_g2": "env_fault_g2"}
+SISTER_INDICATORS = ["hf_rms_g", "vel_rms_mm_s", "env_fault_g2"]
+TREND_INDICATORS = ["hf_rms_g", "env_fault_g2"]
 
 
 def with_env_fault(df: DataFrame) -> DataFrame:
@@ -81,73 +84,147 @@ def window_stats(rows_in_windows: DataFrame) -> DataFrame:
 def window_medians(rows_in_windows: DataFrame) -> DataFrame:
     """Per window, the pooled median of each sanity indicator over clean rows."""
     clean = with_env_fault(rows_in_windows).where(~F.coalesce(F.col("implausible"), F.lit(False)))
-    aggs = [F.percentile_approx(c, 0.5, 10000).alias(c) for c in SANITY_INDICATORS]
+    aggs = [F.percentile_approx(c, 0.5, 10000).alias(c) for c in SISTER_INDICATORS]
     return clean.groupBy("window_id", "point_id").agg(*aggs, F.count("*").alias("n"))
 
 
-def sister_ratios(medians: pd.DataFrame, pts: pd.DataFrame) -> pd.DataFrame:
-    """Ratio of each window's median to the median of the sister points' windows, per indicator."""
+def sister_ratios(medians: pd.DataFrame, pts: pd.DataFrame, min_group: int) -> pd.DataFrame:
+    """Ratio of each window's median to the median of its sister points' windows, per indicator, for
+    sister groups of at least min_group points."""
     m = medians.merge(pts[["point_id", "sister_group"]], on="point_id")
+    sizes = pts.groupby("sister_group")["point_id"].nunique()
     rows = []
     for _, w in m.iterrows():
+        if sizes.get(w["sister_group"], 0) < min_group:
+            continue
         sis = m[(m["sister_group"] == w["sister_group"]) & (m["point_id"] != w["point_id"])]
-        for ind in SANITY_INDICATORS:
+        for ind in SISTER_INDICATORS:
             ref = float(np.median(sis[ind].dropna())) if sis[ind].notna().any() else np.nan
             val = float(w[ind]) if pd.notna(w[ind]) else np.nan
             rows.append(
                 {
                     "window_id": w["window_id"],
                     "point_id": w["point_id"],
-                    "sister_group": w["sister_group"],
                     "indicator": ind,
                     "value": val,
                     "sister_median": ref,
                     "ratio": val / ref if ref and ref > 0 and pd.notna(val) else np.nan,
                 }
             )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows, columns=["window_id", "point_id", "indicator", "value", "sister_median", "ratio"]
+    )
 
 
-def proposed_factor(ratios: pd.DataFrame, install_windows: set[str], quantile: float) -> float:
-    """Sanity factor from the healthy sister-to-sister spread of install-window ratios: the given
-    quantile of |log ratio| across all sister comparisons, as a multiplicative factor."""
+def window_trends(rows_in_windows: DataFrame) -> DataFrame:
+    """Per window and trend indicator, the rise across the window implied by the Theil-Sen slope of the
+    log indicator against time."""
+    clean = with_env_fault(rows_in_windows).where(~F.coalesce(F.col("implausible"), F.lit(False)))
+    cols = ["window_id", "point_id", "hour_utc", *TREND_INDICATORS]
+
+    def fn(pdf: pd.DataFrame) -> pd.DataFrame:
+        t = (
+            pd.to_datetime(pdf["hour_utc"]) - pd.to_datetime(pdf["hour_utc"]).min()
+        ).dt.total_seconds() / 86400.0
+        span = float(t.max()) if len(t) else 0.0
+        out = []
+        for ind in TREND_INDICATORS:
+            v = pdf[ind].to_numpy(dtype=float)
+            ok = np.isfinite(v) & (v > 0)
+            if ok.sum() < 10 or span <= 0:
+                continue
+            slope = theilslopes(np.log(v[ok]), t.to_numpy()[ok])[0]
+            out.append(
+                {
+                    "window_id": pdf["window_id"].iat[0],
+                    "point_id": pdf["point_id"].iat[0],
+                    "indicator": ind,
+                    "slope_log_per_day": float(slope),
+                    "span_days": span,
+                    "implied_rise": float(np.exp(slope * span)),
+                }
+            )
+        return pd.DataFrame(
+            out,
+            columns=["window_id", "point_id", "indicator", "slope_log_per_day", "span_days", "implied_rise"],
+        )
+
+    schema = (
+        "window_id string, point_id string, indicator string, slope_log_per_day double, "
+        "span_days double, implied_rise double"
+    )
+    return clean.select(*cols).groupBy("window_id").applyInPandas(fn, schema)
+
+
+def proposed_factors(
+    ratios: pd.DataFrame, trends: pd.DataFrame, install_windows: set[str], sc: dict[str, Any]
+) -> dict[str, float]:
+    """Sister factor: the configured quantile of install-window sister ratios above 1 (high side only).
+    Trend factor: the configured quantile of the implied rises across all baseline windows."""
     r = ratios[ratios["window_id"].isin(install_windows)]["ratio"].dropna()
     r = r[r > 0]
-    return float(np.exp(np.quantile(np.abs(np.log(r)), quantile))) if len(r) else np.nan
+    hi = np.exp(np.abs(np.log(r)))
+    rises = trends["implied_rise"].dropna()
+    return {
+        "sister_factor": float(np.quantile(hi, sc["sister_quantile"])) if len(hi) else np.nan,
+        "trend_factor": float(np.quantile(np.maximum(rises, 1.0 / rises), sc["trend_quantile"]))
+        if len(rises)
+        else np.nan,
+    }
 
 
-def sanity_flags(ratios: pd.DataFrame, factor: float) -> pd.DataFrame:
-    out = ratios.copy()
-    out["outside"] = (out["ratio"] > factor) | (out["ratio"] < 1.0 / factor)
-    per = (
-        out.groupby(["window_id", "point_id"])
-        .apply(
-            lambda g: pd.Series(
-                {
-                    "flagged": bool(g["outside"].any()),
-                    "indicators": ",".join(g.loc[g["outside"], "indicator"]),
-                    "max_ratio": float(g["ratio"].max()),
-                    "min_ratio": float(g["ratio"].min()),
-                }
-            ),
-            include_groups=False,
+def sanity_flags(
+    ratios: pd.DataFrame, trends: pd.DataFrame, windows: pd.DataFrame, factors: dict[str, float]
+) -> pd.DataFrame:
+    """One flag row per window: sister flag (high side only), trend flag, and the indicators behind them."""
+    rows = []
+    for w in windows.itertuples():
+        r = ratios[ratios["window_id"] == w.window_id]
+        tr = trends[trends["window_id"] == w.window_id]
+        sis_hit = r[r["ratio"] > factors["sister_factor"]]
+        tr_hit = tr[tr["implied_rise"] > factors["trend_factor"]]
+        rows.append(
+            {
+                "window_id": w.window_id,
+                "point_id": w.point_id,
+                "reason": w.reason,
+                "sister_tested": bool(len(r)),
+                "sister_ratio_max": float(r["ratio"].max()) if len(r) else np.nan,
+                "trend_rise_max": float(tr["implied_rise"].max()) if len(tr) else np.nan,
+                "flag_sister": bool(len(sis_hit)),
+                "flag_trend": bool(len(tr_hit)),
+                "flagged": bool(len(sis_hit) or len(tr_hit)),
+                "indicators": ",".join(
+                    [f"sister:{i}" for i in sis_hit["indicator"]]
+                    + [f"trend:{i}" for i in tr_hit["indicator"]]
+                ),
+                "sister_factor": factors["sister_factor"],
+                "trend_factor": factors["trend_factor"],
+            }
         )
-        .reset_index()
-    )
-    per["factor"] = factor
-    return per
+    return pd.DataFrame(rows)
 
 
 def sanity_table(
     spark: Any, rows_in_windows: DataFrame, pts: DataFrame, windows: DataFrame, cfg: dict[str, Any]
-) -> tuple[DataFrame, float]:
-    """Fleet baseline sanity flags for every window, and the factor used."""
+) -> tuple[DataFrame, dict[str, float]]:
+    """Fleet baseline sanity flags for every window, and the factors used (configured, or proposed from
+    healthy spread while the configured values are null)."""
+    sc = cfg["baselines"]["sanity"]
     med = window_medians(rows_in_windows).toPandas()
     pts_pd = pts.select("point_id", "sister_group").toPandas()
-    ratios = sister_ratios(med, pts_pd)
-    w = windows.select("window_id", "reason").toPandas()
+    ratios = sister_ratios(med, pts_pd, sc["sister_min_group"])
+    trends = window_trends(rows_in_windows).toPandas()
+    w = windows.select("window_id", "point_id", "reason").toPandas()
     install = set(w.loc[w["reason"] == "install", "window_id"])
-    sc = cfg["baselines"]["sanity"]
-    factor = sc.get("factor") or proposed_factor(ratios, install, sc["spread_quantile"])
-    flags = sanity_flags(ratios, factor)
-    return spark.createDataFrame(flags), factor
+    proposed = proposed_factors(ratios, trends, install, sc)
+    factors = {
+        "sister_factor": sc.get("sister_factor") or proposed["sister_factor"],
+        "trend_factor": sc.get("trend_factor") or proposed["trend_factor"],
+    }
+    flags = sanity_flags(ratios, trends, w, factors)
+    return spark.createDataFrame(flags), {
+        **factors,
+        "proposed_sister": proposed["sister_factor"],
+        "proposed_trend": proposed["trend_factor"],
+    }

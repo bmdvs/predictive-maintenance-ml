@@ -1,139 +1,203 @@
-"""Event-based evaluation of every alerting method against confirmed conditions from bronze CMMS.
+"""Event-based evaluation against confirmed conditions from bronze CMMS.
 
-Inputs: a unified alert table (method, asset, time), confirmed conditions, CMMS inspection labor,
-work requests and contribution margin by machine class. Outputs: per method and condition type the
-conditions caught, days of warning, false alerts per asset-month and the inspection hours they
-represent, alert-level precision, diagnosis agreement, and the headline comparison with the downtime
-and cost of unplanned repairs that a method's warning would have allowed to be planned.
-
-A condition is caught when the method alerted on the condition's asset (or, for controller-only
-alerts, on the condition's machine) within the lookback window before the condition was confirmed.
-A PM finding is credited only when the alert precedes the PM date.
+A method catches a confirmed condition if it had an alert episode or an open case on the same asset, at
+the affected point (or any point for asset-level causes), at the moment of confirmation, opened within
+the configured days before it. An alert episode runs from its first persisted exceedance until the
+configured gap after its last; a fused case runs over its open interval. Warning days run from the
+episode or case opening. The chance share is the share of time the asset (at the condition's scope)
+has an episode or case open that was opened within the window. False episodes are those whose open
+interval holds no confirmation on the asset.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import pandas as pd
 
-MACHINE_LEVEL = {"controller"}
+DAY = pd.Timedelta(days=1)
+AFFECTED_POINT = {"CMP-BRG-MOTOR": "-MDE", "CMP-BRG-AIREND": "-AE", "coolant_ingress": "-F"}
+INSTRUMENTED = r"^(HMC-\d+-(SP|TSC|CP)|CMP-\d+)$"
 
 
-def _match(alerts: pd.DataFrame, cond: pd.Series, method: str) -> pd.DataFrame:
-    if method in MACHINE_LEVEL:
-        return alerts[alerts["machine_id"] == cond["machine_id"]]
-    return alerts[alerts["asset_id"] == cond["asset_id"]]
+def condition_scope(conds: pd.DataFrame, points_by_asset: dict[str, list[str]]) -> pd.DataFrame:
+    """Asset key for matching and the affected point (None for asset-level causes)."""
+    c = conds.copy()
+    inst = c["asset_id"].str.match(INSTRUMENTED)
+    c["asset_key"] = np.where(inst, c["asset_id"], c["asset_id"].str.extract(r"^([A-Z]+-\d+)")[0])
+    pts = []
+    for r in c.itertuples():
+        cand = points_by_asset.get(r.asset_id, [])
+        suffix = AFFECTED_POINT.get(r.failure_code) if isinstance(r.failure_code, str) else None
+        if len(cand) == 1:
+            pts.append(cand[0])
+        elif suffix:
+            hit = [p for p in cand if p.endswith(suffix)]
+            pts.append(hit[0] if hit else None)
+        else:
+            pts.append(None)
+    c["point_scope"] = pts
+    return c
 
 
-def caught_table(
-    alerts: pd.DataFrame, conditions: pd.DataFrame, methods: list[str], lookback_days: float
-) -> pd.DataFrame:
+def episodes(exceed: pd.DataFrame, gap_days: float) -> pd.DataFrame:
+    """Episodes per asset and point from persisted exceedance or alert times (columns asset_id,
+    point_id, ts). An episode closes gap_days after its last exceedance."""
+    gap = pd.Timedelta(days=gap_days)
+    if exceed.empty:
+        return pd.DataFrame(columns=["asset_id", "point_id", "opened", "last", "closed"])
     rows = []
-    lb = pd.Timedelta(days=lookback_days)
-    for method in methods:
-        a = alerts[alerts["method"] == method]
-        for _, c in conditions.iterrows():
-            m = _match(a, c, method)
-            t = c["credit_ts"]
-            prior = m[(m["ts"] < t) & (m["ts"] >= t - lb)]
-            first = prior["ts"].min() if len(prior) else pd.NaT
-            rows.append(
-                {
-                    "method": method,
-                    "wo_id": c["wo_id"],
-                    "asset_id": c["asset_id"],
-                    "condition_type": c["condition_type"],
-                    "unplanned": bool(c["unplanned"]),
-                    "period": c["period"],
-                    "caught": bool(len(prior)),
-                    "warning_days": (t - first) / pd.Timedelta(days=1) if len(prior) else np.nan,
-                    "downtime_hours": c["downtime_hours"],
-                    "machine_class": c.get("machine_class"),
-                }
-            )
-    return pd.DataFrame(rows)
+    e = exceed.assign(point_id=exceed["point_id"].fillna(""))
+    for (asset, pid), g in e.sort_values("ts").groupby(["asset_id", "point_id"]):
+        t = pd.to_datetime(g["ts"], utc=True).to_list()
+        start = last = t[0]
+        for x in t[1:]:
+            if x - last > gap:
+                rows.append((asset, pid or None, start, last))
+                start = x
+            last = x
+        rows.append((asset, pid or None, start, last))
+    out = pd.DataFrame(rows, columns=["asset_id", "point_id", "opened", "last"])
+    out["closed"] = out["last"] + gap
+    return out
 
 
-def false_alerts(
-    alerts: pd.DataFrame, conditions: pd.DataFrame, methods: list[str], window_days: float
-) -> pd.DataFrame:
-    """Alerts not followed by a confirmed condition on the matched asset within the window."""
+def _scope_mask(ep: pd.DataFrame, asset_key: str, point: str | None) -> pd.Series:
+    m = ep["asset_id"] == asset_key
+    if point is not None:
+        pts = ep["point_id"].fillna("")
+        m &= (pts == "") | pts.str.contains(point, regex=False)
+    return m
+
+
+def catch_table(ep: pd.DataFrame, conds: pd.DataFrame, window_days: float) -> pd.DataFrame:
     w = pd.Timedelta(days=window_days)
     rows = []
-    for method in methods:
-        a = alerts[alerts["method"] == method]
-        for _, r in a.iterrows():
-            key = "machine_id" if method in MACHINE_LEVEL else "asset_id"
-            after = conditions[
-                (conditions[key] == r[key])
-                & (conditions["credit_ts"] >= r["ts"])
-                & (conditions["credit_ts"] <= r["ts"] + w)
-            ]
-            rows.append(
-                {
-                    "method": method,
-                    "asset_id": r["asset_id"],
-                    "ts": r["ts"],
-                    "confirmed_within_window": bool(len(after)),
-                }
-            )
-    return pd.DataFrame(rows, columns=["method", "asset_id", "ts", "confirmed_within_window"])
-
-
-def summary(
-    caught: pd.DataFrame,
-    fa: pd.DataFrame,
-    n_assets: dict[str, int],
-    months: float,
-    inspection_hours_each: float,
-    margin_by_class: dict[str, float],
-    planned_lead_days: float,
-    lookback_months: float = 0.0,
-) -> pd.DataFrame:
-    """chance_catch_share: the share of conditions an asset's alerts would precede by chance within the
-    lookback, at the method's alert rate per asset-month (Poisson)."""
-    rows = []
-    for method, g in caught.groupby("method"):
-        f = fa[fa["method"] == method]
-        n_false = int((~f["confirmed_within_window"]).sum()) if len(f) else 0
-        warn = g.loc[g["caught"], "warning_days"]
-        avoid = g[g["caught"] & g["unplanned"] & (g["warning_days"] >= planned_lead_days)]
-        cost = float(
-            sum(r.downtime_hours * margin_by_class.get(r.machine_class, 0.0) for r in avoid.itertuples())
+    for c in conds.itertuples():
+        t = c.credit_ts
+        m = (
+            _scope_mask(ep, c.asset_key, c.point_scope)
+            & (ep["opened"] <= t)
+            & (ep["closed"] > t)
+            & (ep["opened"] >= t - w)
         )
+        hit = ep[m]
+        first = hit["opened"].min() if len(hit) else pd.NaT
         rows.append(
             {
-                "method": method,
-                "conditions": len(g),
-                "caught": int(g["caught"].sum()),
-                "caught_share": float(g["caught"].mean()) if len(g) else np.nan,
-                "warning_days_median": float(warn.median()) if len(warn) else np.nan,
-                "warning_days_min": float(warn.min()) if len(warn) else np.nan,
-                "warning_days_max": float(warn.max()) if len(warn) else np.nan,
-                "alerts": len(f),
-                "alert_precision": float(f["confirmed_within_window"].mean()) if len(f) else np.nan,
-                "false_alerts": n_false,
-                "false_alerts_per_asset_month": n_false / (n_assets.get(method, 1) * months)
-                if months > 0
-                else np.nan,
-                "false_alert_inspection_hours": n_false * inspection_hours_each,
-                "unplanned_plannable": len(avoid),
-                "unplanned_downtime_plannable_h": float(avoid["downtime_hours"].sum()),
-                "unplanned_cost_plannable_usd": cost,
-                "chance_catch_share": 1.0
-                - float(np.exp(-(len(f) / (n_assets.get(method, 1) * months)) * lookback_months))
-                if months > 0
-                else np.nan,
+                "wo_id": c.wo_id,
+                "asset_id": c.asset_id,
+                "point_scope": c.point_scope,
+                "condition_type": c.condition_type,
+                "unplanned": bool(c.unplanned),
+                "caught": bool(len(hit)),
+                "warning_days": (t - first) / DAY if len(hit) else np.nan,
+                "downtime_hours": c.downtime_hours,
+                "machine_class": c.machine_class,
             }
         )
     return pd.DataFrame(rows)
 
 
+def chance_share(
+    ep: pd.DataFrame, conds: pd.DataFrame, period: tuple[pd.Timestamp, pd.Timestamp], window_days: float
+) -> float:
+    """Mean over conditions of the time share in the period when an episode or case at the condition's
+    scope is open and was opened within the window (hourly grid)."""
+    g = pd.date_range(period[0], period[1], freq="h", inclusive="left")
+    w = pd.Timedelta(days=window_days)
+    cache: dict[tuple[str, str | None], float] = {}
+    vals = []
+    for c in conds.itertuples():
+        key = (c.asset_key, c.point_scope)
+        if key not in cache:
+            e = ep[_scope_mask(ep, c.asset_key, c.point_scope)]
+            on = np.zeros(len(g), dtype=bool)
+            for r in e.itertuples():
+                on |= np.asarray((g >= r.opened) & (g < r.closed) & (g - r.opened <= w))
+            cache[key] = float(on.mean()) if len(on) else np.nan
+        vals.append(cache[key])
+    return float(np.nanmean(vals)) if vals else np.nan
+
+
+def false_episodes(ep: pd.DataFrame, conds_all: pd.DataFrame) -> pd.Series:
+    """True where no confirmation on the asset falls inside the episode's open interval."""
+    out = []
+    for r in ep.itertuples():
+        hit = conds_all[
+            (conds_all["asset_key"] == r.asset_id)
+            & (conds_all["credit_ts"] >= r.opened)
+            & (conds_all["credit_ts"] < r.closed)
+        ]
+        out.append(hit.empty)
+    return pd.Series(out, index=ep.index, dtype=bool)
+
+
+def summarize(
+    method: str,
+    level: str,
+    ep: pd.DataFrame,
+    conds: pd.DataFrame,
+    conds_all: pd.DataFrame,
+    period: tuple[pd.Timestamp, pd.Timestamp],
+    n_assets: int,
+    window_days: float,
+    inspection_hours_each: float,
+    margin_by_class: dict[str, float],
+    planned_lead_days: float,
+) -> tuple[dict, pd.DataFrame]:
+    a0, a1 = period
+    ep_p = ep[(ep["opened"] >= a0) & (ep["opened"] < a1)]
+    caught = catch_table(ep, conds, window_days).assign(method=method, level=level)
+    months = (a1 - a0) / pd.Timedelta(days=365.25 / 12)
+    fe = false_episodes(ep_p, conds_all) if len(ep_p) else pd.Series(dtype=bool)
+    n_false = int(fe.sum())
+    warn = caught.loc[caught["caught"], "warning_days"] if len(caught) else pd.Series(dtype=float)
+    plan = (
+        caught[caught["caught"] & caught["unplanned"] & (caught["warning_days"] >= planned_lead_days)]
+        if len(caught)
+        else caught
+    )
+    cost = float(sum(r.downtime_hours * margin_by_class.get(r.machine_class, 0.0) for r in plan.itertuples()))
+    row = {
+        "method": method,
+        "level": level,
+        "conditions": len(caught),
+        "caught": int(caught["caught"].sum()) if len(caught) else 0,
+        "caught_share": float(caught["caught"].mean()) if len(caught) else np.nan,
+        "chance_share": chance_share(ep, conds, period, window_days),
+        "warning_days_median": float(warn.median()) if len(warn) else np.nan,
+        "warning_days_min": float(warn.min()) if len(warn) else np.nan,
+        "warning_days_max": float(warn.max()) if len(warn) else np.nan,
+        "episodes": len(ep_p),
+        "episodes_per_asset_month": len(ep_p) / (n_assets * months),
+        "false_episodes": n_false,
+        "false_per_asset_month": n_false / (n_assets * months),
+        "false_inspection_hours": n_false * inspection_hours_each,
+        "unplanned_plannable": len(plan),
+        "unplanned_downtime_plannable_h": float(plan["downtime_hours"].sum()) if len(plan) else 0.0,
+        "unplanned_cost_plannable_usd": cost,
+    }
+    return row, caught
+
+
+def at_budget(curve: pd.DataFrame, budget: float) -> dict[str, float]:
+    """Catch share interpolated at a false-alarm budget along a method's operating curve; outside the
+    curve's range the nearest end is returned and flagged."""
+    c = curve.sort_values("false_per_asset_month")
+    x = c["false_per_asset_month"].to_numpy(dtype=float)
+    y = c["caught_share"].to_numpy(dtype=float)
+    ch = c["chance_share"].to_numpy(dtype=float)
+    inside = bool(len(x) and x.min() <= budget <= x.max())
+    return {
+        "caught_share": float(np.interp(budget, x, y)) if len(x) else np.nan,
+        "chance_share": float(np.interp(budget, x, ch)) if len(x) else np.nan,
+        "within_curve": inside,
+    }
+
+
 def by_type(caught: pd.DataFrame) -> pd.DataFrame:
     return (
-        caught.groupby(["method", "condition_type"])
+        caught.groupby(["method", "level", "condition_type"])
         .agg(
             conditions=("wo_id", "count"),
             caught=("caught", "sum"),
@@ -141,49 +205,3 @@ def by_type(caught: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
-
-
-def diagnosis_agreement(
-    requests: pd.DataFrame, conditions: pd.DataFrame, family: dict[str, str], window_days: float
-) -> pd.DataFrame:
-    """For work requests followed by a confirmed condition on the asset, whether the suspected
-    condition matches the condition family from the finding code."""
-    rows = []
-    w = pd.Timedelta(days=window_days)
-    for r in requests.itertuples():
-        after = conditions[
-            (conditions["asset_id"] == r.asset_id)
-            & (conditions["credit_ts"] >= r.created)
-            & (conditions["credit_ts"] <= r.created + w)
-        ]
-        if after.empty:
-            continue
-        c = after.sort_values("credit_ts").iloc[0]
-        fam = family.get(c["condition_type"])
-        rows.append(
-            {
-                "request_id": r.request_id,
-                "asset_id": r.asset_id,
-                "suspected": r.suspected_condition,
-                "confirmed": c["condition_type"],
-                "agree": fam == r.suspected_condition,
-            }
-        )
-    return pd.DataFrame(rows, columns=["request_id", "asset_id", "suspected", "confirmed", "agree"])
-
-
-def credit_time(conditions: pd.DataFrame, pm_started: pd.Series | None = None) -> pd.Series:
-    """The time a method must alert before: the work-order open time, or the PM date for PM findings."""
-    t = conditions["confirmed_ts"].copy()
-    if pm_started is not None:
-        t = t.where(~conditions["pm_finding"], pm_started.reindex(conditions.index).fillna(t))
-    return t
-
-
-def months_between(a: pd.Timestamp, b: pd.Timestamp) -> float:
-    return (b - a) / pd.Timedelta(days=365.25 / 12)
-
-
-def config_values(cfg: dict[str, Any]) -> dict[str, float]:
-    e = cfg["evaluation"]
-    return {"lookback_days": e["detection_lookback_days"], "precision_days": e["alert_precision_window_days"]}

@@ -133,18 +133,28 @@ def fit_models(lives: pd.DataFrame) -> dict[str, Any]:
         .median()
         .to_dict()
     )
-    out["ibs"] = integrated_brier(aft, data)
+    ibs = integrated_brier_ipcw(aft, data)
+    out["ibs_ipcw"], out["ibs_ipcw_km"], out["ibs_times"] = ibs["model"], ibs["kaplan_meier"], ibs["times"]
     return out
 
 
-def integrated_brier(model: Any, data: pd.DataFrame, n_times: int = 20) -> float:
-    """Integrated Brier score without censoring weights (reported with that caveat)."""
-    times = np.linspace(data["duration_days"].quantile(0.1), data["duration_days"].quantile(0.9), n_times)
-    sf = model.predict_survival_function(data, times=times)
-    scores = []
-    for i, t in enumerate(times):
-        alive = (data["duration_days"] > t).astype(float).to_numpy()
-        known = ((data["duration_days"] > t) | (data["event"] == 1)).to_numpy()
-        p = sf.iloc[i].to_numpy()
-        scores.append(np.mean((alive[known] - p[known]) ** 2) if known.any() else np.nan)
-    return float(np.nanmean(scores))
+def integrated_brier_ipcw(model: Any, data: pd.DataFrame, n_times: int = 20) -> dict[str, Any]:
+    """Integrated Brier score with inverse-probability-of-censoring weights (scikit-survival), on the
+    fitting data, over the 10th to 90th percentile of observed times; the Kaplan-Meier curve with no
+    covariates is the reference score."""
+    from sksurv.metrics import integrated_brier_score
+    from sksurv.nonparametric import kaplan_meier_estimator
+    from sksurv.util import Surv
+
+    y = Surv.from_arrays(data["event"].astype(bool).to_numpy(), data["duration_days"].to_numpy(float))
+    obs = data["duration_days"]
+    hi = min(obs.quantile(0.9), obs[data["event"] == 0].max() - 1e-6, obs.max() - 1e-6)
+    times = np.linspace(obs.quantile(0.1), hi, n_times)
+    sf = model.predict_survival_function(data, times=times).T.to_numpy()
+    km_t, km_s = kaplan_meier_estimator(data["event"].astype(bool).to_numpy(), obs.to_numpy(float))
+    km = np.interp(times, km_t, km_s)
+    return {
+        "model": float(integrated_brier_score(y, y, sf, times)),
+        "kaplan_meier": float(integrated_brier_score(y, y, np.tile(km, (len(data), 1)), times)),
+        "times": (float(times[0]), float(times[-1])),
+    }

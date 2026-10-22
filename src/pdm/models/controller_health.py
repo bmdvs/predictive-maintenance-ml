@@ -100,6 +100,31 @@ def daily_scores(
     return scores.sort_values("local_date").reset_index(drop=True), model
 
 
+def exceedances(scores: pd.DataFrame, cfg: dict[str, Any], scale: float) -> pd.DataFrame:
+    """Persisted daily exceedances without re-alert suppression, thresholds multiplied by scale (the
+    operating curve), for alert episodes."""
+    m = cfg["models"]["controller_health"]
+    persist = cfg["rules"]["persistence_consecutive"]
+    rules = {
+        "axis_drift": ("axis_drift_max", m["drift_alert_frac"] * scale),
+        "spindle_load_drift": ("spindle_load_drift", m["drift_alert_frac"] * scale),
+        "thermistor_residual": ("thermistor_residual_c", m["thermistor_residual_alert_c"] * scale),
+    }
+    rows = []
+    for mid, g in scores.groupby("machine_id"):
+        g = g.sort_values("local_date")
+        for name, (col, thr) in rules.items():
+            if col not in g:
+                continue
+            counter = ConsecutiveCounter(persist)
+            for r in g.itertuples():
+                v = getattr(r, col)
+                cond = None if pd.isna(v) else bool(v >= thr)
+                if counter.update(cond) and cond:
+                    rows.append((mid, r.local_date, name, float(v), thr, scale))
+    return pd.DataFrame(rows, columns=["machine_id", "alert_date", "rule", "value", "threshold", "sweep"])
+
+
 def alerts(scores: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
     """Persisted daily alerts on axis drift, spindle-load drift and thermistor residual."""
     m = cfg["models"]["controller_health"]
