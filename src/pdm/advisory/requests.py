@@ -4,9 +4,10 @@ Diagnosis reads every signal on the asset over the case's open interval: vibrati
 the asset's points (daily median of hourly z-scores against the point's healthy spread for its segment
 and regime) and the controller signals (TSC pressure drop, spindle thermistor residual, axis-load drift,
 compressor discharge temperature residual, as daily z-scores against the training period), taking the
-maximum z per indicator. The suspected condition is the family whose indicator has the largest z at or
-above the threshold. Output: one work request per case with the condition, the indicators against
-baseline, the recommended inspection and the shadow-mode flag.
+maximum z per indicator. The suspected condition is the first family in the asset kind's fixed
+precedence (specific signatures before generic) whose own indicators are at or above the threshold.
+Output: one work request per case with the condition, the indicators against baseline, the
+recommended inspection and the shadow-mode flag.
 """
 
 from __future__ import annotations
@@ -197,30 +198,62 @@ def case_z(
 
 
 def suspected(z: dict[str, float], kind: str, zthr: float) -> tuple[str, str]:
-    """The family whose indicator has the largest z at or above zthr for this kind of asset."""
-    pump = kind in ("tsc_pump", "flood_pump")
-    aux = pump or kind == "compressor"
-    cands: list[tuple[float, str, str]] = []
+    """The first family in the asset kind's precedence (specific signatures before generic) whose own
+    indicators are all at or above zthr."""
 
-    def add(key: str, family: str, label: str, allowed: bool) -> None:
-        v = z.get(key, np.nan)
-        if allowed and pd.notna(v) and v >= zthr:
-            cands.append((float(v), family, f"{label} z {v:.1f}"))
+    def hit(*keys: str) -> bool:
+        return all(pd.notna(z.get(k, np.nan)) and z[k] >= zthr for k in keys)
 
-    for k, loc in FAULT_LOCATION.items():
-        add(f"env_{k}", "bearing", f"{loc} ({k.upper()})", kind != "machine")
-    add("ord_01", "imbalance", "1x", aux)
-    add("ord_02", "misalignment", "2x", kind == "compressor")
-    add("ord_3_10", "looseness", "3x-10x", aux)
-    add("hf", "cavitation or wear" if pump else "lubrication", "HF", kind != "machine")
-    add("tsc_drop", "rotary union", "TSC pressure drop", kind in ("spindle", "machine"))
-    add("thermistor", "spindle cooling", "thermistor residual", kind in ("spindle", "machine"))
-    add("discharge", "cooler", "discharge temperature residual", kind == "compressor")
-    add("axis_drift", "axis wear", "axis-load drift", kind == "machine")
-    if not cands:
-        return "unclassified", ""
-    _, fam, detail = max(cands)
-    return fam, detail
+    def text(*keys: str) -> str:
+        return ", ".join(f"{k} z {z[k]:.1f}" for k in keys)
+
+    env = {k: z.get(f"env_{k}", np.nan) for k in FAULT_LOCATION}
+    env_hit = {k: v for k, v in env.items() if pd.notna(v) and v >= zthr}
+    bearing = None
+    if env_hit:
+        k = max(env_hit, key=env_hit.get)
+        bearing = ("bearing", f"{FAULT_LOCATION[k]} ({k.upper()} z {env_hit[k]:.1f})")
+    rules: list[tuple[str, tuple[str, ...]] | str] = []
+    if kind == "spindle":
+        rules = [
+            ("rotary union", ("tsc_drop", "hf")),
+            ("spindle cooling", ("thermistor",)),
+            "bearing",
+            ("lubrication", ("hf",)),
+        ]
+    elif kind == "tsc_pump":
+        rules = [
+            ("cavitation or wear", ("tsc_drop", "hf")),
+            "bearing",
+            ("imbalance", ("ord_01",)),
+            ("looseness", ("ord_3_10",)),
+        ]
+    elif kind == "flood_pump":
+        rules = [
+            ("cavitation or wear", ("hf",)),
+            "bearing",
+            ("imbalance", ("ord_01",)),
+            ("looseness", ("ord_3_10",)),
+        ]
+    elif kind == "compressor":
+        rules = [
+            ("cooler", ("discharge",)),
+            "bearing",
+            ("imbalance", ("ord_01",)),
+            ("misalignment", ("ord_02",)),
+            ("looseness", ("ord_3_10",)),
+        ]
+    else:
+        rules = [("axis wear", ("axis_drift",)), ("spindle cooling", ("thermistor",))]
+    for r in rules:
+        if r == "bearing":
+            if bearing:
+                return bearing
+            continue
+        fam, keys = r
+        if hit(*keys):
+            return fam, text(*keys)
+    return "unclassified", ""
 
 
 def work_requests(
@@ -266,15 +299,23 @@ CONDITION_FAMILY = {
 }
 
 
-def family_of(condition_type: str, asset_id: str) -> str | None:
-    """Finding family for agreement scoring; an other-machine-stoppage work order on an axis is axis wear."""
+def family_of(condition_type: str, asset_id: str, high_temp_trip: bool = False) -> str | None:
+    """Finding family for agreement scoring. An other-machine-stoppage work order on an axis is axis
+    wear; a compressor trip is cooler only when the compressor controller logged a high-temperature
+    trip for it."""
     if condition_type == "other machine stoppage" and "-AX" in str(asset_id):
         return "axis wear"
+    if condition_type == "compressor trip":
+        return "cooler" if high_temp_trip else None
     return CONDITION_FAMILY.get(condition_type)
 
 
 def agreement(
-    requests: pd.DataFrame, cases: pd.DataFrame, conds: pd.DataFrame, wo: pd.DataFrame
+    requests: pd.DataFrame,
+    cases: pd.DataFrame,
+    conds: pd.DataFrame,
+    wo: pd.DataFrame,
+    high_temp_trip_wos: set[str] | None = None,
 ) -> pd.DataFrame:
     """Per work request, how its case ended: a confirmed condition on the asset while the case was open
     (agreement scored against its finding family), no fault found (the closing inspection), or other."""
@@ -291,7 +332,9 @@ def agreement(
         base = {"request_id": r.request_id, "suspected": r.suspected_condition}
         if len(hit):
             first = hit.sort_values("credit_ts").iloc[0]
-            fam = family_of(first["condition_type"], first["asset_id"])
+            fam = family_of(
+                first["condition_type"], first["asset_id"], first["wo_id"] in (high_temp_trip_wos or set())
+            )
             rows.append(
                 {
                     **base,

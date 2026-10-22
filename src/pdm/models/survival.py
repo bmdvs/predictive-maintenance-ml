@@ -196,3 +196,52 @@ def per_class_weibull(lives: pd.DataFrame, interval: float) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def shared_shape_weibull(lives: pd.DataFrame, interval: float) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Weibull lifetimes with one shape shared across component classes and a class-specific scale,
+    left-truncated at entry into the record; 90% intervals on the log scale. Returns per-class scale and
+    median life with intervals, and the shared shape with its interval."""
+    from lifelines import WeibullAFTFitter
+    from scipy.stats import norm
+
+    d = lives[lives["duration_days"] > lives["entry_days"]].copy()
+    classes = sorted(d["component_class"].unique())
+    x = pd.get_dummies(d["component_class"], dtype=float)[classes[1:]]
+    data = pd.concat([d[["duration_days", "event", "entry_days"]], x], axis=1)
+    f = WeibullAFTFitter().fit(data, "duration_days", "event", entry_col="entry_days")
+    z = float(norm.ppf(0.5 + interval / 2))
+    params = f.params_
+    cov = f.variance_matrix_
+    key0 = ("lambda_", "Intercept")
+    rho_key = ("rho_", "Intercept")
+    log_rho, se_rho = float(params[rho_key]), float(np.sqrt(cov.loc[rho_key, rho_key]))
+    rho = float(np.exp(log_rho))
+    shape = {
+        "shape_rho": rho,
+        "rho_low": float(np.exp(log_rho - z * se_rho)),
+        "rho_high": float(np.exp(log_rho + z * se_rho)),
+    }
+    ln2 = np.log(np.log(2.0)) / rho
+    rows = []
+    for c in classes:
+        keys = [key0] + ([("lambda_", c)] if c != classes[0] else [])
+        v = float(sum(params[k] for k in keys))
+        var = float(sum(cov.loc[a, b] for a in keys for b in keys))
+        se = float(np.sqrt(var))
+        g = d[d["component_class"] == c]
+        rows.append(
+            {
+                "component_class": c,
+                "lives": len(g),
+                "events": int(g["event"].sum()),
+                "scale_lambda_days": float(np.exp(v)),
+                "scale_low": float(np.exp(v - z * se)),
+                "scale_high": float(np.exp(v + z * se)),
+                "median_life_days": float(np.exp(v + ln2)),
+                "median_low": float(np.exp(v + ln2 - z * se)),
+                "median_high": float(np.exp(v + ln2 + z * se)),
+                **shape,
+            }
+        )
+    return pd.DataFrame(rows), shape

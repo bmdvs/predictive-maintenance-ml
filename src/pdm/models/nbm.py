@@ -371,7 +371,34 @@ def segment_plan(
     return w
 
 
-def fit_score_rebaselined(
+def _recent(t: np.ndarray, events: np.ndarray, gap: np.timedelta64) -> np.ndarray:
+    """True where an event occurred in (t - gap, t]."""
+    if events.size == 0:
+        return np.zeros(t.size, dtype=bool)
+    ev = np.sort(events)
+    i = np.searchsorted(ev, t, side="right")
+    prev = np.where(i > 0, ev[np.clip(i - 1, 0, ev.size - 1)], np.datetime64("NaT"))
+    return (i > 0) & (t - prev < gap)
+
+
+def _naive(ts: Any) -> np.ndarray:
+    s = pd.to_datetime(pd.Series(ts), utc=True).dt.tz_localize(None)
+    return np.asarray(s, dtype="datetime64[ns]")
+
+
+def month_starts(a: pd.Timestamp, b: pd.Timestamp) -> list[pd.Timestamp]:
+    """Local calendar month starts strictly after a and before b, in UTC."""
+    la = a.tz_convert("America/Chicago").tz_localize(None).normalize()
+    lb = b.tz_convert("America/Chicago").tz_localize(None)
+    ms = pd.date_range(la + pd.offsets.MonthBegin(1), lb, freq="MS")
+    return [
+        m.tz_localize("America/Chicago").tz_convert("UTC")
+        for m in ms
+        if a < m.tz_localize("America/Chicago").tz_convert("UTC") < b
+    ]
+
+
+def fit_score_segments(
     rows: pd.DataFrame,
     candidate: str,
     cfg: dict[str, Any],
@@ -380,66 +407,123 @@ def fit_score_rebaselined(
     plan: pd.DataFrame,
     end: pd.Timestamp,
     top_k: int,
-) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
-    """Scores before end with the base model on the install segment and a refit model on each later
-    segment after its re-baseline window; segments without a usable window are not scored."""
+    open_work: list[tuple[pd.Timestamp, pd.Timestamp]],
+    rule_alerts: list[pd.Timestamp],
+) -> tuple[pd.DataFrame, list[dict[str, Any]], pd.DataFrame]:
+    """Scores before end with one model per segment (install, then each repair or remount).
+
+    A segment that starts before the cutoff is fit on its eligible hours before the cutoff (the base
+    rule, with its exclusions); a later segment starts from its 21-day re-baseline window. A segment
+    that lacks seasonal coverage at the cutoff, or starts after it, is updated monthly on hours that
+    were not inside an open work order, a rule-floor alert episode or its own alert episode at the
+    time, until it has coverage. A segment whose re-baseline window is flagged, incomplete or not
+    usable is left to the rule floor. Returns scores, per-segment information and training rows.
+    """
     nb = cfg["models"]["nbm"]
-    rb = pd.Timedelta(days=nb["rebaseline_days"])
-    starts = list(plan["start"])
-    base, info = fit_point(rows, candidate, cfg, cutoff, excluded, starts)
+    gap = np.timedelta64(int(cfg["evaluation"]["catch"]["episode_gap_days"] * 86400), "s")
+    op = nb["threshold_percentile"]
     clean = _clean(rows)
     clean = clean[pd.to_datetime(clean["hour_utc"], utc=True) < end].reset_index(drop=True)
     if clean.empty:
-        return pd.DataFrame(), []
-    t = pd.to_datetime(clean["hour_utc"], utc=True)
-    seg = segment_ids(clean["hour_utc"], starts)
+        return pd.DataFrame(), [], pd.DataFrame()
+    t = _naive(clean["hour_utc"])
+    seg = segment_ids(clean["hour_utc"], list(plan["start"]))
     reg = clean["regime"].to_numpy()
     x, cols = features(clean, candidate)
-    xc, in_first = centered(clean, x, starts, rb)
+    finite = np.isfinite(x).all(axis=1)
+    eligible = training_mask(clean["hour_utc"], cutoff, excluded) & finite
+    blocked_work = np.zeros(t.size, dtype=bool)
+    for wa, wb in open_work:
+        blocked_work |= (t >= _naive([wa])[0]) & (t < _naive([wb])[0])
+    rule_recent = _recent(
+        t, _naive(rule_alerts) if len(rule_alerts) else np.array([], dtype="datetime64[ns]"), gap
+    )
+    cut = _naive([cutoff])[0]
     out: list[pd.DataFrame] = []
-    infos = []
+    infos: list[dict[str, Any]] = []
+    train_rows: list[pd.DataFrame] = []
     for k, w in plan.iterrows():
         rows_k = seg == k
-        row_info = {
+        seg_end = plan["start"].iat[k + 1] if k + 1 < len(plan) else end
+        seg_end = min(seg_end, end)
+        info = {
             "point_id": w["point_id"],
             "segment": int(k),
             "segment_start": w["start"],
             "reason": w["reason"],
         }
-        if k == 0:
-            out += _score(clean, xc, rows_k, base, top_k, "base")
-            infos.append({**row_info, "model": "base" if base else "rule floor only", **info})
-            continue
-        if not w["refit"]:
+        if k > 0 and not w["refit"]:
             why = (
                 "flagged"
                 if w["flagged"]
                 else ("window incomplete" if not w["complete"] else "window not usable")
             )
-            infos.append({**row_info, "model": f"rule floor only ({why})", "n_train": 0})
+            infos.append({**info, "model": f"rule floor only ({why})", "n_train": 0})
             continue
-        win = (
-            rows_k
-            & (t >= w["start"]).to_numpy()
-            & (t < w["window_end"]).to_numpy()
-            & np.isfinite(x).all(axis=1)
-        )
-        if win.sum() < nb["min_train_hours"]:
+        ws, we = _naive([w["start"]])[0], _naive([w["window_end"]])[0]
+        win = rows_k & finite & (t >= ws) & (t < we)
+        if w["start"] < cutoff:
+            train = rows_k & eligible & (t < min(cut, _naive([seg_end])[0]))
+            if train.sum() < nb["min_train_hours"] and k > 0:
+                train = win
+            kind = "segment fit"
+        else:
+            train = win
+            kind = "window refit"
+        if train.sum() < nb["min_train_hours"]:
+            infos.append({**info, "model": "rule floor only (too few hours)", "n_train": int(train.sum())})
+            continue
+        covered = all(seasonal_coverage(clean.loc[train, "hour_utc"], cfg).values())
+        if w["start"] < cutoff and not covered and seg_end <= cutoff:
             infos.append(
-                {**row_info, "model": "rule floor only (too few window hours)", "n_train": int(win.sum())}
+                {**info, "model": "rule floor only (no seasonal coverage)", "n_train": int(train.sum())}
             )
             continue
-        models = fit_models(x[win], reg[win], cols, candidate, cfg)
-        after = rows_k & (t >= w["window_end"]).to_numpy()
-        out += _score(clean, x, after, models, top_k, f"refit {k}")
-        infos.append({**row_info, "model": "refit", "n_train": int(win.sum()), "models": ",".join(models)})
-    del in_first
+        n0 = int(train.sum())
+        models = fit_models(x[train], reg[train], cols, candidate, cfg)
+        score_from = we
+        updates = month_starts(max(cutoff, w["window_end"]), seg_end) if not covered else []
+        bounds = [score_from, *[_naive([m])[0] for m in updates], _naive([seg_end])[0]]
+        seg_scores: list[pd.DataFrame] = []
+        n_updates = 0
+        last = max(cut, we)
+        for i in range(len(bounds) - 1):
+            a, b = bounds[i], bounds[i + 1]
+            part = _score(clean, x, rows_k & (t >= a) & (t < b), models, top_k, f"segment {k}")
+            seg_scores += part
+            if i == len(bounds) - 2 or covered:
+                continue
+            done = pd.concat(seg_scores, ignore_index=True) if seg_scores else pd.DataFrame()
+            own = exceedance_hours(done, op, nb["persistence_hours"]) if len(done) else pd.DataFrame()
+            own_recent = _recent(
+                t, _naive(own["ts"]) if len(own) else np.array([], dtype="datetime64[ns]"), gap
+            )
+            add = rows_k & finite & (t >= last) & (t < b) & ~blocked_work & ~rule_recent & ~own_recent
+            train = train | add
+            last = b
+            models = fit_models(x[train], reg[train], cols, candidate, cfg)
+            n_updates += 1
+            covered = all(seasonal_coverage(clean.loc[train, "hour_utc"], cfg).values())
+        out += seg_scores
+        infos.append(
+            {
+                **info,
+                "model": kind,
+                "n_train": n0,
+                "n_train_final": int(train.sum()),
+                "monthly_updates": n_updates,
+                "seasonal_coverage": covered,
+                "models": ",".join(models),
+            }
+        )
+        train_rows.append(clean[train].assign(segment=int(k), segment_start=w["start"]))
     scores = (
         pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
         if out
         else pd.DataFrame()
     )
-    return scores, infos
+    tr = pd.concat(train_rows, ignore_index=True) if train_rows else pd.DataFrame()
+    return scores, infos, tr
 
 
 def exceedance_hours(scores: pd.DataFrame, percentile: float, persistence: int) -> pd.DataFrame:

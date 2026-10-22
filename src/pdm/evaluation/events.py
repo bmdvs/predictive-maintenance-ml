@@ -4,7 +4,8 @@ A method catches a confirmed condition if it had an alert episode or an open cas
 the affected point (or any point for asset-level causes), at the moment of confirmation, opened within
 the configured days before it. An alert episode runs from its first persisted exceedance until the
 configured gap after its last; a fused case runs over its open interval. Warning days run from the
-episode or case opening. The chance share is the share of time the asset (at the condition's scope)
+episode opening, or for fused cases from the first opening of the case's chain (warning_from).
+The chance share is the share of time the asset (at the condition's scope)
 has an episode or case open that was opened within the window. False episodes are those whose open
 interval holds no confirmation on the asset.
 """
@@ -81,7 +82,8 @@ def catch_table(ep: pd.DataFrame, conds: pd.DataFrame, window_days: float) -> pd
             & (ep["opened"] >= t - w)
         )
         hit = ep[m]
-        first = hit["opened"].min() if len(hit) else pd.NaT
+        col = "warning_from" if "warning_from" in ep else "opened"
+        first = hit[col].min() if len(hit) else pd.NaT
         rows.append(
             {
                 "wo_id": c.wo_id,
