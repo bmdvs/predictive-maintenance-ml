@@ -37,3 +37,7 @@ exports/local_gold/
 
 # Mechanism additions merged into CLAUDE.md
 CLAUDE-run05-mechanisms.md
+
+# Bundle build output
+dist/
+build/

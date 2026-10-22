@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
-spark = ["pyspark>=3.5,<3.6", "delta-spark>=3.2,<3.3"]
+spark = ["pyspark>=3.5,<3.6", "delta-spark>=3.2,<3.3", "setuptools>=68"]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -1,0 +1,56 @@
+"""Controller features per machine, hour and program from the per-minute aggregates, and daily
+controller event counts.
+
+Inputs: bronze controller minute aggregates and controller events. Outputs: hourly active-cutting
+features (seconds active, spindle and axis load statistics, speed, thermistor, coolant and hydraulic
+pressure) and daily event counts by type.
+"""
+
+from __future__ import annotations
+
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+
+AXES = ("x", "y", "z", "b")
+LOCAL_TZ = "America/Chicago"
+
+
+def _wmean(col: str) -> F.Column:
+    w = F.col("seconds_in_state")
+    return (F.sum(F.col(col) * w) / F.sum(F.when(F.col(col).isNotNull(), w))).alias(col.replace("_mean", ""))
+
+
+def controller_hourly(minute: DataFrame) -> DataFrame:
+    active = minute.where((F.col("execution") == "active") & (F.col("program") != ""))
+    aggs = [
+        F.sum("seconds_in_state").alias("active_s"),
+        _wmean("spindle_load_pct_mean").alias("spindle_load"),
+        (F.sum(F.col("spindle_load_pct_p95") * F.col("seconds_in_state")) / F.sum("seconds_in_state")).alias(
+            "spindle_load_p95"
+        ),
+        _wmean("spindle_speed_rpm_mean"),
+        _wmean("spindle_temp_c_mean"),
+        _wmean("coolant_pressure_bar_mean"),
+        _wmean("hydraulic_pressure_bar_mean"),
+    ]
+    for a in AXES:
+        aggs.append(
+            (
+                F.sum(F.col(f"{a}_load_pct_p95") * F.col("seconds_in_state"))
+                / F.sum(F.when(F.col(f"{a}_load_pct_p95").isNotNull(), F.col("seconds_in_state")))
+            ).alias(f"{a}_load_p95")
+        )
+    return (
+        active.withColumn("hour_utc", F.date_trunc("hour", "minute_utc"))
+        .groupBy("machine_id", "hour_utc", "program")
+        .agg(*aggs)
+        .withColumn("local_date", F.to_date(F.from_utc_timestamp("hour_utc", LOCAL_TZ)))
+    )
+
+
+def controller_event_daily(events: DataFrame) -> DataFrame:
+    return (
+        events.withColumn("local_date", F.to_date(F.from_utc_timestamp("ts_utc", LOCAL_TZ)))
+        .groupBy("machine_id", "local_date", "event_type")
+        .agg(F.count("*").alias("events"), F.sum(F.col("stopped_machine").cast("int")).alias("stops"))
+    )
