@@ -1,15 +1,15 @@
 """Work requests on ALARM with a suspected condition from the indicator pattern (rule-based diagnosis).
 
-Rule thresholds are z-scores against the point's healthy spread per indicator and regime (median and
-robust scale of the point's model-training hours, log scale for energies). Inputs: cases, the 24-hour
-median indicators of the triggering point at case opening, the point's healthy statistics and
-controller signals. Output: one work request per case with the suspected condition and component,
-the triggering indicators against baseline, the recommended inspection and the shadow-mode flag.
+Diagnosis reads every signal on the asset over the case's open interval: vibration indicators at all of
+the asset's points (daily median of hourly z-scores against the point's healthy spread for its segment
+and regime) and the controller signals (TSC pressure drop, spindle thermistor residual, axis-load drift,
+compressor discharge temperature residual, as daily z-scores against the training period), taking the
+maximum z per indicator. The suspected condition is the family whose indicator has the largest z at or
+above the threshold. Output: one work request per case with the condition, the indicators against
+baseline, the recommended inspection and the shadow-mode flag.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -17,12 +17,13 @@ import pandas as pd
 INSPECTION = {
     "bearing": "listen, envelope check, temperature check",
     "lubrication": "temperature check, spindle lube check",
-    "contamination": "pressure check, inspect rotary union and seals",
+    "rotary union": "pressure check, inspect rotary union and seals",
     "imbalance": "strobe and vibration pen at 1x",
     "misalignment": "coupling and laser alignment check",
     "looseness": "check base and mounting bolts",
     "cavitation or wear": "coolant level and pressure check",
-    "cooler": "check spindle chiller and coolant flow",
+    "spindle cooling": "check spindle chiller and coolant flow",
+    "cooler": "check compressor oil cooler and fan",
     "axis wear": "backlash and axis load check",
     "unclassified": "listen, temperature check",
 }
@@ -37,6 +38,8 @@ Z_INDICATORS = {
     "hf": "hf_rms_g",
     "vel": "vel_rms_mm_s",
 }
+CONTROLLER_INDICATORS = ("tsc_drop", "thermistor", "axis_drift", "discharge")
+ROBUST = 1.4826
 
 
 def log_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -48,103 +51,202 @@ def log_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def healthy_stats(train_rows: pd.DataFrame) -> pd.DataFrame:
-    """Median and robust scale (MAD x 1.4826) per point, regime and indicator from training hours."""
-    li = log_indicators(train_rows).assign(
-        point_id=train_rows["point_id"].to_numpy(), regime=train_rows["regime"].to_numpy()
-    )
-    rows = []
+def _robust(v: np.ndarray) -> tuple[float, float]:
+    med = float(np.median(v))
+    sc = float(ROBUST * np.median(np.abs(v - med))) or float(np.std(v)) or 1.0
+    return med, sc
+
+
+def healthy_stats(rows: pd.DataFrame) -> pd.DataFrame:
+    """Median and robust scale per point, regime and indicator."""
+    if rows.empty:
+        return pd.DataFrame()
+    li = log_indicators(rows).assign(point_id=rows["point_id"].to_numpy(), regime=rows["regime"].to_numpy())
+    out = []
     for (pid, reg), g in li.groupby(["point_id", "regime"]):
         for k in Z_INDICATORS:
             v = g[k].dropna().to_numpy()
-            if v.size < 20:
-                continue
-            med = float(np.median(v))
-            sc = float(1.4826 * np.median(np.abs(v - med))) or float(np.std(v)) or 1.0
-            rows.append(
-                {"point_id": pid, "regime": reg, "indicator": k, "median": med, "scale": sc, "n": int(v.size)}
-            )
-    return pd.DataFrame(rows)
+            if v.size >= 20:
+                med, sc = _robust(v)
+                out.append(
+                    {
+                        "point_id": pid,
+                        "regime": reg,
+                        "indicator": k,
+                        "median": med,
+                        "scale": sc,
+                        "n": int(v.size),
+                    }
+                )
+    return pd.DataFrame(out)
 
 
-def zscores(recent: pd.DataFrame, stats: pd.DataFrame, point_id: str) -> dict[str, float]:
-    """z per indicator for the 24-hour window before a case opened, in its dominant regime."""
-    if recent.empty:
-        return {}
-    reg = recent["regime"].mode().iat[0]
-    li = log_indicators(recent).median()
-    st = stats[(stats["point_id"] == point_id) & (stats["regime"] == reg)].set_index("indicator")
-    if st.empty:
-        st = stats[stats["point_id"] == point_id].groupby("indicator")[["median", "scale"]].median()
-    return {
-        k: float((li[k] - st.loc[k, "median"]) / st.loc[k, "scale"])
-        for k in Z_INDICATORS
-        if k in st.index and pd.notna(li[k])
-    }
+def hourly_z(ind: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
+    """z per hour and indicator against the healthy spread of the point's segment in effect at that hour,
+    by regime where the segment has it, otherwise pooled over the segment's regimes."""
+    parts = []
+    for pid, g in ind.groupby("point_id"):
+        st = stats[stats["point_id"] == pid]
+        if st.empty:
+            continue
+        starts = st[["segment", "segment_start"]].drop_duplicates().sort_values("segment_start")
+        t = np.asarray(pd.to_datetime(g["hour_utc"], utc=True).dt.tz_localize(None), dtype="datetime64[ns]")
+        s0 = np.asarray(
+            pd.to_datetime(starts["segment_start"], utc=True).dt.tz_localize(None), dtype="datetime64[ns]"
+        )
+        idx = np.clip(np.searchsorted(s0, t, side="right") - 1, 0, len(s0) - 1)
+        li = log_indicators(g).assign(
+            segment=starts["segment"].to_numpy()[idx], regime=g["regime"].to_numpy()
+        )
+        by_reg = st.set_index(["segment", "regime", "indicator"])[["median", "scale"]]
+        pooled = st.groupby(["segment", "indicator"])[["median", "scale"]].median()
+        z = pd.DataFrame({"point_id": pid, "hour_utc": g["hour_utc"].to_numpy()})
+        for k in Z_INDICATORS:
+            key_r = pd.MultiIndex.from_arrays([li["segment"], li["regime"], np.full(len(li), k)])
+            key_p = pd.MultiIndex.from_arrays([li["segment"], np.full(len(li), k)])
+            med = by_reg["median"].reindex(key_r).to_numpy()
+            sc = by_reg["scale"].reindex(key_r).to_numpy()
+            med = np.where(np.isnan(med), pooled["median"].reindex(key_p).to_numpy(), med)
+            sc = np.where(np.isnan(sc), pooled["scale"].reindex(key_p).to_numpy(), sc)
+            z[k] = (li[k].to_numpy() - med) / sc
+        parts.append(z)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
-def suspected(
-    z: dict[str, float], point_class: str | None, controller: dict[str, Any], zthr: float
-) -> tuple[str, str]:
-    """Condition and detail from z-scores against the point's healthy spread and controller signals."""
-    aux = bool(point_class and not point_class.startswith("spindle"))
-    pump = bool(point_class and point_class.endswith("pump"))
-    if controller.get("thermistor_residual_alert") and not aux:
-        return "cooler", f"thermistor residual {controller.get('thermistor_residual_c', np.nan):.1f} C"
-    env = {k: z.get(f"env_{k}", np.nan) for k in FAULT_LOCATION}
-    env_hit = {k: v for k, v in env.items() if pd.notna(v) and v >= zthr}
-    if env_hit:
-        k = max(env_hit, key=env_hit.get)
-        return "bearing", f"{FAULT_LOCATION[k]} ({k.upper()} z {env_hit[k]:.1f})"
-    o1, o2, harm, hf = (z.get(k, np.nan) for k in ("ord_01", "ord_02", "ord_3_10", "hf"))
-    if aux and pd.notna(o2) and o2 >= zthr and (pd.isna(o1) or o2 >= o1):
-        return "misalignment", f"2x z {o2:.1f}"
-    if aux and pd.notna(o1) and o1 >= zthr:
-        return "imbalance", f"1x z {o1:.1f}"
-    if aux and pd.notna(harm) and harm >= zthr:
-        return "looseness", f"3x-10x z {harm:.1f}"
-    if pd.notna(hf) and hf >= zthr:
-        drop = controller.get("coolant_drop", 0.0)
-        if pump and drop >= 0.05:
-            return "cavitation or wear", f"HF z {hf:.1f} with pressure loss {drop:.0%}"
-        if drop >= 0.05 and point_class == "spindle_front":
-            return "contamination", f"HF z {hf:.1f} with TSC pressure drop {drop:.0%}"
-        return "lubrication", f"HF z {hf:.1f}, no fault frequency"
-    if controller.get("axis_drift_alert"):
-        return "axis wear", f"axis load drift {controller.get('axis_drift_max', np.nan):.0%}"
-    return "unclassified", ""
+def daily_point_z(hz: pd.DataFrame) -> pd.DataFrame:
+    d = hz.assign(day=pd.to_datetime(hz["hour_utc"], utc=True).dt.floor("D"))
+    return d.groupby(["point_id", "day"])[list(Z_INDICATORS)].median().reset_index()
+
+
+def tsc_drop_daily(hourly: pd.DataFrame, ref_days: tuple[int, int]) -> pd.DataFrame:
+    """Daily median TSC pressure (pump running) against the median over the reference days before it
+    (from ref_days[1] to ref_days[0] days earlier); positive is a drop."""
+    h = hourly[hourly["coolant_pressure_bar"] > 0].copy()
+    h["local_date"] = (
+        pd.to_datetime(h["hour_utc"], utc=True)
+        .dt.tz_convert("America/Chicago")
+        .dt.normalize()
+        .dt.tz_localize(None)
+    )
+    near, far = ref_days
+    out = []
+    for mid, g in h.groupby("machine_id"):
+        s = g.groupby("local_date")["coolant_pressure_bar"].median()
+        ref = s.rolling(f"{far - near}D", min_periods=5).median()
+        ref.index = ref.index + pd.Timedelta(days=near)
+        ref = ref[~ref.index.duplicated()].reindex(s.index, method="ffill")
+        out.append(pd.DataFrame({"entity": mid, "local_date": s.index, "value": (1 - s / ref).to_numpy()}))
+    return pd.concat(out, ignore_index=True).assign(indicator="tsc_drop") if out else pd.DataFrame()
+
+
+def controller_z(daily: pd.DataFrame, train_end: pd.Timestamp) -> pd.DataFrame:
+    """z per entity, day and controller indicator against the entity's training-period days."""
+    d = daily.dropna(subset=["value"]).copy()
+    d["local_date"] = pd.to_datetime(d["local_date"])
+    out = []
+    for _key, g in d.groupby(["entity", "indicator"]):
+        tr = g.loc[g["local_date"] < train_end, "value"].to_numpy()
+        if tr.size < 20:
+            continue
+        med, sc = _robust(tr)
+        out.append(g.assign(z=(g["value"] - med) / sc))
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
+
+
+def asset_kind(asset: str) -> str:
+    if asset.startswith("CMP-"):
+        return "compressor"
+    for suffix, kind in (("-SP", "spindle"), ("-TSC", "tsc_pump"), ("-CP", "flood_pump")):
+        if asset.endswith(suffix):
+            return kind
+    return "machine"
+
+
+def controller_entity(asset: str) -> str:
+    return asset if asset.startswith("CMP-") else "-".join(asset.split("-")[:2])
+
+
+def case_z(
+    case: dict, vib: pd.DataFrame, points: list[str], ctrl: pd.DataFrame, end: pd.Timestamp
+) -> dict[str, tuple[float, str]]:
+    """Maximum z per indicator over the case's open interval, with where it occurred."""
+    a = pd.Timestamp(case["opened"]).floor("D")
+    b = min(pd.Timestamp(case["closed"]) if pd.notna(case["closed"]) else end, end)
+    out: dict[str, tuple[float, str]] = {}
+    v = vib[vib["point_id"].isin(points) & (vib["day"] >= a) & (vib["day"] <= b)]
+    for k in Z_INDICATORS:
+        s = v[["point_id", k]].dropna()
+        if len(s):
+            i = s[k].idxmax()
+            out[k] = (float(s.at[i, k]), str(s.at[i, "point_id"]))
+    if ctrl.empty:
+        return out
+    la = a.tz_convert("America/Chicago").tz_localize(None).normalize()
+    lb = b.tz_convert("America/Chicago").tz_localize(None).normalize()
+    c = ctrl[
+        (ctrl["entity"] == controller_entity(case["asset_id"]))
+        & (ctrl["local_date"] >= la)
+        & (ctrl["local_date"] <= lb)
+    ]
+    for k in CONTROLLER_INDICATORS:
+        s = c[c["indicator"] == k]
+        if len(s):
+            i = s["z"].idxmax()
+            out[k] = (float(s.at[i, "z"]), str(s.at[i, "entity"]))
+    return out
+
+
+def suspected(z: dict[str, float], kind: str, zthr: float) -> tuple[str, str]:
+    """The family whose indicator has the largest z at or above zthr for this kind of asset."""
+    pump = kind in ("tsc_pump", "flood_pump")
+    aux = pump or kind == "compressor"
+    cands: list[tuple[float, str, str]] = []
+
+    def add(key: str, family: str, label: str, allowed: bool) -> None:
+        v = z.get(key, np.nan)
+        if allowed and pd.notna(v) and v >= zthr:
+            cands.append((float(v), family, f"{label} z {v:.1f}"))
+
+    for k, loc in FAULT_LOCATION.items():
+        add(f"env_{k}", "bearing", f"{loc} ({k.upper()})", kind != "machine")
+    add("ord_01", "imbalance", "1x", aux)
+    add("ord_02", "misalignment", "2x", kind == "compressor")
+    add("ord_3_10", "looseness", "3x-10x", aux)
+    add("hf", "cavitation or wear" if pump else "lubrication", "HF", kind != "machine")
+    add("tsc_drop", "rotary union", "TSC pressure drop", kind in ("spindle", "machine"))
+    add("thermistor", "spindle cooling", "thermistor residual", kind in ("spindle", "machine"))
+    add("discharge", "cooler", "discharge temperature residual", kind == "compressor")
+    add("axis_drift", "axis wear", "axis-load drift", kind == "machine")
+    if not cands:
+        return "unclassified", ""
+    _, fam, detail = max(cands)
+    return fam, detail
 
 
 def work_requests(
     cases: pd.DataFrame,
-    z_at: dict[str, dict[str, float]],
-    point_class: dict[str, str],
-    controller_at: dict[str, dict[str, Any]],
+    zs: dict[str, dict[str, tuple[float, str]]],
     shadow: tuple[pd.Timestamp, pd.Timestamp],
     zthr: float,
 ) -> pd.DataFrame:
     rows = []
     for c in cases.itertuples():
+        z = zs.get(c.case_id, {})
+        cond, detail = suspected({k: v[0] for k, v in z.items()}, asset_kind(c.asset_id), zthr)
         pts = [p for p in str(c.trigger_points or "").split(",") if p]
-        pid = pts[0] if pts else None
-        cond, detail = suspected(
-            z_at.get(c.case_id, {}),
-            point_class.get(pid) if pid else None,
-            controller_at.get(c.case_id, {}),
-            zthr,
-        )
         rows.append(
             {
                 "request_id": f"WR-{c.case_id}",
                 "case_id": c.case_id,
                 "asset_id": c.asset_id,
-                "point_id": pid,
+                "point_id": pts[0] if pts else None,
                 "created": c.opened,
                 "suspected_condition": cond,
                 "suspected_detail": detail,
                 "triggering_indicators": c.trigger_rules,
                 "recommended_inspection": INSPECTION[cond],
                 "shadow_mode": bool(shadow[0] <= c.opened < shadow[1]),
+                **{f"z_{k}": v[0] for k, v in z.items()},
             }
         )
     return pd.DataFrame(rows)
@@ -157,11 +259,18 @@ CONDITION_FAMILY = {
     "imbalance": "imbalance",
     "misalignment": "misalignment",
     "looseness": "looseness",
-    "rotary union": "contamination",
-    "spindle cooling": "cooler",
+    "rotary union": "rotary union",
+    "spindle cooling": "spindle cooling",
     "cooler (compressor)": "cooler",
     "pump seal or impeller": "cavitation or wear",
 }
+
+
+def family_of(condition_type: str, asset_id: str) -> str | None:
+    """Finding family for agreement scoring; an other-machine-stoppage work order on an axis is axis wear."""
+    if condition_type == "other machine stoppage" and "-AX" in str(asset_id):
+        return "axis wear"
+    return CONDITION_FAMILY.get(condition_type)
 
 
 def agreement(
@@ -174,33 +283,27 @@ def agreement(
     rows = []
     for r in requests.itertuples():
         c = cs.loc[r.case_id]
-        closed = c["closed"] if pd.notna(c["closed"]) else pd.Timestamp.max.tz_localize("UTC")
         hit = conds[
             (conds["asset_key"] == r.asset_id)
             & (conds["credit_ts"] >= r.created)
-            & (conds["credit_ts"] <= closed)
+            & (conds["credit_ts"] <= c["closed"])
         ]
+        base = {"request_id": r.request_id, "suspected": r.suspected_condition}
         if len(hit):
             first = hit.sort_values("credit_ts").iloc[0]
-            fam = CONDITION_FAMILY.get(first["condition_type"])
+            fam = family_of(first["condition_type"], first["asset_id"])
             rows.append(
                 {
-                    "request_id": r.request_id,
+                    **base,
                     "outcome": "confirmed",
                     "confirmed": first["condition_type"],
-                    "suspected": r.suspected_condition,
+                    "confirmed_family": fam,
                     "agree": fam == r.suspected_condition,
                 }
             )
         else:
             outcome = "no fault found" if c.get("closing_wo") in nff else "other"
             rows.append(
-                {
-                    "request_id": r.request_id,
-                    "outcome": outcome,
-                    "confirmed": None,
-                    "suspected": r.suspected_condition,
-                    "agree": None,
-                }
+                {**base, "outcome": outcome, "confirmed": None, "confirmed_family": None, "agree": None}
             )
     return pd.DataFrame(rows)

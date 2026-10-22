@@ -54,3 +54,18 @@ def controller_event_daily(events: DataFrame) -> DataFrame:
         .groupBy("machine_id", "local_date", "event_type")
         .agg(F.count("*").alias("events"), F.sum(F.col("stopped_machine").cast("int")).alias("stops"))
     )
+
+
+def compressor_hourly(minute: DataFrame, room: DataFrame) -> DataFrame:
+    """Per compressor and hour: minutes loaded and running, mean discharge temperature while loaded, and
+    the compressor room ambient temperature."""
+    hour = F.date_trunc("hour", F.col("minute_utc")).alias("hour_utc")
+    m = minute.groupBy("compressor_id", hour).agg(
+        F.sum(F.when(F.col("state") == "loaded", 1).otherwise(0)).alias("load_min"),
+        F.sum(F.when(F.col("state") != "off", 1).otherwise(0)).alias("run_min"),
+        F.avg(F.when(F.col("state") == "loaded", F.col("discharge_temp_c"))).alias("discharge_temp_c"),
+    )
+    r = room.groupBy(F.date_trunc("hour", F.col("minute_utc")).alias("hour_utc")).agg(
+        F.avg("ambient_c").alias("ambient_c")
+    )
+    return m.join(r, "hour_utc", "left")

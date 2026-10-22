@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pdm import splits
-from pdm.advisory.requests import suspected
+from pdm import splits, tasks
+from pdm.advisory.requests import asset_kind, family_of, suspected
 from pdm.config import load_config
 from pdm.evaluation import events as ev
 from pdm.fusion.status import cases, status_changes
@@ -172,19 +172,83 @@ def test_fusion_rule_floor_watch_then_model_alarm_and_case():
     wo = pd.DataFrame(
         {"asset_id": ["A"], "wo_id": ["W1"], "wo_type": ["inspection"], "closed": [t + pd.Timedelta(days=3)]}
     )
-    c = cases(ch_, sig, wo)
-    assert len(c) == 1 and c["closing_wo"].iat[0] == "W1"
+    c = cases(ch_, sig, wo, 7)
+    assert len(c) == 1 and c["closing_wo"].iat[0] == "W1" and c["closed_by"].iat[0] == "work order"
+    late = wo.assign(closed=[t + pd.Timedelta(days=30)])
+    c2 = cases(ch_, sig, late, 7)
+    assert c2["closed_by"].iat[0] == "quiet" and c2["closed"].iat[0] == t + pd.Timedelta(hours=2, days=7)
+    sig3 = pd.concat(
+        [
+            sig,
+            sig.iloc[[1]].assign(ts=t + pd.Timedelta(days=4)),
+            sig.iloc[[1]].assign(ts=t + pd.Timedelta(days=5)),
+        ],
+        ignore_index=True,
+    )
+    c3 = cases(status_changes(sig3, CFG), sig3, wo, 7)
+    assert len(c3) == 2 and c3["opened"].iat[1] == t + pd.Timedelta(days=4)
 
 
 def test_advisory_rules():
     z = 3.0
-    assert suspected({"env_bpfi": 5.0}, "flood_pump", {}, z)[0] == "bearing"
-    assert suspected({"ord_01": 5.0}, "flood_pump", {}, z)[0] == "imbalance"
-    assert suspected({"ord_01": 5.0}, "spindle_front", {}, z)[0] == "unclassified"
-    assert suspected({"hf": 4.0}, "spindle_front", {"coolant_drop": 0.1}, z)[0] == "contamination"
-    assert suspected({"hf": 4.0}, "spindle_front", {}, z)[0] == "lubrication"
-    assert suspected({"hf": 2.0}, "spindle_front", {}, z)[0] == "unclassified"
-    assert suspected({}, "spindle_front", {"thermistor_residual_alert": True}, z)[0] == "cooler"
+    assert suspected({"env_bpfi": 5.0, "hf": 4.0}, "flood_pump", z)[0] == "bearing"
+    assert suspected({"ord_01": 5.0}, "flood_pump", z)[0] == "imbalance"
+    assert suspected({"ord_01": 5.0}, "spindle", z)[0] == "unclassified"
+    assert suspected({"hf": 4.0, "tsc_drop": 6.0}, "spindle", z)[0] == "rotary union"
+    assert suspected({"hf": 4.0}, "spindle", z)[0] == "lubrication"
+    assert suspected({"hf": 4.0}, "tsc_pump", z)[0] == "cavitation or wear"
+    assert suspected({"hf": 2.0}, "spindle", z)[0] == "unclassified"
+    assert suspected({"thermistor": 4.0}, "spindle", z)[0] == "spindle cooling"
+    assert suspected({"discharge": 4.0, "hf": 3.5}, "compressor", z)[0] == "cooler"
+    assert suspected({"axis_drift": 4.0, "thermistor": 3.2}, "machine", z)[0] == "axis wear"
+    assert [asset_kind(a) for a in ("CMP-01", "HMC-01-SP", "HMC-01-TSC", "HMC-01-CP", "VMC-03")] == [
+        "compressor",
+        "spindle",
+        "tsc_pump",
+        "flood_pump",
+        "machine",
+    ]
+    assert family_of("other machine stoppage", "LTH-01-AX-Z") == "axis wear"
+    assert family_of("other machine stoppage", "VMC-04") is None
+    assert family_of("cooler (compressor)", "CMP-01") == "cooler"
+
+
+def test_champion_selection_prefers_simpler_within_margin():
+    sel = pd.DataFrame(
+        {"candidate": ["autoencoder_third_octave", "mahalanobis", "pca_t2_spe"], "skill": [0.40, 0.36, 0.20]}
+    )
+    assert tasks.select_champion(sel, 34, 2) == "mahalanobis"
+    assert tasks.select_champion(sel, 34, 1) == "autoencoder_third_octave"
+
+
+def test_nbm_rebaseline_after_repair():
+    rows = _year(4)
+    rows = rows[rows["hour_utc"] < pd.Timestamp("2024-09-01", tz=UTC)].reset_index(drop=True)
+    repair = pd.Timestamp("2024-06-01", tz=UTC)
+    shift = rows["hour_utc"] >= repair
+    rows.loc[shift, "hf_rms_g"] *= 3.0
+    rows.loc[shift, [c for c in rows.columns if c.startswith("toct_")]] *= 3.0
+    cutoff = pd.Timestamp("2024-05-01", tz=UTC)
+    rb = pd.Timedelta(days=CFG["models"]["nbm"]["rebaseline_days"])
+    win = pd.DataFrame(
+        {
+            "window_id": ["P|install", "P|repair"],
+            "point_id": "P",
+            "reason": ["install", "repair W1"],
+            "start": [rows["hour_utc"].min(), repair],
+            "usable": True,
+        }
+    )
+    end = pd.Timestamp("2024-09-01", tz=UTC)
+    plan = nbm.segment_plan(win, set(), end, rb)
+    s, info = nbm.fit_score_rebaselined(rows, "mahalanobis", CFG, cutoff, [], plan, end, 3)
+    assert [i["model"] for i in info] == ["base", "refit"]
+    assert not ((s["hour_utc"] >= repair) & (s["hour_utc"] < repair + rb)).any()
+    after = s[s["hour_utc"] >= repair + rb]
+    assert len(after) and (after["score"] > after["thr_99.5"]).mean() < 0.05
+    flagged = nbm.segment_plan(win, {"P|repair"}, end, rb)
+    s2, info2 = nbm.fit_score_rebaselined(rows, "mahalanobis", CFG, cutoff, [], flagged, end, 3)
+    assert info2[1]["model"].startswith("rule floor only") and not (s2["hour_utc"] >= repair).any()
 
 
 def test_evaluation_episodes_catch_chance_and_budget():
