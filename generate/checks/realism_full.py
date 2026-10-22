@@ -201,7 +201,9 @@ def check_regime(cfg: dict[str, Any], m: pd.DataFrame, sensor_events: pd.DataFra
     )
 
 
-def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> CheckResult:
+def check_lube(
+    cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame, record_end: pd.Timestamp | None = None
+) -> CheckResult:
     c = cfg["checks"]
     tol = c["lube_recovery_tolerance_frac"]
     need = c["expected_ranges"]["lube_recovery_share_min"]
@@ -247,6 +249,11 @@ def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> Ch
         ]
         window_end = s["ts"] + pd.Timedelta(days=float(s["window_days"]))
         cleared_in_window = not cl.empty and cl["ts"].iat[0] <= window_end
+        censored = bool(
+            c.get("lube_conversion_censor_at_record_end")
+            and record_end is not None
+            and window_end > record_end
+        )
         converted = not onsets[
             onsets["component_id"].astype(str).str.startswith(asset)
             & onsets["ts"].between(window_end - DAY, window_end + DAY)
@@ -271,6 +278,7 @@ def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> Ch
                 "cleared": cl["ts"].iat[0] if not cl.empty else pd.NaT,
                 "cleared_by": cl["by"].iat[0] if not cl.empty else None,
                 "cleared_in_window": cleared_in_window,
+                "censored_at_record_end": censored and not cleared_in_window,
                 "converted": converted,
                 "excluded_bearing": bearing,
                 "matched_hours": matched,
@@ -282,7 +290,8 @@ def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> Ch
         return CheckResult("7", "Lubrication episodes", "recovery and conversion", "no episodes", None, df)
     measured_rec = df["recovered"].dropna()
     share = measured_rec.mean() if len(measured_rec) else np.nan
-    unclr = df[~df["cleared_in_window"]]
+    cens = df[df["censored_at_record_end"]]
+    unclr = df[~df["cleared_in_window"] & ~df["censored_at_record_end"]]
     conv_ok = bool(unclr["converted"].all()) if len(unclr) else True
     report_only = len(measured_rec) < min_eps
     rec_ok = True if report_only else bool(share >= need)
@@ -291,10 +300,13 @@ def check_lube(cfg: dict[str, Any], m: pd.DataFrame, events: pd.DataFrame) -> Ch
         "7",
         "Lubrication episodes",
         f"conversion of uncleared episodes (pass/fail); recovery in >= {need:.0%} of measurable episodes "
-        f"(pre window 72 h before the start, post window 72 h from clear + {post_start.days} d, same load band, "
+        f"(episodes whose conversion window ends after the record are not tested for conversion; "
+        f"pre window 72 h before the start, post window 72 h from clear + {post_start.days} d, same load band, "
         f">= {min_h} matched hours; report-only below {min_eps} measurable; episodes with a bearing at stage "
         f">= {stage_min} on the point in either window reported separately)",
-        f"{len(df)} episodes; uncleared {len(unclr)}, converted {int(unclr['converted'].sum())}; recovery measurable "
+        f"{len(df)} episodes; uncleared {len(unclr)}, converted {int(unclr['converted'].sum())}"
+        + (f" (censored at record end {len(cens)})" if len(cens) else "")
+        + "; recovery measurable "
         f"{len(measured_rec)}, recovered {share:.0%}"
         + (" (report-only)" if report_only else "")
         + (
@@ -456,7 +468,8 @@ def check_benign(
     fails = failures(events)
     fails = fails.assign(scope=fails["asset_id"].str.split("-").str[:2].str.join("-"))
     fails.loc[fails["scope"].str.startswith("CMP"), "scope"] = "CMP"
-    a, n, bf, bn, p = _fisher_after(episodes, fails, start, end, window)
+    own = cfg["checks"].get("benign_base_windows") == "episode_assets"
+    a, n, bf, bn, p = _fisher_after(episodes, fails, start, end, window, own_scopes=own)
     tool = events[events["event"] == "tool_assembly_high_first_use"]
     if "created_in_record" in tool:
         tool = tool[tool["created_in_record"].fillna(False).astype(bool)]
@@ -480,7 +493,9 @@ def check_benign(
     return CheckResult(
         "11",
         "Benign anomalies",
-        f"failure rate after benign within chance (Fisher p > {alpha}); high tool-assembly programs created in "
+        f"failure rate after benign within chance (Fisher p > {alpha}; base windows from "
+        + ("the assets that carry episodes" if own else "all assets")
+        + "); high tool-assembly programs created in "
         "the record tested the same way from their first use, against base windows on the same machines",
         f"{n} episodes ({n / years:.1f}/yr); failures within 30 d after {a}/{n}; base windows {bf}/{bn}; "
         f"p = {p:.3f}; high tool-assembly programs: failures within 30 d after {ta}/{tn}; base windows "
@@ -695,7 +710,7 @@ def headline_counts(
     powered_h = sum(float(s["scheduled_min"].sum()) for s in schedules.values()) / SECONDS_PER_MINUTE
     down_h = float((machine_hours["down"]).sum())
     rep = events[events["event"] == "replacement"]
-    insp = wo[wo["wo_type"] == "inspection"]
+    insp = wo[(wo["wo_type"] == "inspection") & wo["platform_alert_id"].notna()]
     months = (end - start) / pd.Timedelta(days=DAYS_PER_YEAR / 12)
     instr_assets = 14
     sh0, sh1 = shadow
@@ -947,6 +962,8 @@ def run_full_checks(
         "p_drop",
         "p_rise_c",
         "program",
+        "ramp_h",
+        "p_notice",
     ]
     events = events.reindex(columns=sorted(set(events.columns) | set(event_cols)))
     parts = truth_dir / "parts"
@@ -1002,7 +1019,7 @@ def run_full_checks(
     results = [
         check_lead_times(cfg, m, events, reg),
         check_regime(cfg, m, sensor_events),
-        check_lube(cfg, m, events),
+        check_lube(cfg, m, events, end),
         check_crash(cfg, events, machine_hours, m),
         check_censoring(cfg, events),
         check_label_noise(cfg, wo_truth),
@@ -1018,10 +1035,11 @@ def run_full_checks(
         rc.check_fault_signatures(cfg, reg, m),
         rc.check_post_reinstallation(cfg, events, sensor_events),
         rc.check_ingress(cfg, reg, bronze_root, events, end),
-        rc.check_thermal(cfg, reg, bronze_root, events, m, end),
+        rc.check_thermal(cfg, reg, bronze_root, events, m, end, machine_hours),
     ]
     return results + tail, {
         "headline": head,
         "episodes": degradation_episodes(truth, events),
         "confirmed": confirmed,
+        "spindle_cooling": rc.spindle_cooling_outcomes(events, wo_truth),
     }

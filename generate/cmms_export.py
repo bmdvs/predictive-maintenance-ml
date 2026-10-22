@@ -36,7 +36,7 @@ _CODE_NOTES = {
     "rotary_union_leak": "Through-spindle coolant pressure low; rotary union leaking; rotary union replaced.",
     "coolant_ingress": "Coolant in front bearing area; rotary union leaking; rotary union replaced.",
     "oil_cooler_fouled": "High discharge temperature; oil cooler fouled; cooler cleaned.",
-    "spindle_cooler_fault": "Spindle overheat; spindle chiller repaired.",
+    "spindle_cooler_fault": "Spindle chiller degraded; chiller repaired.",
 }
 _CODE_PARTS = {
     "rotary_union_leak": "ROTARY-UNION",
@@ -149,13 +149,24 @@ def build_work_orders(
             prior = [c for t, c in onsets.get(asset, []) if t <= wo["opened"]]
             code = true_code(cfg, comp, {**wo, "onset_cause": prior[-1] if prior else None}, rng)
             notes = _CODE_NOTES.get(code or "", _NOTES.get(comp, "Repaired."))
+            if mode == "spindle_cooler":
+                notes = "Spindle overheat alarm stopped the machine. " + notes
+            elif wo.get("found_by") == "pm":
+                notes = "Found at spindle chiller check (monthly spindle PM). " + notes
+            elif wo.get("found_by") == "operator":
+                notes = "Operator reported spindle chiller fault indication. " + notes
             if wo.get("post_repair_finding") == "misalignment":
                 notes += (
                     " Post-repair check: misalignment found; laser alignment, corrected "
                     f"{pd.Timestamp(wo['post_repair_corrected']).tz_convert(LOCAL_TZ):%Y-%m-%d}."
                 )
         elif wtype == "inspection":
-            notes = "Inspected after platform alert: " + (
+            trigger = (
+                "Inspected after repeated spindle overheat alarms: "
+                if wo.get("trigger") == "overheat_alarms"
+                else "Inspected after platform alert: "
+            )
+            notes = trigger + (
                 "no fault found." if wo.get("no_fault_found") else f"found {wo.get('findings')}."
             )
         elif wtype == "pm":
@@ -208,6 +219,8 @@ def build_work_orders(
         if finding == "oil_cooler_fouled":
             pm_code, pm_comp = finding, "COMPRESSOR"
             note += " Cooler fouled; cleaned."
+        elif finding == "spindle_cooler_fault":
+            note += " Spindle chiller check: cooler degraded; repair work order opened."
         elif finding == "rotary_union_leak":
             note += " TSC pressure low; rotary union leaking; replacement planned."
         rows.append(

@@ -157,8 +157,15 @@ def draw_spindle_cooling(
 ) -> Condition:
     sc = cfg["spindle_cooling"]
     week_h = pd.Timedelta(weeks=1) / HOUR
-    params = {"rise_c": _u(rng, sc["thermistor_residual_rise_c"])}
-    return Condition("spindle_cooling", asset_id, (), ts, _u(rng, sc["rise_weeks"]) * week_h, params)
+    ramp_h = _u(rng, sc["rise_weeks"]) * week_h
+    notice = bool(rng.random() < sc["operator_notice_prob"])
+    frac = _u(rng, sc["operator_notice_at_ramp_frac"])
+    params = {
+        "rise_c": _u(rng, sc["thermistor_residual_rise_c"]),
+        "notice": notice,
+        "notice_at": ts + pd.Timedelta(hours=frac * ramp_h),
+    }
+    return Condition("spindle_cooling", asset_id, (), ts, ramp_h, params)
 
 
 def tool_assembly_factor(cfg: dict[str, Any], rng: np.random.Generator) -> tuple[float, bool]:

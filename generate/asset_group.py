@@ -272,9 +272,13 @@ class AssetGroup:
             if self.active_condition(asset_id, "coolant_ingress", ts):
                 return {"code_override": "coolant_ingress", "component_override": "SPINDLE"}
             return {"code_override": "rotary_union_leak", "component_override": "ROTARY_UNION"}
+        if kind == "spindle_cooling":
+            return {"code_override": "spindle_cooler_fault", "component_override": "SPINDLE"}
         return {"code_override": kind}
 
     def corrective_duration(self, kinds: list[str]) -> pd.Timedelta:
+        if "spindle_cooling" in kinds:
+            return pd.Timedelta(hours=float(self.crng.uniform(*self.cfg["spindle_cooling"]["repair_hours"])))
         if "rotary_union_leak" in kinds:
             return pd.Timedelta(hours=float(self.crng.uniform(*self.cfg["coolant_ingress"]["repair_hours"])))
         return pd.Timedelta(
@@ -313,7 +317,9 @@ class AssetGroup:
         if self.open_wo.get(asset_id) == wo_id:
             self.open_wo.pop(asset_id)
 
-    def on_corrective(self, ts: pd.Timestamp, asset_id: str, cond_kind: str, found: pd.Timestamp) -> None:
+    def on_corrective(
+        self, ts: pd.Timestamp, asset_id: str, cond_kind: str, found: pd.Timestamp, by: str | None = None
+    ) -> None:
         """Planned corrective repair of a condition found outside an alert-driven inspection."""
         kind = cond_kind
         c = self.active_condition(asset_id, kind, ts)
@@ -328,6 +334,7 @@ class AssetGroup:
             closed=ts + dur,
             findings=f"cond:{kind}",
             downtime_h=dur / pd.Timedelta(hours=1),
+            found_by=by,
             **self.condition_codes(asset_id, [kind], ts),
         )
         self.log(ts, "corrective_repair", asset_id=asset_id, wo_id=wo["wo_id"], kind=kind)
@@ -1158,7 +1165,9 @@ class HmcGroup(MachineMixin, AssetGroup):
         self.union_remaining_h = cnd.rotary_union_remaining_h(cfg, age, self.crng)
         self.union_found = False
         self.tool_factor: dict[str, float] = {}
-        self.cooler_check_day: Any = None
+        self.alarm_shift: tuple[Any, int] = (None, 0)
+        self.therm_day: Any = None
+        self.therm: dict[str, float] = {"without": 0.0, "with": 0.0}
         self.schedule_remounts()
         self.apply_overrides()
 
@@ -1224,6 +1233,17 @@ class HmcGroup(MachineMixin, AssetGroup):
             self.lube_missed[asset_id] = True
 
     def pm_effect(self, ts: pd.Timestamp, asset_id: str, task: str) -> None:
+        pc = self.cfg["spindle_cooling"]["pm_check"]
+        if task == pc["task"]:
+            cooling = self.active_condition(self.sp_asset, "spindle_cooling", ts)
+            if (
+                cooling is not None
+                and not cooling.params.get("repair_scheduled")
+                and cooling.level(ts) * cooling.params["rise_c"] >= pc["min_residual_c"]
+                and self.crng.random() < pc["detection_prob"]
+            ):
+                self.record_pm_finding("spindle_cooler_fault")
+                self.schedule_cooler_repair(ts, cooling, "pm")
         if task == "spindle_lube_check":
             self.lube_missed[asset_id] = False
             ep = self.lube.get(asset_id)
@@ -1551,16 +1571,94 @@ class HmcGroup(MachineMixin, AssetGroup):
             sc["onset_rate_per_hmc_year"], 1.0, HOURS_PER_YEAR
         ):
             cooling = self.start_condition(cnd.draw_spindle_cooling(cfg, sp, ts, self.crng))
-        day = self.sh.frame["local_date"].iat[i]
-        if cooling is not None and op["cut"] > 0 and sp not in self.failed and self.cooler_check_day != day:
-            self.cooler_check_day = day
-            if self.crng.random() < sc["overheat_stop_prob_per_day_at_full_rise"] * cooling.level(ts):
-                dur = pd.Timedelta(hours=float(self.crng.uniform(*sc["repair_hours"])))
-                wo = self.machine_stoppage(ts, sp, "spindle_cooler", (0.0, 0.0), dur=dur)
-                self.schedule(
-                    ts + dur, "condition_repaired", asset_id=sp, kinds=["spindle_cooling"], wo_id=wo["wo_id"]
-                )
+        if (
+            cooling is not None
+            and cooling.params["notice"]
+            and not cooling.params.get("repair_scheduled")
+            and ts >= cooling.params["notice_at"]
+        ):
+            self.schedule_cooler_repair(ts, cooling, "operator")
+        self.check_overheat(i, ts, op, cooling)
         return leak, cooling
+
+    def thermistor_hour(
+        self, i: int, op: dict[str, Any], cooling: Condition | None, ts: pd.Timestamp
+    ) -> tuple[int | None, int | None]:
+        """Spindle thermistor tracked minute by minute as the controller renders it (first-order lag,
+        reset at the first scheduled minute of each local day). Returns the second within the hour at
+        which the reading first reaches the limit during cutting, without and with the cooler residual."""
+        m_count = op["sched_min"]
+        if m_count <= 0:
+            return None, None
+        st = self.cfg["controller_signals"]["spindle_temp"]
+        lim = self.cfg["spindle_cooling"]["overheat_limit_c"]
+        ep = self.lube[self.sp_asset]
+        lube_c = ep.severity(ts) * ep.temp_rise_c if ep is not None else 0.0
+        front = self.components[f"{self.mid}-SP-F"]
+        th = self.cfg["bearing_degradation"]
+        s4lo, hif = th["stage_thresholds_hi"]["stage4"], th["failure"]["hi_threshold"]
+        s4 = float(np.clip((front.signature_hi() - s4lo) / (hif - s4lo), 0, 1)) if front.defect else 0.0
+        heat = float(self.sh.shop_ambient[i]) + lube_c + s4 * st["rise_c_at_failure"]
+        speed_term = st["rise_c_at_rated"] * op["speed"] / float(self.machine["rated_rpm"])
+        resid = cooling.level(ts) * cooling.params["rise_c"] if cooling is not None else 0.0
+        tau_s = st["time_constant_min"] * SECONDS_PER_MINUTE
+        decay = float(np.exp(-SECONDS_PER_MINUTE / tau_s))
+        day = self.sh.frame["local_date"].iat[i]
+        first = self.therm_day != day
+        self.therm_day = day
+        s0 = op["active_start_min"]
+        s1 = s0 + op["active_min"]
+        cross: dict[str, int | None] = {"without": None, "with": None}
+        for m in range(m_count):
+            active = s0 <= m < s1
+            base = heat + (speed_term if active else 0.0)
+            for key, tgt in (("without", base), ("with", base + resid)):
+                if first and m == 0:
+                    self.therm[key] = tgt
+                prev = self.therm[key]
+                self.therm[key] = tgt + (prev - tgt) * decay
+                if active and cross[key] is None and self.therm[key] >= lim:
+                    sec = 0 if prev >= lim else int(np.ceil(-tau_s * np.log((tgt - lim) / (tgt - prev))))
+                    cross[key] = m * int(SECONDS_PER_MINUTE) + min(sec, int(SECONDS_PER_MINUTE) - 1)
+        return cross["without"], cross["with"]
+
+    def check_overheat(self, i: int, ts: pd.Timestamp, op: dict[str, Any], cooling: Condition | None) -> None:
+        """Fixed thermistor limit: a cooler-caused crossing is an unplanned stoppage; a crossing from
+        lubrication or stage-4 heat is an alarm cleared at the machine, and repeated alarms in one shift
+        open an inspection."""
+        sc, sp = self.cfg["spindle_cooling"], self.sp_asset
+        without, with_resid = self.thermistor_hour(i, op, cooling, ts)
+        if op["cut"] <= 0 or op["down"] or sp in self.failed:
+            return
+        if with_resid is not None and without is None and cooling is not None:
+            dur = pd.Timedelta(hours=float(self.crng.uniform(*sc["repair_hours"])))
+            wo = self.machine_stoppage(ts, sp, "spindle_cooler", (0.0, 0.0), dur=dur)
+            self.out.events[-1]["offset_s"] = with_resid
+            wo["thermistor_limit_c"] = sc["overheat_limit_c"]
+            self.schedule(
+                ts + dur, "condition_repaired", asset_id=sp, kinds=["spindle_cooling"], wo_id=wo["wo_id"]
+            )
+            return
+        if without is None:
+            return
+        self.log(ts, "overheat_alarm", asset_id=sp, offset_s=without, cooler_active=cooling is not None)
+        key = (self.sh.frame["local_date"].iat[i], op["shift"])
+        n = self.alarm_shift[1] + 1 if self.alarm_shift[0] == key else 1
+        self.alarm_shift = (key, n)
+        if n == sc["alarm_inspection_min_alarms_per_shift"] and sp not in self.open_wo:
+            wo = self.new_wo(sp, "inspection", ts, trigger="overheat_alarms")
+            self.open_wo[sp] = wo["wo_id"]
+            when = maintenance.add_working_days(ts, 1, self.sh.holidays, self.shift_start_h)
+            self.log(ts, "alarm_inspection_opened", asset_id=sp, wo_id=wo["wo_id"])
+            self.schedule(when, "inspection", asset_id=sp, wo=wo)
+
+    def schedule_cooler_repair(self, ts: pd.Timestamp, cooling: Condition, by: str) -> None:
+        cooling.params["repair_scheduled"] = True
+        self.log(ts, "condition_found", asset_id=self.sp_asset, kind="spindle_cooling", by=by)
+        when = maintenance.add_working_days(ts, 1, self.sh.holidays, self.shift_start_h)
+        self.schedule(
+            when, "corrective", asset_id=self.sp_asset, cond_kind="spindle_cooling", found=ts, by=by
+        )
 
 
 class CompressorGroup(AssetGroup):

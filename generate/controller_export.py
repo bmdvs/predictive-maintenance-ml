@@ -114,6 +114,8 @@ def render_machine(
         etype = None
         if ev["event"] == "collision":
             etype = "collision"
+        elif ev["event"] == "overheat_alarm":
+            etype = "spindle_overheat"
         elif ev["event"] == "unplanned_failure":
             etype = _failure_event_type(cfg, ev)
             if ev.get("mode") == "seal_failure" and str(ev["asset_id"]).endswith("TSC"):
@@ -123,7 +125,12 @@ def render_machine(
         i = hour_pos.get(ev["ts"].floor("h"))
         if i is not None:
             engine_by_hour.setdefault(i, []).append(
-                {"type": etype, "source": "engine", "failure": ev["event"] == "unplanned_failure"}
+                {
+                    "type": etype,
+                    "source": "engine",
+                    "failure": ev["event"] == "unplanned_failure",
+                    "offset_s": ev.get("offset_s"),
+                }
             )
     seal_leads = [
         (t - pd.Timedelta(hours=float(rng.uniform(*cfg["pump"]["seal_failure"]["pressure_drop_lead_h"]))), t)
@@ -165,7 +172,12 @@ def render_machine(
             ts = t0 + pd.to_timedelta(np.arange(n), unit="s")
             down = bool(mh["down"])
             active_min = 0 if down else min(m_count, int(round(mh["cut_min"])))
-            start_min = int(rng.integers(0, m_count - active_min + 1))
+            planned_start = mh.get("active_start_min", np.nan)
+            start_min = (
+                int(planned_start)
+                if pd.notna(planned_start)
+                else int(rng.integers(0, m_count - active_min + 1))
+            )
             exe = np.full(n, "stopped" if down else "ready", dtype=object)
             active = np.zeros(n, dtype=bool)
             sec = int(SECONDS_PER_MINUTE)
@@ -243,6 +255,9 @@ def render_machine(
                         continue
                     pool = np.arange(n)
                 k = int(rng.choice(pool))
+                off = ev.get("offset_s")
+                if off is not None and pd.notna(off) and 0 <= int(off) < n and active[int(off)]:
+                    k = int(off)
                 lo, hi = cs["event_duration_s"][etype]
                 dur = int(rng.integers(lo, hi + 1))
                 stops = bool(cs["event_stops_machine"][etype]) or ev["failure"]
