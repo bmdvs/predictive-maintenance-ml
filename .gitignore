@@ -18,15 +18,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# dbt
-dbt/target/
-dbt/dbt_packages/
-dbt/logs/
-
-# Prefect and local state
-.prefect/
-*.duckdb
-*.duckdb.wal
+# Local Spark state
+spark-warehouse/
+metastore_db/
+derby.log
 
 # Platform build specification merged into CLAUDE.md
 CLAUDE-azure-databricks.md
