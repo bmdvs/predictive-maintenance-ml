@@ -27,7 +27,23 @@ _MODE_COMPONENT = {
     "coolant_pump_non_hmc": "COOLANT_PUMP",
     "ball_screw_or_guide": "AXIS",
     "trip": "COMPRESSOR",
+    "high_temp_trip": "COMPRESSOR",
 }
+_CODE_NOTES = {
+    "imbalance": "Imbalance found; impeller cleaned and rotor balanced.",
+    "misalignment": "Misalignment found; laser alignment.",
+    "looseness": "Looseness found; base and mounting bolts retightened.",
+    "rotary_union_leak": "Through-spindle coolant pressure low; rotary union leaking; rotary union replaced.",
+    "coolant_ingress": "Coolant in front bearing area; rotary union leaking; rotary union replaced.",
+    "oil_cooler_fouled": "High discharge temperature; oil cooler fouled; cooler cleaned.",
+    "spindle_cooler_fault": "Spindle overheat; spindle chiller repaired.",
+}
+_CODE_PARTS = {
+    "rotary_union_leak": "ROTARY-UNION",
+    "coolant_ingress": "ROTARY-UNION",
+    "spindle_cooler_fault": "SPINDLE-CHILLER-PARTS",
+}
+_CONDITION_CODES = set(_CODE_NOTES)
 _NOTES = {
     "SPINDLE": "Spindle noisy and running hot; spindle removed and exchanged.",
     "TSC_PUMP": "Through-spindle coolant pressure low; pump unit replaced.",
@@ -69,9 +85,15 @@ def true_code(cfg: dict[str, Any], comp: str, wo: dict[str, Any], rng: np.random
     codes = cfg["cmms"]["failure_codes"].get(comp)
     if not codes:
         return None
+    if isinstance(wo.get("code_override"), str):
+        return str(wo["code_override"])
     mode = wo.get("failure_mode")
     comps = str(wo.get("components") or "")
     findings = str(wo.get("findings") or "")
+    if mode == "spindle_cooler":
+        return "spindle_cooler_fault"
+    if mode == "high_temp_trip":
+        return "oil_cooler_fouled"
     if comp == "SPINDLE":
         if mode == "crash":
             return "CRASH-DMG"
@@ -118,14 +140,20 @@ def build_work_orders(
             continue
         asset = str(wo["asset_id"])
         mode = wo.get("failure_mode")
-        comp = component_of(asset, mode)
+        override = wo.get("component_override")
+        comp = override if isinstance(override, str) else component_of(asset, mode)
         wtype = wo["type"]
         code = None
         notes = ""
-        if wtype in ("unplanned_repair", "condition_based"):
+        if wtype in ("unplanned_repair", "condition_based", "corrective"):
             prior = [c for t, c in onsets.get(asset, []) if t <= wo["opened"]]
             code = true_code(cfg, comp, {**wo, "onset_cause": prior[-1] if prior else None}, rng)
-            notes = _NOTES.get(comp, "Repaired.")
+            notes = _CODE_NOTES.get(code or "", _NOTES.get(comp, "Repaired."))
+            if wo.get("post_repair_finding") == "misalignment":
+                notes += (
+                    " Post-repair check: misalignment found; laser alignment, corrected "
+                    f"{pd.Timestamp(wo['post_repair_corrected']).tz_convert(LOCAL_TZ):%Y-%m-%d}."
+                )
         elif wtype == "inspection":
             notes = "Inspected after platform alert: " + (
                 "no fault found." if wo.get("no_fault_found") else f"found {wo.get('findings')}."
@@ -136,7 +164,7 @@ def build_work_orders(
         started = wo.get("started", wo["opened"])
         closed = wo.get("closed", started)
         lag = pd.Timedelta(0)
-        if wtype in ("unplanned_repair", "condition_based"):
+        if wtype in ("unplanned_repair", "condition_based", "corrective"):
             lag = pd.Timedelta(days=float(rng.uniform(*ln["close_lag_days"])))
             labor = float(rng.uniform(*cm["labor_frac_of_repair_time"])) * min(
                 down_h, cm["labor_h_max_per_day"] * max(np.ceil(down_h / HOURS_PER_DAY), 1.0)
@@ -157,7 +185,9 @@ def build_work_orders(
                 "closed": closed + lag,
                 "downtime_hours": round(down_h, 2),
                 "technician": str(rng.choice(cm["technicians"])),
-                "parts": _parts(reg, asset, comp, wtype),
+                "parts": _CODE_PARTS.get(code or "")
+                if code in _CONDITION_CODES
+                else _parts(reg, asset, comp, wtype),
                 "labor_hours": round(labor, 2),
                 "notes": notes,
                 "no_fault_found": bool(wo.get("no_fault_found", False)) if wtype == "inspection" else False,
@@ -172,13 +202,21 @@ def build_work_orders(
         note = f"PM: {p['task']}."
         if p["task"] == "backlash_check":
             note += _backlash_note(p, axis_events)
+        finding = p.get("finding")
+        finding = finding if isinstance(finding, str) else None
+        pm_code, pm_comp = None, None
+        if finding == "oil_cooler_fouled":
+            pm_code, pm_comp = finding, "COMPRESSOR"
+            note += " Cooler fouled; cleaned."
+        elif finding == "rotary_union_leak":
+            note += " TSC pressure low; rotary union leaking; replacement planned."
         rows.append(
             {
                 "wo_id": f"PM-{i:06d}",
                 "asset_id": p["asset_id"],
-                "component": None,
+                "component": pm_comp,
                 "wo_type": "pm",
-                "failure_code": None,
+                "failure_code": pm_code,
                 "opened": p["due"],
                 "started": p["completed"],
                 "closed": p["completed"],
@@ -189,8 +227,8 @@ def build_work_orders(
                 "notes": note,
                 "no_fault_found": False,
                 "platform_alert_id": None,
-                "true_component": None,
-                "true_failure_code": None,
+                "true_component": pm_comp,
+                "true_failure_code": pm_code,
             }
         )
     for _, se in sensor_events[sensor_events["event"].isin(["install", "remount"])].iterrows():

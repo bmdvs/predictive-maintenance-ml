@@ -142,7 +142,11 @@ def run_group(spec: dict[str, Any]) -> dict[str, Any]:
         eng = CompressorGroup(ctx, cfg, reg, shared, air, None)
         eng.scalar_sink = _sink(bronze_root, group)
         out = eng.run()
-        counts.update(render_compressors(cfg, reg, ctx, air, eng.ops, bronze_root))
+        counts.update(
+            render_compressors(cfg, reg, ctx, air, eng.ops, bronze_root, eng.fouling_rise, eng.ctrl_events)
+        )
+        for cid, rise in eng.fouling_rise.items():
+            air[f"{cid}_fouling_rise_c"] = rise
         air.assign(**ctx.stamp()).to_parquet(truth_dir / "parts" / "compressor_hours.parquet", index=False)
         pd.DataFrame(shared.heat_episodes).assign(**ctx.stamp()).to_parquet(
             truth_dir / "parts" / "benign_CMP.parquet", index=False

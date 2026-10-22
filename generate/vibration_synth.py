@@ -45,6 +45,9 @@ class BurstInputs:
     lobe_hz: float = 0.0
     am_inner: float = 0.0
     housing_gain_db: float = 0.0
+    contamination_rise: float = 0.0
+    one_x_gain: float = 1.0
+    faults: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
 
@@ -87,15 +90,78 @@ def broadband_rms(sig: dict, point_class: str, load_pct: float, regime: dict) ->
 
 
 def _periodic(
-    t: np.ndarray, rng: np.random.Generator, comps: list[tuple[float, float]], fmax: float
-) -> tuple[np.ndarray, float]:
-    x = np.zeros_like(t)
-    var = 0.0
+    t: np.ndarray,
+    rng: np.random.Generator,
+    comps: list[tuple[float, float]],
+    fmax: float,
+    cap_noise_var: float,
+    cap: float,
+    gain: float,
+    added: dict[float, float] | None = None,
+) -> np.ndarray:
+    """Periodic background for one axis. Healthy components are limited to the variance share cap;
+    fault amplitudes in `added` (g, keyed by frequency) add in phase with the healthy component at
+    that frequency, or with a fresh phase where there is none."""
+    phases, var = [], 0.0
     for f, a in comps:
         if 0 < f < fmax and a > 0:
-            x += a * np.sin(2 * np.pi * f * t + rng.uniform(0, 2 * np.pi))
+            phases.append((f, a, rng.uniform(0, 2 * np.pi)))
             var += a**2 / 2
-    return x, var
+    scale = 1.0
+    if var > 0 and var / (var + cap_noise_var) > cap:
+        scale = float(np.sqrt(cap / (1 - cap) * cap_noise_var / var))
+    added = dict(added or {})
+    x = np.zeros_like(t)
+    for f, a, ph in phases:
+        x += (a * scale * gain + added.pop(f, 0.0)) * np.sin(2 * np.pi * f * t + ph)
+    for f, a in sorted(added.items()):
+        if 0 < f < fmax and a > 0:
+            x += a * np.sin(2 * np.pi * f * t + rng.uniform(0, 2 * np.pi))
+    return x
+
+
+def fault_additions(
+    faults: list[dict], shaft_hz: float, base: np.ndarray, axis_gain: np.ndarray, orders: int
+) -> tuple[list[dict[float, float]], float]:
+    """Per-axis fault amplitudes (g) by frequency and the low-frequency floor rise (dB).
+
+    Axes are x and y radial, z axial. base holds the healthy 1x..Nx amplitudes at radial gain.
+    Imbalance raises 1x radially with an axial increment at its configured share; misalignment
+    raises 2x and 1x with an axial increment at its share of the radial increment; looseness sets
+    3x..Nx to its gain times the healthy 3x level, adds a 0.5x subharmonic and raises the floor.
+    """
+    add: list[dict[float, float]] = [{}, {}, {}]
+    axial_rel = float(axis_gain[2] / axis_gain[0]) if axis_gain[0] > 0 else 1.0
+    floor_db = 0.0
+
+    def put(order: float, radial: float, axial: float) -> None:
+        f = order * shaft_hz
+        for ax, amp in ((0, radial), (1, radial), (2, axial)):
+            add[ax][f] = add[ax].get(f, 0.0) + amp
+
+    b = np.zeros(orders)
+    b[: min(base.size, orders)] = base[:orders]
+    for c in faults:
+        lev = float(c["level"])
+        if lev <= 0:
+            continue
+        if c["kind"] == "imbalance":
+            d1 = lev * (c["one_x"] - 1) * b[0]
+            put(1, d1, c["axial"] * d1)
+        elif c["kind"] == "misalignment":
+            d1 = lev * (c["one_x"] - 1) * b[0]
+            d2 = lev * (c["two_x"] - 1) * b[1]
+            put(1, d1, c["axial"] * d1)
+            put(2, d2, c["axial"] * d2)
+        elif c["kind"] == "looseness":
+            target = lev * c["harm"] * b[2]
+            for k in range(3, orders + 1):
+                d = max(target - b[k - 1], 0.0)
+                put(k, d, axial_rel * d)
+            h = lev * c["half_x"] * b[0]
+            put(0.5, h, axial_rel * h)
+            floor_db = max(floor_db, lev * c["floor_db"])
+    return add, floor_db
 
 
 def _impact_train(
@@ -161,7 +227,7 @@ def render_burst(
         if inp.defect
         else 0.0
     )
-    rise = (1 + inp.lube_rise) * (1 + inp.cavitation_rise) * (1 + stage1)
+    rise = (1 + inp.lube_rise) * (1 + inp.cavitation_rise) * (1 + stage1) * (1 + inp.contamination_rise)
     if rise > 1:
         extra_rms = bb * np.sqrt(hf_share * (rise**2 - 1))
         x += _band_noise(rng, inp.n, inp.fs, *inp.hf_band, extra_rms * gains_noise * inp.mount_gain)
@@ -172,6 +238,7 @@ def render_burst(
     harm = np.asarray(bg["shaft_harmonics_g"][harm_key], dtype=float) * speed_ratio**2
     harm = harm * (1 + s4 * (st4["shaft_harmonic_gain_at_failure"] - 1))
     harm[0] *= 1 + inp.wear_frac * (wear.get("shaft_1x_gain", 1.0) - 1)
+    harm[0] *= inp.one_x_gain
     comps = [((k + 1) * inp.shaft_hz, a) for k, a in enumerate(harm)]
     if group == "spindle" and inp.flutes > 0:
         tp = inp.flutes * inp.shaft_hz
@@ -180,13 +247,21 @@ def render_burst(
         ]
     if inp.point_class == "compressor_airend" and inp.lobe_hz > 0:
         comps += [((k + 1) * inp.lobe_hz, a) for k, a in enumerate(bg["lobe_pass_harmonics_g"])]
+    added, floor_db = (
+        fault_additions(inp.faults, inp.shaft_hz, harm, gains_noise, int(sig["fault_render"]["max_order"]))
+        if inp.faults
+        else ([{}, {}, {}], 0.0)
+    )
+    cap = bg["periodic_variance_share_max"]
     for axis in range(3):
-        per, var = _periodic(t, rng, comps, inp.band[1])
-        cap = bg["periodic_variance_share_max"]
         noise_var = (bb * gains_noise[axis]) ** 2
-        if var > 0 and var / (var + noise_var) > cap:
-            per *= np.sqrt(cap / (1 - cap) * noise_var / var)
-        x[axis] += per * gains_noise[axis] * inp.mount_gain
+        per = _periodic(t, rng, comps, inp.band[1], noise_var, cap, gains_noise[axis], added[axis])
+        x[axis] += per * inp.mount_gain
+    if floor_db > 0:
+        lo, hi = sig["fault_render"]["floor_band_hz"]
+        share = (hi - lo) / (inp.band[1] - inp.band[0])
+        floor_rms = bb * np.sqrt(share * (10 ** (floor_db / 10) - 1))
+        x += _band_noise(rng, inp.n, inp.fs, lo, hi, floor_rms * gains_noise * inp.mount_gain)
 
     if inp.defect and inp.hi > 0:
         imp = sig["severity_to_impact"]

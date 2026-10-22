@@ -144,8 +144,10 @@ class MachineMixin:
         mode: str,
         hours: tuple[float, float],
         axis_event: int | None = None,
-    ) -> None:
-        dur = pd.Timedelta(hours=float(self.rng.uniform(*hours)))
+        dur: pd.Timedelta | None = None,
+    ) -> dict[str, Any]:
+        if dur is None:
+            dur = pd.Timedelta(hours=float(self.rng.uniform(*hours)))
         wo = self.new_wo(
             asset_id,
             "unplanned_repair",
@@ -163,6 +165,7 @@ class MachineMixin:
         self.schedule(
             ts + dur, "stoppage_cleared", asset_id=asset_id, wo_id=wo["wo_id"], axis_event=axis_event
         )
+        return wo
 
     def on_stoppage_cleared(
         self, ts: pd.Timestamp, asset_id: str, wo_id: str, axis_event: int | None

@@ -204,13 +204,16 @@ def render_machine(
                 + st["rise_c_at_rated"] * speed / rated
                 + s4 * st["rise_c_at_failure"]
                 + float(mh.get("lube_temp_c", 0.0) or 0.0)
+                + float(mh.get("cooler_residual_c", 0.0) or 0.0)
             )
             feed = np.where(active, attrs["feed"], 100.0)
             hb, tb = cs["hydraulic_bar"], cs["tsc_bar"]
             hyd = hb["nominal"] + hb["noise"] * rng.standard_normal(n) if is_hmc else np.full(n, np.nan)
             if is_hmc:
-                factor = (1 - tsc_drop * float(mh.get("tsc_wear", 0.0))) * (
-                    1 - tb["cavitation_drop_frac"] * bool(mh.get("tsc_cavitation", False))
+                factor = (
+                    (1 - tsc_drop * float(mh.get("tsc_wear", 0.0)))
+                    * (1 - tb["cavitation_drop_frac"] * bool(mh.get("tsc_cavitation", False)))
+                    * (1 - float(mh.get("tsc_leak_drop", 0.0) or 0.0))
                 )
                 tsc_on = active & (np.cumsum(active) <= float(row["tsc_frac"]) * active.sum())
                 cool = np.where(tsc_on, tb["nominal"] * factor + tb["noise"] * rng.standard_normal(n), 0.0)

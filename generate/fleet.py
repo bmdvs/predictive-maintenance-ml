@@ -80,5 +80,7 @@ class FleetMachineGroup(MachineMixin, AssetGroup):
                 "tsc_wear": 0.0,
                 "tsc_cavitation": False,
                 "cp_cavitation": False,
+                "tsc_leak_drop": 0.0,
+                "cooler_residual_c": 0.0,
             },
         )
