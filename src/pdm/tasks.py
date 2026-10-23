@@ -84,6 +84,19 @@ def run_context(
     return ctx
 
 
+def _ensure_experiment_parent(experiment: str) -> None:
+    """MLflow does not create the workspace folder an experiment path lives in; create it when tracking
+    to Databricks."""
+    import mlflow
+
+    parent = experiment.rsplit("/", 1)[0]
+    if not parent.startswith("/") or not str(mlflow.get_tracking_uri()).startswith("databricks"):
+        return
+    from databricks.sdk import WorkspaceClient
+
+    WorkspaceClient().workspace.mkdirs(parent)
+
+
 def _mlflow_log(
     experiment: str | None,
     params: dict[str, Any],
@@ -100,6 +113,7 @@ def _mlflow_log(
     import mlflow
 
     if not nested:
+        _ensure_experiment_parent(experiment)
         mlflow.set_experiment(experiment)
     with mlflow.start_run(run_name=tags.get("name"), nested=nested) as run:
         allp = {**(context or {}), **params}
