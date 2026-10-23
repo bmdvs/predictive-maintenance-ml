@@ -57,12 +57,24 @@ class Store:
         assert self.local_root is not None
         return (self.local_root / schema / table).as_posix()
 
-    def version(self, schema: str, table: str) -> int | None:
-        """Current Delta version of a table, or None when it does not exist."""
+    def version(self, schema: str, table: str) -> int | str | None:
+        """Current Delta version of a table; for a pipeline materialized view or streaming table, which
+        has no Delta history of its own, its last refresh time and pipeline update id. None when the
+        table does not exist."""
         if not self.exists(schema, table):
             return None
         ref = self.name(schema, table) if self.catalog else f"delta.`{self.name(schema, table)}`"
-        return int(self.spark.sql(f"DESCRIBE HISTORY {ref} LIMIT 1").collect()[0]["version"])
+        try:
+            return int(self.spark.sql(f"DESCRIBE HISTORY {ref} LIMIT 1").collect()[0]["version"])
+        except Exception:
+            info = {
+                r["col_name"].strip(): (r["data_type"] or "").strip()
+                for r in self.spark.sql(f"DESCRIBE TABLE EXTENDED {ref}").collect()
+                if r["col_name"]
+            }
+            update = info.get("Latest Refresh", "").rstrip("/").split("/")[-1]
+            kind, refreshed = info.get("Type", "view"), info.get("Last Refreshed", "unknown")
+            return f"{kind} refreshed {refreshed}, update {update}"
 
     def read(self, schema: str, table: str) -> DataFrame:
         if self.catalog:
