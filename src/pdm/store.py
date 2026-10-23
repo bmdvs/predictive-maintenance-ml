@@ -58,23 +58,27 @@ class Store:
         return (self.local_root / schema / table).as_posix()
 
     def version(self, schema: str, table: str) -> int | str | None:
-        """Current Delta version of a table; for a pipeline materialized view or streaming table, which
-        has no Delta history of its own, its last refresh time and pipeline update id. None when the
-        table does not exist."""
+        """Current Delta version of a table. A pipeline materialized view or streaming table has no Delta
+        history readable from every compute, so for those the type and last-altered time from the
+        catalog's information schema are returned instead; 'unknown' if neither can be read. None when
+        the table does not exist."""
         if not self.exists(schema, table):
             return None
         ref = self.name(schema, table) if self.catalog else f"delta.`{self.name(schema, table)}`"
         try:
             return int(self.spark.sql(f"DESCRIBE HISTORY {ref} LIMIT 1").collect()[0]["version"])
         except Exception:
-            info = {
-                r["col_name"].strip(): (r["data_type"] or "").strip()
-                for r in self.spark.sql(f"DESCRIBE TABLE EXTENDED {ref}").collect()
-                if r["col_name"]
-            }
-            update = info.get("Latest Refresh", "").rstrip("/").split("/")[-1]
-            kind, refreshed = info.get("Type", "view"), info.get("Last Refreshed", "unknown")
-            return f"{kind} refreshed {refreshed}, update {update}"
+            pass
+        if not self.catalog:
+            return "unknown"
+        try:
+            r = self.spark.sql(
+                f"SELECT table_type, last_altered FROM {self.catalog}.information_schema.tables "
+                f"WHERE table_schema = '{schema}' AND table_name = '{table}'"
+            ).collect()
+            return f"{r[0]['table_type']} last altered {r[0]['last_altered']}" if r else "unknown"
+        except Exception:
+            return "unknown"
 
     def read(self, schema: str, table: str) -> DataFrame:
         if self.catalog:
