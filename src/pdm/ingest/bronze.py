@@ -77,12 +77,14 @@ def read_batch(spark: SparkSession, root: str, name: str) -> DataFrame:
 
 
 def read_stream(spark: SparkSession, root: str, name: str, schema_location: str) -> DataFrame:
-    """Auto Loader read of one bronze table from the landing volume."""
+    """Auto Loader read of one bronze table from the landing volume, by directory listing (the external
+    locations have no file events)."""
     t = TABLES[name]
     df = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
         .option("cloudFiles.schemaLocation", f"{schema_location}/{name}")
+        .option("cloudFiles.useNotifications", "false")
         .option("pathGlobFilter", t.glob)
         .option("recursiveFileLookup", "true")
         .load(f"{root.rstrip('/')}/{t.folder}")
