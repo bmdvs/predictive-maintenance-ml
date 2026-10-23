@@ -1,8 +1,8 @@
-# Unity Catalog schemas and the landing volume (environment setup). Catalog pdm, its managed location, the
-# storage credential and the external locations are not bundle resources; infra/unity_catalog.sh holds
-# them. These are declared for the prod target only, so development mode does not create prefixed
-# copies. The objects already exist (built by hand at environment setup): bind each one before the first prod
-# deploy, as listed in infra/README.md.
+# Unity Catalog schemas and the landing volume. Catalog pdm, its managed location, the storage
+# credential and the external locations are not bundle resources; infra/unity_catalog.sh holds them.
+# These are declared for the prod target only, so development mode does not create prefixed copies.
+# Where the objects already exist, bind each one before the first prod deploy, as listed in
+# infra/README.md.
 targets:
   prod:
     resources:

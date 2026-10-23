@@ -7,9 +7,9 @@ repository).
 
 | Script | Purpose | Stage |
 |---|---|---|
-| `azure_check.sh` | Read-only check of the Azure resources: storage account (hierarchical namespace, LRS, region), containers `landing` and `managed`, access connector `ac-pdm` with Storage Blob Data Contributor on the account, workspace tier and region | L0, L1 |
-| `unity_catalog.sh` | Storage credential `cred_pdm`; external locations `loc_pdm_landing` (container `landing`) and `loc_pdm_managed` (container `managed`), both created with validation skipped; catalog `pdm` with its managed location on `loc_pdm_managed`; schemas `landing`, `bronze`, `silver`, `gold`, `ml`, `monitoring` with no schema-level locations; external volume `pdm.landing.exports`. `--check` verifies read-only | L1 |
-| `land_exports.sh` | Copies `data/bronze/<system>/` to `/Volumes/pdm/landing/exports/<system>/` (idempotent) | L2 |
+| `azure_check.sh` | Read-only check of the Azure resources: storage account (hierarchical namespace, LRS, region), containers `landing` and `managed`, access connector `ac-pdm` with Storage Blob Data Contributor on the account, workspace tier and region | Environment setup |
+| `unity_catalog.sh` | Storage credential `cred_pdm`; external locations `loc_pdm_landing` (container `landing`) and `loc_pdm_managed` (container `managed`), both created with validation skipped; catalog `pdm` with its managed location on `loc_pdm_managed`; schemas `landing`, `bronze`, `silver`, `gold`, `ml`, `monitoring` with no schema-level locations; external volume `pdm.landing.exports`. `--check` verifies read-only | Environment setup |
+| `land_exports.sh` | Copies `data/bronze/<system>/` to `/Volumes/pdm/landing/exports/<system>/` (idempotent); `--check` compares file counts and bytes per folder, read-only | Data landing |
 
 Environment variables:
 
@@ -30,7 +30,7 @@ external locations were created with validation skipped. Auto Loader reads the l
 directory listing (`cloudFiles.useNotifications` false); nothing depends on file events.
 
 The Azure resources themselves (resource group `rg-pdm`, workspace `dbw-pdm`, storage account,
-access connector and its role assignment) are created by hand in the Azure portal.
+access connector and its role assignment) are created in the Azure portal; `azure_check.sh` verifies them.
 
 ## Bundle
 

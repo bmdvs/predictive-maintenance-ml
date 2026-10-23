@@ -84,6 +84,16 @@ def run_context(
     return ctx
 
 
+def _no_autolog(experiment: str | None) -> None:
+    """Databricks turns on MLflow autologging by default, which would log a run for every model fit inside
+    a task; training tasks log only the runs they create themselves."""
+    if experiment is None:
+        return
+    import mlflow
+
+    mlflow.autolog(disable=True)
+
+
 def _ensure_experiment_parent(experiment: str) -> None:
     """MLflow does not create the workspace folder an experiment path lives in; create it when tracking
     to Databricks."""
@@ -206,7 +216,7 @@ def _nbm_run_extra(
     nb: dict[str, Any],
 ) -> Callable[[], None]:
     """Inside a candidate's run: one nested run per point, the selection table, and the per-point models
-    as one pyfunc model (registered by hand as pdm.ml.nbm_point_models)."""
+    as one pyfunc model (registered as pdm.ml.nbm_point_models)."""
 
     def body() -> None:
         import mlflow
@@ -251,6 +261,7 @@ def _nbm_run_extra(
 
 
 def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -> dict[str, Any]:
+    _no_autolog(experiment)
     nb = cfg["models"]["nbm"]
     end = horizon(cfg)
     cutoff = splits.training_cutoff(cfg)
@@ -436,6 +447,7 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
 def controller_health_task(
     store: Store, cfg: dict[str, Any], experiment: str | None = None
 ) -> dict[str, Any]:
+    _no_autolog(experiment)
     h = store.read_pd("silver", "controller_hourly")
     h["hour_utc"] = _utc(h["hour_utc"])
     h = h[h["hour_utc"] < horizon(cfg)]
@@ -496,6 +508,7 @@ def rule_floor_task(store: Store, cfg: dict[str, Any], experiment: str | None = 
     """Training-period comparison runs for the rule floor: the vendor rules at each swept offset, the
     vendor rules with the ISO zone rule (the rule floor) and the ISO rule alone, with the same metrics as
     the per-point model candidates. The rule floor is code, not a model; nothing is registered."""
+    _no_autolog(experiment)
     pts = _points(store)
     conds = _conditions(store, cfg)
     cutoff = splits.training_cutoff(cfg)
@@ -578,6 +591,7 @@ def _controller_signals(ex: pd.DataFrame, hmc: set[str]) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- survival, supervised gate, prognosis
 def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -> dict[str, Any]:
+    _no_autolog(experiment)
     b = splits.boundaries(cfg)
     lives = survival.lifetimes(
         store.read_pd("bronze", "reg_machines"),

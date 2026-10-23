@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only check of the Azure resources from the environment setup: the storage account (hierarchical
+# Read-only check of the platform's Azure resources: the storage account (hierarchical
 # namespace, replication, region), its containers, the access connector and its role on the account,
 # and the workspace tier. Nothing is created or changed. Identifiers come from environment variables.
 #
