@@ -205,26 +205,47 @@ def sanity_flags(
     return pd.DataFrame(rows)
 
 
+SANITY_SCHEMA = (
+    "window_id string, point_id string, reason string, sister_tested boolean, sister_ratio_max double, "
+    "trend_rise_max double, flag_sister boolean, flag_trend boolean, flagged boolean, indicators string, "
+    "sister_factor double, trend_factor double, proposed_sister double, proposed_trend double"
+)
+
+
 def sanity_table(
-    spark: Any, rows_in_windows: DataFrame, pts: DataFrame, windows: DataFrame, cfg: dict[str, Any]
-) -> tuple[DataFrame, dict[str, float]]:
-    """Fleet baseline sanity flags for every window, and the factors used (configured, or proposed from
-    healthy spread while the configured values are null)."""
+    rows_in_windows: DataFrame, pts: DataFrame, windows: DataFrame, cfg: dict[str, Any]
+) -> DataFrame:
+    """Fleet baseline sanity flags for every window, with the factors used (configured, or proposed from
+    healthy spread while the configured values are null) and the proposed factors. Lazy: the inputs are
+    combined into one Spark group and the flag logic runs when the table is computed."""
     sc = cfg["baselines"]["sanity"]
-    med = window_medians(rows_in_windows).toPandas()
-    pts_pd = pts.select("point_id", "sister_group").toPandas()
-    ratios = sister_ratios(med, pts_pd, sc["sister_min_group"])
-    trends = window_trends(rows_in_windows).toPandas()
-    w = windows.select("window_id", "point_id", "reason").toPandas()
-    install = set(w.loc[w["reason"] == "install", "window_id"])
-    proposed = proposed_factors(ratios, trends, install, sc)
-    factors = {
-        "sister_factor": sc.get("sister_factor") or proposed["sister_factor"],
-        "trend_factor": sc.get("trend_factor") or proposed["trend_factor"],
-    }
-    flags = sanity_flags(ratios, trends, w, factors)
-    return spark.createDataFrame(flags), {
-        **factors,
-        "proposed_sister": proposed["sister_factor"],
-        "proposed_trend": proposed["trend_factor"],
-    }
+    parts = [
+        window_medians(rows_in_windows).withColumn("kind", F.lit("median")),
+        pts.select("point_id", "sister_group").withColumn("kind", F.lit("point")),
+        window_trends(rows_in_windows).withColumn("kind", F.lit("trend")),
+        windows.select("window_id", "point_id", "reason").withColumn("kind", F.lit("window")),
+    ]
+    combined = parts[0]
+    for p in parts[1:]:
+        combined = combined.unionByName(p, allowMissingColumns=True)
+
+    def fn(pdf: pd.DataFrame) -> pd.DataFrame:
+        med = pdf[pdf["kind"] == "median"][["window_id", "point_id", *SISTER_INDICATORS, "n"]]
+        pts_pd = pdf[pdf["kind"] == "point"][["point_id", "sister_group"]]
+        trends = pdf[pdf["kind"] == "trend"][
+            ["window_id", "point_id", "indicator", "slope_log_per_day", "span_days", "implied_rise"]
+        ]
+        w = pdf[pdf["kind"] == "window"][["window_id", "point_id", "reason"]]
+        ratios = sister_ratios(med.reset_index(drop=True), pts_pd, sc["sister_min_group"])
+        install = set(w.loc[w["reason"] == "install", "window_id"])
+        proposed = proposed_factors(ratios, trends.reset_index(drop=True), install, sc)
+        factors = {
+            "sister_factor": sc.get("sister_factor") or proposed["sister_factor"],
+            "trend_factor": sc.get("trend_factor") or proposed["trend_factor"],
+        }
+        flags = sanity_flags(ratios, trends, w, factors)
+        return flags.assign(
+            proposed_sister=proposed["sister_factor"], proposed_trend=proposed["trend_factor"]
+        )
+
+    return combined.groupBy(F.lit(1).alias("_all")).applyInPandas(fn, SANITY_SCHEMA)

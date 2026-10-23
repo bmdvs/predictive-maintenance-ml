@@ -84,16 +84,25 @@ def _point_rolling(pdf: pd.DataFrame, base: pd.DataFrame, cfg: dict[str, Any]) -
     return out
 
 
-def rolling_features(indicators: DataFrame, baseline_stats: pd.DataFrame, cfg: dict[str, Any]) -> DataFrame:
-    """baseline_stats: pandas table of window stats with window end times (small, broadcast)."""
+def rolling_features(indicators: DataFrame, baselines: DataFrame, cfg: dict[str, Any]) -> DataFrame:
+    """baselines: window stats with window end times (baseline_with_ends), paired with each point's
+    indicator rows by point."""
     cols = ["point_id", "hour_utc", "regime", "implausible", *CORE_MAP.values()]
-    base = baseline_stats.copy()
 
-    def fn(pdf: pd.DataFrame) -> pd.DataFrame:
-        return _point_rolling(pdf, base, cfg)
+    def fn(pdf: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+        return _point_rolling(pdf, base, cfg) if len(pdf) else pd.DataFrame(columns=_rolling_columns(cfg))
 
-    return indicators.select(*cols).groupBy("point_id").applyInPandas(fn, rolling_schema(cfg))
+    return (
+        indicators.select(*cols)
+        .groupBy("point_id")
+        .cogroup(baselines.groupBy("point_id"))
+        .applyInPandas(fn, rolling_schema(cfg))
+    )
 
 
-def baseline_with_ends(stats: DataFrame, windows: DataFrame) -> pd.DataFrame:
-    return stats.join(windows.where(F.col("usable")).select("window_id", "end"), "window_id").toPandas()
+def _rolling_columns(cfg: dict[str, Any]) -> list[str]:
+    return [c.split(" ")[0] for c in rolling_schema(cfg).split(", ")]
+
+
+def baseline_with_ends(stats: DataFrame, windows: DataFrame) -> DataFrame:
+    return stats.join(windows.where(F.col("usable")).select("window_id", "end"), "window_id")

@@ -97,10 +97,12 @@ def hz1_to_minute(hz1: DataFrame) -> DataFrame:
 def reconcile_minutes(recomputed: DataFrame, stored: DataFrame, tolerance: float) -> DataFrame:
     """Per machine: matched minutes, unmatched minutes and the largest difference in mean loads."""
     keys = ["machine_id", "minute_utc", "program", "execution"]
-    bounds = recomputed.agg(F.min("minute_utc").alias("a"), F.max("minute_utc").alias("b")).first()
-    s = stored.where(F.col("minute_utc").between(bounds["a"], bounds["b"]))
-    s = s.where(
-        F.col("machine_id").isin([r[0] for r in recomputed.select("machine_id").distinct().collect()])
+    bounds = recomputed.agg(F.min("minute_utc").alias("_a"), F.max("minute_utc").alias("_b"))
+    s = (
+        stored.crossJoin(bounds)
+        .where(F.col("minute_utc").between(F.col("_a"), F.col("_b")))
+        .drop("_a", "_b")
+        .join(recomputed.select("machine_id").distinct(), "machine_id", "left_semi")
     )
     j = recomputed.alias("r").join(s.alias("s"), keys, "full_outer")
     diffs = [
