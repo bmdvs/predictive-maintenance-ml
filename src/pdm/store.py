@@ -14,6 +14,36 @@ from pathlib import Path
 import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
 
+TABLE_SCHEMA = {
+    "baseline_sanity": "gold",
+    "baseline_stats": "gold",
+    "cm_scalars": "bronze",
+    "cm_sensor_events": "bronze",
+    "cmms_work_orders": "bronze",
+    "confirmed_conditions": "silver",
+    "controller_event_daily": "silver",
+    "controller_hourly": "silver",
+    "ctrl_events": "bronze",
+    "ctrl_hz1": "bronze",
+    "ctrl_minute": "bronze",
+    "data_quality_monthly": "monitoring",
+    "gap_table": "silver",
+    "healthy_windows": "silver",
+    "hourly_indicators": "silver",
+    "hz1_reconciliation": "silver",
+    "measurement_state_validation": "silver",
+    "points": "silver",
+    "reg_sensors": "bronze",
+    "rolling_features": "silver",
+    "rule_floor_alerts": "gold",
+    "rule_floor_exceedances": "gold",
+}
+
+
+def table_name(catalog: str, table: str) -> str:
+    """Fully qualified Unity Catalog name of a pipeline table; tables not listed are bronze."""
+    return f"{catalog}.{TABLE_SCHEMA.get(table, 'bronze')}.{table}"
+
 
 @dataclass
 class Store:

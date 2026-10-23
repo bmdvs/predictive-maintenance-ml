@@ -8,39 +8,17 @@ from pdm.features import controller, indicators, points, windows
 from pdm.labels import confirmed_conditions as _confirmed_conditions
 from pdm.quality import views
 from pdm.quality.expectations import expectations
+from pdm.store import table_name
 
 CFG = load_config(spark.conf.get("pdm.config_path"))  # noqa: F821
 IND_RULES = {n: e for n, e, a in expectations(CFG)["hourly_indicators"] if a == "drop"}
 
 
 CATALOG = spark.conf.get("pdm.catalog")  # noqa: F821
-SCHEMA = {
-    "baseline_sanity": "gold",
-    "baseline_stats": "gold",
-    "cm_scalars": "bronze",
-    "cm_sensor_events": "bronze",
-    "cmms_work_orders": "bronze",
-    "confirmed_conditions": "silver",
-    "controller_event_daily": "silver",
-    "controller_hourly": "silver",
-    "ctrl_events": "bronze",
-    "ctrl_hz1": "bronze",
-    "ctrl_minute": "bronze",
-    "data_quality_monthly": "monitoring",
-    "gap_table": "silver",
-    "healthy_windows": "silver",
-    "hourly_indicators": "silver",
-    "hz1_reconciliation": "silver",
-    "measurement_state_validation": "silver",
-    "points": "silver",
-    "reg_sensors": "bronze",
-    "rolling_features": "silver",
-    "rule_floor_alerts": "gold",
-}
 
 
 def _name(name: str) -> str:
-    return f"{CATALOG}.{SCHEMA.get(name, 'bronze')}.{name}"
+    return table_name(CATALOG, name)
 
 
 def _read(name: str):
