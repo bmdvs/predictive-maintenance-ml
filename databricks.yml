@@ -43,6 +43,9 @@ targets:
   dev:
     mode: development
     default: true
+    variables:
+      catalog: pdm_dev
+      schema_root: /Volumes/pdm_dev/landing/autoloader/_schemas
   prod:
     mode: production
     workspace:

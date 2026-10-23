@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -51,21 +53,70 @@ def model_version(name: str, payload: Any) -> str:
     return f"{name}-{h}"
 
 
+def run_context(
+    store: Store | None, cfg: dict[str, Any] | None, inputs: list[tuple[str, str]]
+) -> dict[str, Any]:
+    """MLflow parameters every training run carries: the split definition and holdout cap, the config hash
+    of the source data, the hash of the configuration used and the Delta version of each input table."""
+    if store is None or cfg is None:
+        return {}
+    b = splits.boundaries(cfg)
+    ctx: dict[str, Any] = {
+        "split_train": f"{b['train'][0]:%Y-%m-%d} to {b['train'][1]:%Y-%m-%d} (exclusive, UTC)",
+        "split_validation": f"{b['validation'][0]:%Y-%m-%d} to {b['validation'][1]:%Y-%m-%d}",
+        "split_shadow": f"{b['shadow'][0]:%Y-%m-%d} to {b['shadow'][1]:%Y-%m-%d}",
+        "split_gap_days": cfg["splits"]["gap_days"],
+        "training_cutoff_utc": str(splits.training_cutoff(cfg)),
+        "data_horizon_utc": str(horizon(cfg)),
+        "holdout_shadow": bool(cfg["evaluation"].get("holdout_shadow", True)),
+        "config_hash_used": hashlib.sha256(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[
+            :16
+        ],
+    }
+    if store.exists("bronze", "cm_scalars"):
+        src = (
+            store.read("bronze", "cm_scalars").select("run_id", "config_hash").distinct().limit(3).toPandas()
+        )
+        ctx["source_run_id"] = ",".join(sorted(src["run_id"].astype(str)))
+        ctx["source_config_hash"] = ",".join(sorted(src["config_hash"].astype(str)))
+    for schema, table in inputs:
+        ctx[f"input_version.{schema}.{table}"] = store.version(schema, table)
+    return ctx
+
+
 def _mlflow_log(
-    experiment: str | None, params: dict[str, Any], metrics: dict[str, float], tags: dict[str, str]
+    experiment: str | None,
+    params: dict[str, Any],
+    metrics: dict[str, float],
+    tags: dict[str, str],
+    context: dict[str, Any] | None = None,
+    extra: Callable[[], None] | None = None,
+    nested: bool = False,
 ) -> str | None:
+    """One MLflow run with parameters (plus the run context), metrics and tags; extra runs inside it
+    (artifacts, models, nested runs)."""
     if experiment is None:
         return None
     import mlflow
 
-    mlflow.set_experiment(experiment)
-    with mlflow.start_run(run_name=tags.get("name")) as run:
-        mlflow.log_params(
-            {k: (v if isinstance(v, (int, float)) else str(v)[:500]) for k, v in params.items()}
+    if not nested:
+        mlflow.set_experiment(experiment)
+    with mlflow.start_run(run_name=tags.get("name"), nested=nested) as run:
+        allp = {**(context or {}), **params}
+        mlflow.log_params({k: (v if isinstance(v, (int, float)) else str(v)[:500]) for k, v in allp.items()})
+        mlflow.log_metrics(
+            {k: float(v) for k, v in metrics.items() if v is not None and np.isfinite(float(v))}
         )
-        mlflow.log_metrics({k: float(v) for k, v in metrics.items() if v is not None and np.isfinite(v)})
         mlflow.set_tags(tags)
+        if extra is not None:
+            extra()
         return run.info.run_id
+
+
+def _log_table(df: pd.DataFrame, name: str) -> None:
+    import mlflow
+
+    mlflow.log_text(df.to_csv(index=False), f"{name}.csv")
 
 
 def horizon(cfg: dict[str, Any]) -> pd.Timestamp:
@@ -132,6 +183,59 @@ def select_champion(sel: pd.DataFrame, n_conditions: int, margin_conditions: int
     return min(close["candidate"], key=SIMPLICITY.index)
 
 
+def _nbm_run_extra(
+    candidate: str,
+    segs: dict[str, list[dict[str, Any]]],
+    infos: dict[str, list[dict[str, Any]]],
+    sel: pd.DataFrame,
+    ind: pd.DataFrame,
+    nb: dict[str, Any],
+) -> Callable[[], None]:
+    """Inside a candidate's run: one nested run per point, the selection table, and the per-point models
+    as one pyfunc model (registered by hand as pdm.ml.nbm_point_models)."""
+
+    def body() -> None:
+        import mlflow
+        from mlflow.models import infer_signature
+
+        import pdm
+        from pdm.models.nbm_pyfunc import NBMPointModels
+
+        for pid, info in sorted(infos.items()):
+            fitted = [i for i in info if i.get("model") in ("segment fit", "window refit")]
+            _mlflow_log(
+                "nested",
+                {"point_id": pid, "segments": len(info), "segments_fitted": len(fitted)},
+                {
+                    "n_train_hours": float(
+                        sum(i.get("n_train_final") or i.get("n_train") or 0 for i in fitted)
+                    ),
+                    "monthly_updates": float(sum(i.get("monthly_updates") or 0 for i in fitted)),
+                },
+                {"name": f"{candidate} {pid}", "point_id": pid, "candidate": candidate},
+                extra=lambda info=info: _log_table(pd.DataFrame(info).astype(str), "segments"),
+                nested=True,
+            )
+        _log_table(sel, "candidate_selection")
+        model = NBMPointModels(candidate, nb["threshold_percentile"], segs)
+        cols = ["point_id", "hour_utc", "regime", *nbm.VECTOR_SOURCE, *nbm.toct_columns(ind)]
+        example = ind[cols].dropna(subset=["vel_rms_mm_s"]).head(20).reset_index(drop=True)
+        example["hour_utc"] = example["hour_utc"].dt.tz_localize(None)
+        signature = infer_signature(example, model.predict(None, example))
+        kwargs = {
+            "python_model": model,
+            "code_paths": [str(Path(pdm.__file__).parent)],
+            "signature": signature,
+            "pip_requirements": ["numpy", "pandas", "scipy", "scikit-learn", "pyyaml", "pyarrow"],
+        }
+        try:
+            mlflow.pyfunc.log_model(name="model", **kwargs)
+        except TypeError:
+            mlflow.pyfunc.log_model(artifact_path="model", **kwargs)
+
+    return body
+
+
 def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -> dict[str, Any]:
     nb = cfg["models"]["nbm"]
     end = horizon(cfg)
@@ -149,6 +253,8 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
     rf = _episodes_from(store.read_pd("gold", "rule_floor_exceedances"), _points(store), cfg)
     candidates = list(nb["candidates"])
     scores: dict[str, list[pd.DataFrame]] = {c: [] for c in candidates}
+    seg_models: dict[str, dict[str, list[dict[str, Any]]]] = {c: {} for c in candidates}
+    point_info: dict[str, dict[str, list[dict[str, Any]]]] = {c: {} for c in candidates}
     seg_rows, healthy = [], []
     rfx = store.read_pd("gold", "rule_floor_exceedances")
     rfx = rfx[(rfx["method"] == "iso") | (rfx["sweep"] == cfg["rules"]["vendor"]["alert_frac_zone_b_width"])]
@@ -164,9 +270,11 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
         open_work = [(a, b if pd.notna(b) else end) for a, b in zip(w["opened"], w["closed"], strict=True)]
         alerts = list(rfx.loc[rfx["asset_id"] == asset, "ts"])
         for cand in candidates:
-            s, infos, tr = nbm.fit_score_segments(
+            s, infos, tr, fitted = nbm.fit_score_segments(
                 rows, cand, cfg, cutoff, excl, plan, end, nb["top_contributors"], open_work, alerts
             )
+            seg_models[cand][pid] = fitted
+            point_info[cand][pid] = infos
             if len(s):
                 scores[cand].append(s.assign(asset_id=asset))
             if cand == candidates[0]:
@@ -237,12 +345,55 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
         ],
         ignore_index=True,
     )
-    run = _mlflow_log(
-        experiment,
-        {"champion": champion, "segments": len(info)},
-        {f"training_skill_{r.candidate}": r.skill for r in sel.itertuples()},
-        {"name": "nbm", "model_version": version},
-    )
+    inputs = [
+        ("silver", "hourly_indicators"),
+        ("silver", "healthy_windows"),
+        ("silver", "confirmed_conditions"),
+        ("silver", "points"),
+        ("gold", "baseline_sanity"),
+        ("gold", "rule_floor_exceedances"),
+        ("bronze", "cmms_work_orders"),
+    ]
+    ctx = run_context(store, cfg, inputs) if experiment else {}
+    runs = {}
+    for r in sel.itertuples():
+        runs[r.candidate] = _mlflow_log(
+            experiment,
+            {
+                "candidate": r.candidate,
+                "basis": r.basis,
+                "threshold_percentile": nb["threshold_percentile"],
+                "sweep_percentiles": nb["sweep_percentiles"],
+                "persistence_hours": nb["persistence_hours"],
+                "rebaseline_days": nb["rebaseline_days"],
+                "exclude_before_condition_days": nb["exclude_before_condition_days"],
+                "min_regime_healthy_hours": nb["min_regime_healthy_hours"],
+                "min_train_hours": nb["min_train_hours"],
+                "champion_margin_conditions": nb["champion_margin_conditions"],
+                "seed": cfg["models"]["seed"],
+            },
+            {
+                "training_caught_share": r.training_caught,
+                "training_chance_share": r.training_chance,
+                "training_skill": r.skill,
+                "training_false_per_asset_month": r.operating_false_per_asset_month,
+                "curve_false_min": r.curve_false_min,
+                "curve_false_max": r.curve_false_max,
+                "vendor_training_false_per_asset_month": r.vendor_training_false_per_asset_month,
+                "training_conditions": r.training_conditions,
+                "segments_fitted": sum(len(v) for v in seg_models[r.candidate].values()),
+            },
+            {
+                "name": f"nbm {r.candidate}",
+                "layer": "nbm",
+                "candidate": r.candidate,
+                "champion": str(r.candidate == champion).lower(),
+                "model_version": version,
+            },
+            context=ctx,
+            extra=_nbm_run_extra(r.candidate, seg_models[r.candidate], point_info[r.candidate], sel, ind, nb),
+        )
+    run = runs.get(champion)
     hs = pd.concat(healthy, ignore_index=True)
     store.write_pd(sc.assign(model_version=version, candidate=champion), "gold", "nbm_scores")
     store.write_pd(
@@ -262,6 +413,7 @@ def nbm_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -
         "selection": sel,
         "version": version,
         "mlflow_run": run,
+        "mlflow_runs": runs,
         "segments": info["model"].value_counts().to_dict(),
     }
 
@@ -288,11 +440,26 @@ def controller_health_task(
         ignore_index=True,
     )
     version = model_version("controller_health", models)
+    ch_cfg = cfg["models"]["controller_health"]
     _mlflow_log(
         experiment,
-        {"machines": len(models)},
-        {"exceedance_days_scale_1": float((ex["sweep"] == 1.0).sum())},
-        {"name": "controller_health", "model_version": version},
+        {
+            "machines": len(models),
+            "baseline": ch_cfg["baseline"],
+            "drift_alert_frac": ch_cfg["drift_alert_frac"],
+            "thermistor_residual_alert_c": ch_cfg["thermistor_residual_alert_c"],
+            "sweep_scale": ch_cfg["sweep_scale"],
+            "persistence_days": cfg["rules"]["persistence_consecutive"],
+        },
+        {f"exceedance_days_scale_{k:g}": float(v) for k, v in ex.groupby("sweep").size().items()},
+        {"name": "controller_health", "layer": "controller_health", "model_version": version},
+        context=run_context(store, cfg, [("silver", "controller_hourly"), ("bronze", "reg_machines")])
+        if experiment
+        else None,
+        extra=lambda: _log_table(
+            pd.DataFrame([{"machine_id": k, "thermistor_coef": v} for k, v in models.items()]),
+            "thermistor_models",
+        ),
     )
     store.write_pd(sc.assign(model_version=version), "gold", "controller_health_daily")
     store.write_pd(ex.assign(model_version=version), "gold", "controller_health_exceedances")
@@ -309,6 +476,67 @@ def controller_health_task(
         "version": version,
         "machines": len(models),
     }
+
+
+def rule_floor_task(store: Store, cfg: dict[str, Any], experiment: str | None = None) -> dict[str, Any]:
+    """Training-period comparison runs for the rule floor: the vendor rules at each swept offset, the
+    vendor rules with the ISO zone rule (the rule floor) and the ISO rule alone, with the same metrics as
+    the per-point model candidates. The rule floor is code, not a model; nothing is registered."""
+    pts = _points(store)
+    conds = _conditions(store, cfg)
+    cutoff = splits.training_cutoff(cfg)
+    train_conds = conds[(conds["credit_ts"] < cutoff) & conds["instrumented"]]
+    period = (splits.boundaries(cfg)["train"][0], cutoff)
+    n_assets = pts["asset_id"].nunique()
+    rf = _episodes_from(store.read_pd("gold", "rule_floor_exceedances"), pts, cfg)
+    vend_op = cfg["rules"]["vendor"]["alert_frac_zone_b_width"]
+    rows = []
+    for (method, s), ep in rf.groupby(["method", "sweep"]):
+        r, _ = _summary(method, ep, train_conds, conds, period, n_assets, cfg, store, s)
+        rows.append({**r, "sweep": float(s), "operating_point": bool(method == "iso" or s == vend_op)})
+    curve = pd.DataFrame(rows).sort_values(["method", "sweep"]).reset_index(drop=True)
+    ctx = (
+        run_context(
+            store,
+            cfg,
+            [("gold", "rule_floor_exceedances"), ("silver", "confirmed_conditions"), ("silver", "points")],
+        )
+        if experiment
+        else {}
+    )
+    v = cfg["rules"]["vendor"]
+    runs = {}
+    for r in curve.itertuples():
+        runs[f"{r.method} {r.sweep:g}"] = _mlflow_log(
+            experiment,
+            {
+                "method": r.method,
+                "alert_frac_zone_b_width": r.sweep if r.method != "iso" else None,
+                "alarm_to_alert_ratio": v["alarm_frac_zone_b_width"] / v["alert_frac_zone_b_width"],
+                "envelope_db_over_baseline": cfg["rules"]["envelope"]["db_over_baseline"],
+                "persistence_consecutive": cfg["rules"]["persistence_consecutive"],
+                "episode_gap_days": cfg["evaluation"]["catch"]["episode_gap_days"],
+                "opened_within_days": cfg["evaluation"]["catch"]["opened_within_days"],
+            },
+            {
+                "training_caught_share": r.caught_share,
+                "training_chance_share": r.chance_share,
+                "training_skill": r.caught_share - r.chance_share,
+                "training_false_per_asset_month": r.false_per_asset_month,
+                "training_episodes_per_asset_month": r.episodes_per_asset_month,
+                "training_warning_days_median": r.warning_days_median,
+                "training_conditions": r.conditions,
+            },
+            {
+                "name": f"rule floor {r.method} {r.sweep:g}" if r.method != "iso" else "rule floor iso",
+                "layer": "rule_floor",
+                "method": r.method,
+                "operating_point": str(r.operating_point).lower(),
+            },
+            context=ctx,
+        )
+    store.write_pd(curve, "gold", "rule_floor_training_curve")
+    return {"runs": len(runs), "curve": curve}
 
 
 def _controller_signals(ex: pd.DataFrame, hmc: set[str]) -> pd.DataFrame:
@@ -365,16 +593,6 @@ def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = No
         ]
     )
     version = model_version("component_survival", summary.to_dict("records"))
-    _mlflow_log(
-        experiment,
-        {"lives": res["n"]},
-        {
-            "concordance_aft": res["concordance_aft"],
-            "concordance_cox": res["concordance_cox"],
-            "ibs_ipcw": res["ibs_ipcw"],
-        },
-        {"name": "survival", "model_version": version},
-    )
     store.write_pd(lives.assign(model_version=version), "gold", "component_lives")
     store.write_pd(summary.assign(model_version=version), "gold", "survival_summary")
     store.write_pd(
@@ -391,6 +609,47 @@ def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = No
     store.write_pd(classes.assign(model_version=version), "gold", "survival_class_weibull")
     shared, shape = survival.shared_shape_weibull(lives, iv)
     store.write_pd(shared.assign(model_version=version), "gold", "survival_shared_shape_weibull")
+    sv = cfg["models"]["survival"]
+    _mlflow_log(
+        experiment,
+        {
+            "lives": res["n"],
+            "events": res["events"],
+            "pm_review_model": sv["pm_review"],
+            "covariate_models": sv["models"],
+            "covariates": sv["covariates"],
+            "interval": iv,
+            "unstable_max_events": sv["unstable_max_events"],
+            "record_end_utc": str(horizon(cfg)),
+        },
+        {
+            "concordance_aft": res["concordance_aft"],
+            "concordance_cox": res["concordance_cox"],
+            "ibs_ipcw_aft": res["ibs_ipcw"],
+            "ibs_ipcw_kaplan_meier": res["ibs_ipcw_km"],
+            "shared_shape_rho": shape["shape_rho"],
+            "shared_shape_rho_low": shape["rho_low"],
+            "shared_shape_rho_high": shape["rho_high"],
+            **{f"median_life_days_{r.component_class}": r.median_life_days for r in shared.itertuples()},
+        },
+        {"name": "survival", "layer": "survival", "model_version": version},
+        context=run_context(
+            store,
+            cfg,
+            [
+                ("bronze", "reg_machines"),
+                ("bronze", "reg_pumps"),
+                ("bronze", "reg_hmc_spindles"),
+                ("bronze", "reg_compressors"),
+                ("bronze", "cmms_work_orders"),
+                ("bronze", "ctrl_events"),
+                ("bronze", "cmms_pm_schedule"),
+            ],
+        )
+        if experiment
+        else None,
+        extra=_survival_tables(shared, classes, summary),
+    )
     return {
         "class_weibull": classes,
         "shared_shape_weibull": shared,
@@ -400,6 +659,17 @@ def survival_task(store: Store, cfg: dict[str, Any], experiment: str | None = No
             for k in ("n", "events", "concordance_aft", "concordance_cox", "ibs_ipcw", "ibs_ipcw_km")
         },
     }
+
+
+def _survival_tables(
+    shared: pd.DataFrame, classes: pd.DataFrame, summary: pd.DataFrame
+) -> Callable[[], None]:
+    def body() -> None:
+        _log_table(shared, "shared_shape_weibull")
+        _log_table(classes, "per_class_weibull")
+        _log_table(summary, "survival_summary")
+
+    return body
 
 
 def supervised_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:

@@ -36,6 +36,11 @@ VECTOR = [
     "ord_02_g2",
     "env_fault_g2",
 ]
+VECTOR_SOURCE = [c for c in VECTOR if c != "env_fault_g2"] + [
+    "env_bpfo_1_g2",
+    "env_bpfi_1_g2",
+    "env_bsf_1_g2",
+]
 LOG_COLUMNS = {"accel_rms_g", "vel_rms_mm_s", "hf_rms_g", "ord_01_g2", "ord_02_g2", "env_fault_g2"}
 REGIMES = ["light", "medium", "heavy"]
 CANDIDATES = ("pca_t2_spe", "mahalanobis", "isolation_forest", "autoencoder_third_octave")
@@ -409,7 +414,7 @@ def fit_score_segments(
     top_k: int,
     open_work: list[tuple[pd.Timestamp, pd.Timestamp]],
     rule_alerts: list[pd.Timestamp],
-) -> tuple[pd.DataFrame, list[dict[str, Any]], pd.DataFrame]:
+) -> tuple[pd.DataFrame, list[dict[str, Any]], pd.DataFrame, list[dict[str, Any]]]:
     """Scores before end with one model per segment (install, then each repair or remount).
 
     A segment that starts before the cutoff is fit on its eligible hours before the cutoff (the base
@@ -417,7 +422,8 @@ def fit_score_segments(
     that lacks seasonal coverage at the cutoff, or starts after it, is updated monthly on hours that
     were not inside an open work order, a rule-floor alert episode or its own alert episode at the
     time, until it has coverage. A segment whose re-baseline window is flagged, incomplete or not
-    usable is left to the rule floor. Returns scores, per-segment information and training rows.
+    usable is left to the rule floor. Returns scores, per-segment information, training rows and each
+    fitted segment's final models.
     """
     nb = cfg["models"]["nbm"]
     gap = np.timedelta64(int(cfg["evaluation"]["catch"]["episode_gap_days"] * 86400), "s")
@@ -425,7 +431,7 @@ def fit_score_segments(
     clean = _clean(rows)
     clean = clean[pd.to_datetime(clean["hour_utc"], utc=True) < end].reset_index(drop=True)
     if clean.empty:
-        return pd.DataFrame(), [], pd.DataFrame()
+        return pd.DataFrame(), [], pd.DataFrame(), []
     t = _naive(clean["hour_utc"])
     seg = segment_ids(clean["hour_utc"], list(plan["start"]))
     reg = clean["regime"].to_numpy()
@@ -442,6 +448,7 @@ def fit_score_segments(
     out: list[pd.DataFrame] = []
     infos: list[dict[str, Any]] = []
     train_rows: list[pd.DataFrame] = []
+    seg_models: list[dict[str, Any]] = []
     for k, w in plan.iterrows():
         rows_k = seg == k
         seg_end = plan["start"].iat[k + 1] if k + 1 < len(plan) else end
@@ -517,13 +524,14 @@ def fit_score_segments(
             }
         )
         train_rows.append(clean[train].assign(segment=int(k), segment_start=w["start"]))
+        seg_models.append({"segment": int(k), "start": w["start"], "reason": w["reason"], "models": models})
     scores = (
         pd.concat(out, ignore_index=True).sort_values("hour_utc").reset_index(drop=True)
         if out
         else pd.DataFrame()
     )
     tr = pd.concat(train_rows, ignore_index=True) if train_rows else pd.DataFrame()
-    return scores, infos, tr
+    return scores, infos, tr, seg_models
 
 
 def exceedance_hours(scores: pd.DataFrame, percentile: float, persistence: int) -> pd.DataFrame:
