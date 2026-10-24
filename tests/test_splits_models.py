@@ -352,3 +352,28 @@ def test_shared_shape_weibull():
     assert (t["scale_low"] < t["scale_lambda_days"]).all() and (
         t["scale_lambda_days"] < t["scale_high"]
     ).all()
+
+
+def test_entrypoint_arguments(monkeypatch):
+    from pdm import entrypoints
+
+    seen = {}
+
+    class FakeBuilder:
+        def getOrCreate(self):
+            class S:
+                class conf:
+                    @staticmethod
+                    def set(k, v):
+                        seen[k] = v
+
+            return S()
+
+    import pyspark.sql
+
+    monkeypatch.setattr(pyspark.sql.SparkSession, "builder", FakeBuilder())
+    store, cfg, args = entrypoints.setup(
+        "pdm-test", ["--catalog", "pdm_dev", "--config", "config/config.yaml"]
+    )
+    assert store.catalog == "pdm_dev" and args.experiment_root == "/Shared/pdm" and "splits" in cfg
+    assert seen["spark.sql.session.timeZone"] == "UTC"

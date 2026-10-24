@@ -33,8 +33,11 @@ variables:
     description: Single-node job cluster type (rule 15)
     default: Standard_D4ds_v5
   spark_version:
-    description: Databricks Runtime for job clusters
-    default: 15.4.x-scala2.12
+    description: Databricks Runtime for job clusters (18 LTS, Python 3.12, which the wheel requires)
+    default: 18.x-scala2.13
+  experiment_root:
+    description: MLflow experiment root for the training runs, split by target
+    default: /Shared/pdm
   serverless_pipeline:
     description: Run the pipeline on serverless compute when the workspace offers it
     default: true
@@ -46,6 +49,7 @@ targets:
     variables:
       catalog: pdm_dev
       schema_root: /Volumes/pdm_dev/landing/autoloader/_schemas
+      experiment_root: /Shared/pdm_dev
   prod:
     mode: production
     workspace:
