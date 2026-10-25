@@ -608,7 +608,8 @@ evaluation:                               # [fixed] 12, chance levels
   catch: {opened_within_days: 60, episode_gap_days: 7}   # step 5 review: replaces detection_lookback_days 90
   vendor_sweep_alert_frac: [0.10, 0.15, 0.25, 0.40, 0.60, 1.00]   # operating curve; 0.25 is the vendor's actual setting
   advisory_z: 3.0                          # approved 2026-10-22: suspected-condition rules fire at this z-score against healthy spread
-  holdout_shadow: true                     # step 5 review: nothing computed on the shadow quarter until design freeze
+  holdout_shadow: false                    # lifted 2026-10-25 for the shadow quarter (section 14 step 12); was true from the step 5 review until then: nothing computed on the shadow quarter until design freeze
+  as_of: null                              # shadow-quarter month YYYY-MM for a monthly run (job parameter as_of); null reads to the record end
   fisher_alpha: 0.05
 
 monitoring:                               # [fixed] 10.10

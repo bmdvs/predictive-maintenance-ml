@@ -1,8 +1,8 @@
 # pdm_monthly: pipeline update, then train (per-point model challengers and the other training tasks),
 # promote (register the challenger and move the champion alias when its gates pass), score (from the
 # champion) and monitor, as Python wheel tasks on one shared single-node job cluster. auto_promote false
-# registers and tags only, for a manual review cycle. Reading stops at the shadow-quarter start while
-# evaluation.holdout_shadow is true in the deployed config.
+# registers and tags only, for a manual review cycle. as_of (YYYY-MM) sets the shadow-quarter month a
+# run covers: every task reads data to the end of that month.
 resources:
   jobs:
     pdm_monthly:
@@ -11,6 +11,8 @@ resources:
       parameters:
         - name: auto_promote
           default: "true"
+        - name: as_of
+          default: ""
       job_clusters:
         - job_cluster_key: single_node
           new_cluster:
@@ -39,6 +41,7 @@ resources:
             named_parameters:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
+              as_of: "{{job.parameters.as_of}}"
               experiment_root: ${var.experiment_root}
               job_run_id: "{{job.run_id}}"
           libraries:
@@ -53,6 +56,7 @@ resources:
             named_parameters:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
+              as_of: "{{job.parameters.as_of}}"
               experiment_root: ${var.experiment_root}
               job_run_id: "{{job.run_id}}"
               auto_promote: "{{job.parameters.auto_promote}}"
@@ -68,6 +72,7 @@ resources:
             named_parameters:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
+              as_of: "{{job.parameters.as_of}}"
           libraries:
             - whl: ../dist/bundle/*.whl
         - task_key: monitor
@@ -80,5 +85,6 @@ resources:
             named_parameters:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
+              as_of: "{{job.parameters.as_of}}"
           libraries:
             - whl: ../dist/bundle/*.whl

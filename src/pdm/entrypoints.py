@@ -16,6 +16,8 @@ from pdm import log, registry, tasks
 from pdm.config import load_config
 from pdm.store import Store
 
+LOG = log.get_logger("pdm.entrypoints")
+
 
 def _flag(p: argparse.ArgumentParser, name: str, **kw: Any) -> None:
     p.add_argument(f"--{name}", f"--{name.replace('-', '_')}", dest=name.replace("-", "_"), **kw)
@@ -38,6 +40,7 @@ def parse(prog: str, argv: list[str] | None = None) -> argparse.Namespace:
     _flag(p, "job-run-id", default=None)
     _flag(p, "run-id", default=None, help="promote: the challenger run, outside a job")
     _flag(p, "auto-promote", type=_bool, default=True)
+    _flag(p, "as-of", default=None, help="shadow-quarter month YYYY-MM; the data horizon is its end")
     return p.parse_args(argv)
 
 
@@ -48,7 +51,11 @@ def setup(prog: str, argv: list[str] | None = None) -> tuple[Store, dict[str, An
     log.configure()
     spark = SparkSession.builder.getOrCreate()
     spark.conf.set("spark.sql.session.timeZone", "UTC")
-    return Store(spark, catalog=args.catalog), load_config(args.config), args
+    cfg = load_config(args.config)
+    if args.as_of:
+        cfg["evaluation"]["as_of"] = args.as_of
+    LOG.info("data horizon %s (as_of %s)", tasks.horizon(cfg), args.as_of or "not set")
+    return Store(spark, catalog=args.catalog), cfg, args
 
 
 def train_models(argv: list[str] | None = None) -> None:
