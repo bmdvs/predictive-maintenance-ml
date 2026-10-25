@@ -1,11 +1,16 @@
-# pdm_monthly: pipeline update, then train, score and monitor as Python wheel tasks on one shared
-# single-node job cluster. Reading stops at the shadow-quarter start while evaluation.holdout_shadow is
-# true in the deployed config.
+# pdm_monthly: pipeline update, then train (per-point model challengers and the other training tasks),
+# promote (register the challenger and move the champion alias when its gates pass), score (from the
+# champion) and monitor, as Python wheel tasks on one shared single-node job cluster. auto_promote false
+# registers and tags only, for a manual review cycle. Reading stops at the shadow-quarter start while
+# evaluation.holdout_shadow is true in the deployed config.
 resources:
   jobs:
     pdm_monthly:
       name: pdm_monthly
       max_concurrent_runs: 1
+      parameters:
+        - name: auto_promote
+          default: "true"
       job_clusters:
         - job_cluster_key: single_node
           new_cluster:
@@ -31,17 +36,38 @@ resources:
           python_wheel_task:
             package_name: pdm
             entry_point: pdm-train-models
-            parameters: ["--catalog", "${var.catalog}", "--config", "${workspace.file_path}/config/config.yaml", "--experiment-root", "${var.experiment_root}"]
+            named_parameters:
+              catalog: ${var.catalog}
+              config: ${workspace.file_path}/config/config.yaml
+              experiment_root: ${var.experiment_root}
+              job_run_id: "{{job.run_id}}"
           libraries:
             - whl: ../dist/*.whl
-        - task_key: score
+        - task_key: promote
           depends_on:
             - task_key: train
           job_cluster_key: single_node
           python_wheel_task:
             package_name: pdm
+            entry_point: pdm-promote
+            named_parameters:
+              catalog: ${var.catalog}
+              config: ${workspace.file_path}/config/config.yaml
+              experiment_root: ${var.experiment_root}
+              job_run_id: "{{job.run_id}}"
+              auto_promote: "{{job.parameters.auto_promote}}"
+          libraries:
+            - whl: ../dist/*.whl
+        - task_key: score
+          depends_on:
+            - task_key: promote
+          job_cluster_key: single_node
+          python_wheel_task:
+            package_name: pdm
             entry_point: pdm-score
-            parameters: ["--catalog", "${var.catalog}", "--config", "${workspace.file_path}/config/config.yaml"]
+            named_parameters:
+              catalog: ${var.catalog}
+              config: ${workspace.file_path}/config/config.yaml
           libraries:
             - whl: ../dist/*.whl
         - task_key: monitor
@@ -51,6 +77,8 @@ resources:
           python_wheel_task:
             package_name: pdm
             entry_point: pdm-monitor
-            parameters: ["--catalog", "${var.catalog}", "--config", "${workspace.file_path}/config/config.yaml"]
+            named_parameters:
+              catalog: ${var.catalog}
+              config: ${workspace.file_path}/config/config.yaml
           libraries:
             - whl: ../dist/*.whl

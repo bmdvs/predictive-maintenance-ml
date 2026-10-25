@@ -1,4 +1,5 @@
-"""Job task: prognosis, fusion and advisory over the scored record (pdm.entrypoints.score)."""
+"""Job task: per-point model scores from the registered champion, then prognosis, fusion and advisory
+(pdm.entrypoints.score)."""
 
 from pdm.entrypoints import score
 

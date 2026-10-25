@@ -1,5 +1,5 @@
 """Shared setup for job task entry points; the logic lives in pdm.entrypoints."""
 
-from pdm.entrypoints import register, setup
+from pdm.entrypoints import setup
 
-__all__ = ["register", "setup"]
+__all__ = ["setup"]
