@@ -2,10 +2,12 @@
 <catalog>.ml.nbm_point_models).
 
 The train task logs challenger runs only. The promote task registers the challenger run's model as a new
-version, evaluates the gates (selection rule, parity of the registered model's scores with the train
-task's own scores, segment outcomes, the challenger's false alert episodes in the latest complete month)
-and moves the champion alias only when every gate passes and auto_promote is on. Every gate result is a
-tag on the version; a rejected version leaves the champion where it is.
+version (or reuses the version already registered from that run, when the task is repaired), evaluates
+the gates (selection rule, parity of the registered model's scores with the train task's own scores,
+segment outcomes, the challenger's false alert episodes in the latest complete month) and moves the
+champion alias only when every gate passes and auto_promote is on. Every gate result is a tag on the
+version, with keys free of Unity Catalog's reserved characters; a rejected version leaves the champion
+where it is.
 """
 
 from __future__ import annotations
@@ -27,6 +29,16 @@ FITTED = ("segment fit", "window refit")
 HOURS_PER_MONTH = 365.25 / 12 * 24
 REL_TOL = 1e-9
 ABS_FLOOR = 1e-12
+RESERVED_TAG_CHARACTERS = frozenset(".=><%&?\\")
+IDENTITY_TAGS = ("source_run_id", "candidate", "job_run_id", "model_version_hash", "pdm_version")
+
+
+def tag_key(key: str) -> str:
+    """A model version tag key Unity Catalog accepts: no reserved characters."""
+    bad = sorted(set(key) & RESERVED_TAG_CHARACTERS)
+    if not key or bad:
+        raise ValueError(f"tag key {key!r} contains reserved characters {bad}")
+    return key
 
 
 def model_name(catalog: str) -> str:
@@ -187,12 +199,12 @@ def gate_false_episodes(
     budget = float(v.iat[0]) * ratio
     label = f"{month[0].tz_convert(tasks.LOCAL_TZ):%Y-%m}"
     tags = {
-        "false_episodes.month": label,
-        "false_episodes.healthy_asset_months": f"{asset_months:.3f}",
-        "false_episodes.episodes": str(len(ep)),
-        "false_episodes.false_episodes": str(n_false),
-        "false_episodes.rate": f"{rate:.4f}",
-        "false_episodes.budget": f"{budget:.4f}",
+        "false_episodes_month": label,
+        "false_episodes_healthy_asset_months": f"{asset_months:.3f}",
+        "false_episodes_episodes": str(len(ep)),
+        "false_episodes_false_episodes": str(n_false),
+        "false_episodes_rate": f"{rate:.4f}",
+        "false_episodes_budget": f"{budget:.4f}",
     }
     return Gate(
         "false_episodes",
@@ -207,8 +219,10 @@ class Registry(Protocol):
     def find_challenger(self, experiment: str, job_run_id: str) -> str: ...
     def run_tags(self, run_id: str) -> dict[str, str]: ...
     def register(self, run_id: str, name: str) -> str: ...
+    def find_version(self, name: str, run_id: str) -> str | None: ...
     def load(self, name: str, version: str) -> Any: ...
     def set_tag(self, name: str, version: str, key: str, value: str) -> None: ...
+    def delete_tag(self, name: str, version: str, key: str) -> None: ...
     def set_alias(self, name: str, alias: str, version: str) -> None: ...
     def alias_version(self, name: str, alias: str) -> str | None: ...
 
@@ -244,11 +258,28 @@ class MlflowRegistry:
     def register(self, run_id: str, name: str) -> str:
         return str(self.mlflow.register_model(f"runs:/{run_id}/model", name).version)
 
+    def find_version(self, name: str, run_id: str) -> str | None:
+        try:
+            found = [
+                int(v.version)
+                for v in self.client.search_model_versions(f"name='{name}'")
+                if v.run_id == run_id
+            ]
+        except Exception:  # noqa: BLE001
+            return None
+        return str(min(found)) if found else None
+
     def load(self, name: str, version: str) -> Any:
         return self.mlflow.pyfunc.load_model(f"models:/{name}/{version}").unwrap_python_model()
 
     def set_tag(self, name: str, version: str, key: str, value: str) -> None:
         self.client.set_model_version_tag(name, version, key, value)
+
+    def delete_tag(self, name: str, version: str, key: str) -> None:
+        try:
+            self.client.delete_model_version_tag(name, version, key)
+        except Exception:  # noqa: BLE001
+            return
 
     def set_alias(self, name: str, alias: str, version: str) -> None:
         self.client.set_registered_model_alias(name, alias, version)
@@ -293,12 +324,14 @@ def decide(registry: Registry, name: str, version: str, gates: list[Gate], auto_
     """Tag the version with every gate and move the champion alias when all pass and auto_promote is on."""
     failed = [g.name for g in gates if not g.passed]
     for g in gates:
-        registry.set_tag(name, version, f"gate.{g.name}", "pass" if g.passed else "fail")
-        registry.set_tag(name, version, f"gate.{g.name}.detail", g.detail[:4900])
+        registry.set_tag(name, version, tag_key(f"gate_{g.name}"), "pass" if g.passed else "fail")
+        registry.set_tag(name, version, tag_key(f"gate_{g.name}_detail"), g.detail[:4900])
         for k, v in g.tags.items():
-            registry.set_tag(name, version, k, v)
+            registry.set_tag(name, version, tag_key(k), v)
     if failed:
-        registry.set_tag(name, version, "failed_gates", ",".join(failed))
+        registry.set_tag(name, version, tag_key("failed_gates"), ",".join(failed))
+    else:
+        registry.delete_tag(name, version, "failed_gates")
     if not auto_promote:
         status = "for_review"
     elif failed:
@@ -306,8 +339,16 @@ def decide(registry: Registry, name: str, version: str, gates: list[Gate], auto_
     else:
         registry.set_alias(name, CHAMPION, version)
         status = "promoted"
-    registry.set_tag(name, version, "status", status)
+    registry.set_tag(name, version, tag_key("status"), status)
     return status
+
+
+def register_or_reuse(registry: Registry, run_id: str, name: str) -> tuple[str, bool]:
+    """The version registered from this run, if one exists (a repaired promote task), otherwise a new one."""
+    found = registry.find_version(name, run_id)
+    if found is not None:
+        return found, True
+    return registry.register(run_id, name), False
 
 
 def promote(
@@ -335,15 +376,17 @@ def promote(
         run_id = reg.find_challenger(f"{experiment_root.rstrip('/')}/nbm", job_run_id)
     tags = reg.run_tags(run_id)
     name = model_name(catalog)
-    version = reg.register(run_id, name)
-    for k, v in {
-        "source_run_id": run_id,
-        "candidate": tags.get("candidate", ""),
-        "job_run_id": str(job_run_id or ""),
-        "model_version_hash": tags.get("model_version", ""),
-        "pdm_version": pdm_version,
-    }.items():
-        reg.set_tag(name, version, k, v)
+    version, reused = register_or_reuse(reg, run_id, name)
+    LOG.info("%s version %s from run %s", "reusing" if reused else "registered", version, run_id)
+    identity = (
+        run_id,
+        tags.get("candidate", ""),
+        str(job_run_id or ""),
+        tags.get("model_version", ""),
+        pdm_version,
+    )
+    for k, v in zip(IDENTITY_TAGS, identity, strict=True):
+        reg.set_tag(name, version, tag_key(k), v)
     model = reg.load(name, version)
     end = tasks.horizon(cfg)
     ind = store.read_pd("silver", "hourly_indicators")
@@ -372,6 +415,7 @@ def promote(
     return {
         "run_id": run_id,
         "version": version,
+        "reused": reused,
         "status": status,
         "champion": champion,
         "gates": {g.name: g.passed for g in gates},

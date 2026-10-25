@@ -148,22 +148,22 @@ def test_false_episode_gate():
     conds = pd.DataFrame(columns=["asset_key", "credit_ts"])
     h = pd.Timestamp("2026-04-01 05:00", tz=UTC)
     one = registry.gate_false_episodes(_month_scores(["2026-03-02"]), pts, conds, wo, curves, CFG, h)
-    assert one.passed and one.tags["false_episodes.month"] == "2026-03"
-    assert one.tags["false_episodes.false_episodes"] == "1" and one.tags["false_episodes.budget"] == "1.0000"
+    assert one.passed and one.tags["false_episodes_month"] == "2026-03"
+    assert one.tags["false_episodes_false_episodes"] == "1" and one.tags["false_episodes_budget"] == "1.0000"
     assert (
-        abs(float(one.tags["false_episodes.healthy_asset_months"]) - 2 * 743 / registry.HOURS_PER_MONTH)
+        abs(float(one.tags["false_episodes_healthy_asset_months"]) - 2 * 743 / registry.HOURS_PER_MONTH)
         < 1e-3
     )
     three = registry.gate_false_episodes(
         _month_scores(["2026-03-02", "2026-03-12", "2026-03-22"]), pts, conds, wo, curves, CFG, h
     )
-    assert not three.passed and three.tags["false_episodes.episodes"] == "3"
+    assert not three.passed and three.tags["false_episodes_episodes"] == "3"
     conf = pd.DataFrame({"asset_key": ["A"], "credit_ts": [pd.Timestamp("2026-03-25", tz=UTC)]})
     near = registry.gate_false_episodes(
         _month_scores(["2026-03-02", "2026-03-12", "2026-03-22"]), pts, conf, wo, curves, CFG, h
     )
-    assert near.tags["false_episodes.false_episodes"] == "0" and near.passed
-    assert float(near.tags["false_episodes.healthy_asset_months"]) < 1.3
+    assert near.tags["false_episodes_false_episodes"] == "0" and near.passed
+    assert float(near.tags["false_episodes_healthy_asset_months"]) < 1.3
     late = pd.DataFrame({"asset_key": ["A"], "credit_ts": [pd.Timestamp("2026-04-20", tz=UTC)]})
     assert (
         registry.gate_false_episodes(_month_scores(["2026-03-02"]), pts, late, wo, curves, CFG, h).tags
@@ -176,12 +176,23 @@ def test_false_episode_gate():
 class FakeRegistry:
     def __init__(self, champion=None):
         self.tags, self.aliases = {}, ({"champion": champion} if champion else {})
+        self.versions = {}
 
     def set_tag(self, name, version, key, value):
         self.tags[(version, key)] = value
 
+    def delete_tag(self, name, version, key):
+        self.tags.pop((version, key), None)
+
     def set_alias(self, name, alias, version):
         self.aliases[alias] = version
+
+    def find_version(self, name, run_id):
+        return self.versions.get(run_id)
+
+    def register(self, run_id, name):
+        self.versions[run_id] = str(max([int(x) for x in self.versions.values()] + [1]) + 1)
+        return self.versions[run_id]
 
     def alias_version(self, name, alias):
         return self.aliases.get(alias)
@@ -199,13 +210,13 @@ class FakeRegistry:
 def test_decide(passes, auto, status, champion):
     names = ("selection", "parity", "segments", "false_episodes")
     gates = [
-        registry.Gate(n, p, "d", {"false_episodes.month": "2026-03"} if n == "false_episodes" else {})
+        registry.Gate(n, p, "d", {"false_episodes_month": "2026-03"} if n == "false_episodes" else {})
         for n, p in zip(names, passes, strict=True)
     ]
     reg = FakeRegistry(champion="1")
     assert registry.decide(reg, "pdm.ml.nbm_point_models", "2", gates, auto) == status
     assert reg.aliases["champion"] == champion and reg.tags[("2", "status")] == status
-    assert reg.tags[("2", "false_episodes.month")] == "2026-03"
+    assert reg.tags[("2", "false_episodes_month")] == "2026-03"
     failed = [n for n, p in zip(names, passes, strict=True) if not p]
     assert reg.tags.get(("2", "failed_gates")) == (",".join(failed) if failed else None)
 
@@ -249,3 +260,51 @@ def test_controller_signal_tie_break():
     a = tasks._daily_first(sig)
     b = tasks._daily_first(sig.iloc[::-1].reset_index(drop=True))
     assert a["rules"].tolist() == b["rules"].tolist() == ["spindle_load_drift"]
+
+
+def test_tag_keys_avoid_reserved_characters():
+    rows, _, s, info, model = _fitted()
+    pts = pd.DataFrame({"point_id": ["P"], "asset_id": ["A"]})
+    curves = pd.DataFrame({"method": ["nbm"], "level": ["99.5"], "false_per_asset_month": [0.5]})
+    empty_wo = pd.DataFrame(columns=["asset_id", "wo_type", "opened", "closed"])
+    empty_c = pd.DataFrame(columns=["asset_key", "credit_ts"])
+    cands = pd.DataFrame({"candidate": ["mahalanobis"], "champion": [True], "model_version": "nbm-x"})
+    tags = {"challenger": "true", "candidate": "mahalanobis", "model_version": "nbm-x"}
+    gates = [
+        registry.gate_selection(tags, cands),
+        registry.gate_parity(model.score_frame(rows), s),
+        registry.gate_segments(model, pd.DataFrame(info), s),
+        registry.gate_false_episodes(
+            _month_scores(["2026-03-02"]),
+            pts,
+            empty_c,
+            empty_wo,
+            curves,
+            CFG,
+            pd.Timestamp("2026-04-01 05:00", tz=UTC),
+        ),
+    ]
+    gates.append(registry.Gate("parity", False, "d"))
+    reg = FakeRegistry(champion="1")
+    registry.decide(reg, "pdm.ml.nbm_point_models", "2", gates, True)
+    keys = {k for _, k in reg.tags} | set(registry.IDENTITY_TAGS)
+    assert "false_episodes_month" in keys and "gate_false_episodes_detail" in keys and "failed_gates" in keys
+    for k in keys:
+        assert not set(k) & set(".=><%&?\\"), k
+        assert registry.tag_key(k) == k
+    for bad in ("gate.parity", "a=b", "x%y", "p\q", ""):
+        with pytest.raises(ValueError):
+            registry.tag_key(bad)
+
+
+def test_promote_reuses_the_version_registered_from_the_same_run():
+    reg = FakeRegistry(champion="1")
+    reg.versions["run-a"] = "2"
+    assert registry.register_or_reuse(reg, "run-a", "pdm.ml.nbm_point_models") == ("2", True)
+    v, reused = registry.register_or_reuse(reg, "run-b", "pdm.ml.nbm_point_models")
+    assert not reused and v == "3" and reg.versions["run-b"] == "3"
+    gates = [registry.Gate("parity", False, "d")]
+    registry.decide(reg, "m", "2", gates, True)
+    assert reg.tags[("2", "failed_gates")] == "parity"
+    registry.decide(reg, "m", "2", [registry.Gate("parity", True, "d")], False)
+    assert ("2", "failed_gates") not in reg.tags and reg.tags[("2", "status")] == "for_review"
