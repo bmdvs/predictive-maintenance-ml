@@ -19,7 +19,9 @@ if [[ "${1:-}" == "--check" ]]; then
   exit 0
 fi
 
-databricks quality-monitors create "$CATALOG.gold.scoring_log" "$CATALOG.monitoring" "$ASSETS/scoring_log" --json '{
+databricks quality-monitors create "$CATALOG.gold.scoring_log" --json '{
+  "output_schema_name": "'"$CATALOG"'.monitoring",
+  "assets_dir": "'"$ASSETS"'/scoring_log",
   "inference_log": {
     "granularities": ["1 month"],
     "timestamp_col": "hour_utc",
@@ -31,7 +33,9 @@ databricks quality-monitors create "$CATALOG.gold.scoring_log" "$CATALOG.monitor
   "slicing_exprs": ["asset_id", "period"]
 }'
 
-databricks quality-monitors create "$CATALOG.silver.hourly_indicators" "$CATALOG.monitoring" "$ASSETS/hourly_indicators" --json '{
+databricks quality-monitors create "$CATALOG.silver.hourly_indicators" --json '{
+  "output_schema_name": "'"$CATALOG"'.monitoring",
+  "assets_dir": "'"$ASSETS"'/hourly_indicators",
   "time_series": {"granularities": ["1 month"], "timestamp_col": "hour_utc"},
   "slicing_exprs": ["point_id"]
 }'
