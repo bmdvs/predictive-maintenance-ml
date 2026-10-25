@@ -24,8 +24,6 @@ variables:
   landing_root:
     description: Landing volume path holding the source exports
     default: /Volumes/pdm/landing/exports
-  landing_volume_location:
-    description: Storage location of the external volume pdm.landing.exports (abfss URL of the landing container's exports folder; set per target, never committed)
   schema_root:
     description: Auto Loader schema tracking location
     default: /Volumes/pdm/landing/exports/_schemas
@@ -41,6 +39,9 @@ variables:
   serverless_pipeline:
     description: Run the pipeline on serverless compute when the workspace offers it
     default: true
+  deploy_sp:
+    description: Application id of the deploy service principal, the prod run-as identity (BUNDLE_VAR_deploy_sp; never committed)
+    default: ""
 
 targets:
   dev:
@@ -54,3 +55,5 @@ targets:
     mode: production
     workspace:
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.deploy_sp}
