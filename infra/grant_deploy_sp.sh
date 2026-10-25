@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Unity Catalog grants for the deploy service principal (prod run-as for the monthly job and the
-# pipeline). Prints the SQL to run in the SQL editor as the owner of the catalog; --check reads the
-# grants back with the Databricks CLI (read-only). The application id comes from the environment and
+# pipeline). Prints the SQL to run in the SQL editor as the owner of the catalog, and the CLI command that
+# moves the registered model's ownership (SQL has no statement for it); --check reads the grants and
+# owners back with the Databricks CLI (read-only). The application id comes from the environment and
 # is never written to the repository.
 #
 # Required: PDM_DEPLOY_SP (application id of the service principal)
@@ -42,7 +43,8 @@ done
 echo "GRANT USE SCHEMA, CREATE MODEL ON SCHEMA $CATALOG.ml TO \`$SP\`;"
 echo "GRANT USE SCHEMA ON SCHEMA $CATALOG.landing TO \`$SP\`;"
 echo "GRANT READ VOLUME, WRITE VOLUME ON VOLUME $CATALOG.landing.exports TO \`$SP\`;"
-echo "ALTER MODEL $CATALOG.ml.nbm_point_models OWNER TO \`$SP\`;"
+echo "-- Registered model owner (no SQL statement exists for this; run with the Databricks CLI or set it in Catalog Explorer):"
+echo "-- databricks registered-models update $CATALOG.ml.nbm_point_models --owner $SP"
 for t in "${JOB_TABLES[@]}"; do
   echo "ALTER TABLE $CATALOG.gold.$t OWNER TO \`$SP\`;"
 done
