@@ -8,7 +8,7 @@ repository).
 | Script | Purpose | Stage |
 |---|---|---|
 | `azure_check.sh` | Read-only check of the Azure resources: storage account (hierarchical namespace, LRS, region), containers `landing` and `managed`, access connector `ac-pdm` with Storage Blob Data Contributor on the account, workspace tier and region | Environment setup |
-| `unity_catalog.sh` | Storage credential `cred_pdm`; external locations `loc_pdm_landing` (container `landing`) and `loc_pdm_managed` (container `managed`), both created with validation skipped; catalog `pdm` with its managed location on `loc_pdm_managed`; schemas `landing`, `bronze`, `silver`, `gold`, `ml`, `monitoring` with no schema-level locations; external volume `pdm.landing.exports`. `--check` verifies read-only | Environment setup |
+| `unity_catalog.sh` | Storage credential `cred_pdm`; external locations `loc_pdm_landing` (container `landing`) and `loc_pdm_managed` (container `managed`), both created with validation skipped; catalog `pdm` with its managed location on `loc_pdm_managed`; schemas `landing`, `bronze`, `silver`, `gold`, `ml`, `monitoring` with no schema-level locations; external volume `pdm.landing.exports`. `--check` verifies read-only. `--dev` creates the development catalog `pdm_dev` (managed location on a `pdm_dev` folder of the managed container, the same schemas, managed volume `landing.autoloader` for Auto Loader schema tracking); `--dev-check` verifies it read-only | Environment setup |
 | `land_exports.sh` | Copies `data/bronze/<system>/` to `/Volumes/pdm/landing/exports/<system>/` (idempotent); `--check` compares file counts and bytes per folder, read-only | Data landing |
 | `grant_deploy_sp.sh` | Prints the Unity Catalog grants for the deploy service principal (catalog, schemas, landing volume, ownership of the registered model and of the job-written gold tables) to run in the SQL editor as the catalog owner; `--check` reads them back, read-only | Deployment |
 
@@ -47,6 +47,11 @@ Targets:
 |---|---|---|---|---|
 | `dev` | development (prefixed names, paused schedules, development pipeline) | `pdm_dev`; landing read from `/Volumes/pdm/landing/exports`, Auto Loader schemas in `pdm_dev.landing.autoloader` | the deploying user | the user's `.bundle/pdm/dev` |
 | `prod` | production | `pdm` | the deploy service principal (`BUNDLE_VAR_deploy_sp`) | `/Workspace/Shared/.bundle/pdm/prod` |
+
+The prod root path is under `/Workspace/Shared`, so the binding (run by a person) and the deploys (run by the
+service principal) share one deployment state. Workspace folder permissions are additive and `/Workspace/Shared`
+gives all users manage access by inheritance, so bundle permissions cannot narrow that folder; they would also
+apply to the job and the pipeline. The folder stays as it is; `bundle validate -t prod` warns about it.
 
 The workspace host comes from the CLI profile or `DATABRICKS_HOST`; bundles do not accept a variable for
 the host. Runs are started with `--no-wait` and followed in the UI, so no waiting command ends a run.
