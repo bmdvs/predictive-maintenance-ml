@@ -1,0 +1,11 @@
+# Gold snapshot
+
+Exported 2026-10-26 from the prod workspace (catalog pdm) after the final checkpoint (b) run, as of 2026-06-30 23:00 local. The pages build from these files without a workspace.
+
+- gold/, monitoring/: one Parquet file per table. Five gold tables (controller_health_alerts, evaluation_alerts_validation, evaluation_by_type_validation, evaluation_summary_validation, nbm_alerts) are written by the local parity runner only and come from the local reference.
+- silver/: points; hourly_indicators from 2026-04-01 05:00 UTC (the quarter and the 90-day trends); the prognosis instances' velocity series.
+- bursts/: for each open case's vibration points, the baseline reference burst, the first burst after the first alarm and the latest before the cut (float32), with panel_bursts.parquet giving role, time, offset and the point's demodulation band.
+- mlflow/: experiments and runs under /Shared/pdm (parameters, metrics, tags) and the registry (versions, tags, aliases) of pdm.ml.nbm_point_models.
+- parity_check.parquet: each exported table against the local reference (1e-9 relative with a 1e-12 floor; autoencoder-derived values and the penalized Cox concordance judged at outcome level).
+
+Not included: the hourly per-point model score tables (nbm_scores, nbm_train_scores, scoring_log, scoring_log_baseline), which stay in the workspace and the local reference.

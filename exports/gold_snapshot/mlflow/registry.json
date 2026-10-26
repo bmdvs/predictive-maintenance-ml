@@ -1,0 +1,171 @@
+{
+ "pdm.ml.nbm_point_models": {
+  "aliases": {
+   "champion": "7"
+  },
+  "versions": [
+   {
+    "version": 1,
+    "created_utc": "2026-10-24 00:03:29.817000+00:00",
+    "run_id": "53f05c11526e493aac50002b9d02dd3c",
+    "status": "READY",
+    "tags": {}
+   },
+   {
+    "version": 2,
+    "created_utc": "2026-10-25 01:15:04.471000+00:00",
+    "run_id": "c9e32384dcb640ebbd9a0b89b39a201d",
+    "status": "READY",
+    "tags": {
+     "candidate": "autoencoder_third_octave",
+     "false_episodes_budget": "0.5078",
+     "false_episodes_episodes": "7",
+     "false_episodes_false_episodes": "3",
+     "false_episodes_healthy_asset_months": "12.856",
+     "false_episodes_month": "2026-03",
+     "false_episodes_rate": "0.2334",
+     "gate_false_episodes": "pass",
+     "gate_false_episodes_detail": "2026-03: 3 false of 7 episodes over 12.86 healthy asset-months, rate 0.2334 against budget 0.5078 (0.2539 x 2)",
+     "gate_parity": "pass",
+     "gate_parity_detail": "hours 146136, unmatched 0, differing none",
+     "gate_segments": "pass",
+     "gate_segments_detail": "fitted 51, missing in model none, without scores none, null scores 0, healthy stats rows 616",
+     "gate_selection": "pass",
+     "gate_selection_detail": "run candidate autoencoder_third_octave, rule pick ['autoencoder_third_octave'], training nbm-1478e289a4",
+     "job_run_id": "636675667691861",
+     "model_version_hash": "nbm-1478e289a4",
+     "pdm_version": "0.1.10",
+     "source_run_id": "c9e32384dcb640ebbd9a0b89b39a201d",
+     "status": "promoted"
+    }
+   },
+   {
+    "version": 3,
+    "created_utc": "2026-10-25 01:54:01.221000+00:00",
+    "run_id": "c9e32384dcb640ebbd9a0b89b39a201d",
+    "status": "READY",
+    "tags": {
+     "candidate": "autoencoder_third_octave",
+     "duplicate_of": "2",
+     "job_run_id": "636675667691861",
+     "model_version_hash": "nbm-1478e289a4",
+     "pdm_version": "0.1.9",
+     "source_run_id": "c9e32384dcb640ebbd9a0b89b39a201d",
+     "status": "duplicate"
+    }
+   },
+   {
+    "version": 4,
+    "created_utc": "2026-10-25 18:52:44.338000+00:00",
+    "run_id": "ae20b813d8b441e5ba33de3fd35bc885",
+    "status": "READY",
+    "tags": {
+     "candidate": "autoencoder_third_octave",
+     "false_episodes_budget": "0.5078",
+     "false_episodes_episodes": "7",
+     "false_episodes_false_episodes": "3",
+     "false_episodes_healthy_asset_months": "12.856",
+     "false_episodes_month": "2026-03",
+     "false_episodes_rate": "0.2334",
+     "gate_false_episodes": "pass",
+     "gate_false_episodes_detail": "2026-03: 3 false of 7 episodes over 12.86 healthy asset-months, rate 0.2334 against budget 0.5078 (0.2539 x 2)",
+     "gate_parity": "pass",
+     "gate_parity_detail": "hours 146136, unmatched 0, differing none",
+     "gate_segments": "pass",
+     "gate_segments_detail": "fitted 51, missing in model none, without scores none, null scores 0, healthy stats rows 616",
+     "gate_selection": "pass",
+     "gate_selection_detail": "run candidate autoencoder_third_octave, rule pick ['autoencoder_third_octave'], training nbm-1478e289a4",
+     "job_run_id": "65670957055096",
+     "model_version_hash": "nbm-1478e289a4",
+     "pdm_version": "0.1.10",
+     "source_run_id": "ae20b813d8b441e5ba33de3fd35bc885",
+     "status": "for_review"
+    }
+   },
+   {
+    "version": 5,
+    "created_utc": "2026-10-25 21:57:56.414000+00:00",
+    "run_id": "d73eac650b594acf9e38714fda5b5c07",
+    "status": "READY",
+    "tags": {
+     "candidate": "autoencoder_third_octave",
+     "false_episodes_budget": "0.5078",
+     "false_episodes_episodes": "2",
+     "false_episodes_false_episodes": "2",
+     "false_episodes_healthy_asset_months": "12.615",
+     "false_episodes_month": "2026-04",
+     "false_episodes_rate": "0.1585",
+     "gate_false_episodes": "pass",
+     "gate_false_episodes_detail": "2026-04: 2 false of 2 episodes over 12.61 healthy asset-months, rate 0.1585 against budget 0.5078 (0.2539 x 2)",
+     "gate_parity": "pass",
+     "gate_parity_detail": "hours 151065, unmatched 0, differing none",
+     "gate_segments": "pass",
+     "gate_segments_detail": "fitted 53, missing in model none, without scores none, null scores 0, healthy stats rows 632",
+     "gate_selection": "pass",
+     "gate_selection_detail": "run candidate autoencoder_third_octave, rule pick ['autoencoder_third_octave'], training nbm-4ba62a873a",
+     "job_run_id": "310416269704943",
+     "model_version_hash": "nbm-4ba62a873a",
+     "pdm_version": "0.1.11",
+     "source_run_id": "d73eac650b594acf9e38714fda5b5c07",
+     "status": "promoted"
+    }
+   },
+   {
+    "version": 6,
+    "created_utc": "2026-10-25 22:36:20.524000+00:00",
+    "run_id": "01bb19e9e318459d907694b7a0d2a752",
+    "status": "READY",
+    "tags": {
+     "candidate": "autoencoder_third_octave",
+     "false_episodes_budget": "0.5078",
+     "false_episodes_episodes": "8",
+     "false_episodes_false_episodes": "6",
+     "false_episodes_healthy_asset_months": "12.700",
+     "false_episodes_month": "2026-05",
+     "false_episodes_rate": "0.4725",
+     "gate_false_episodes": "pass",
+     "gate_false_episodes_detail": "2026-05: 6 false of 8 episodes over 12.70 healthy asset-months, rate 0.4725 against budget 0.5078 (0.2539 x 2)",
+     "gate_parity": "pass",
+     "gate_parity_detail": "hours 156108, unmatched 0, differing none",
+     "gate_segments": "pass",
+     "gate_segments_detail": "fitted 57, missing in model none, without scores none, null scores 0, healthy stats rows 696",
+     "gate_selection": "pass",
+     "gate_selection_detail": "run candidate autoencoder_third_octave, rule pick ['autoencoder_third_octave'], training nbm-f9ed28810c",
+     "job_run_id": "988753942938100",
+     "model_version_hash": "nbm-f9ed28810c",
+     "pdm_version": "0.1.11",
+     "source_run_id": "01bb19e9e318459d907694b7a0d2a752",
+     "status": "promoted"
+    }
+   },
+   {
+    "version": 7,
+    "created_utc": "2026-10-25 23:54:59.120000+00:00",
+    "run_id": "dafb9b1a92764a25bc8bde61e009df97",
+    "status": "READY",
+    "tags": {
+     "candidate": "autoencoder_third_octave",
+     "false_episodes_budget": "0.5078",
+     "false_episodes_episodes": "6",
+     "false_episodes_false_episodes": "6",
+     "false_episodes_healthy_asset_months": "13.290",
+     "false_episodes_month": "2026-06",
+     "false_episodes_rate": "0.4515",
+     "gate_false_episodes": "pass",
+     "gate_false_episodes_detail": "2026-06: 6 false of 6 episodes over 13.29 healthy asset-months, rate 0.4515 against budget 0.5078 (0.2539 x 2)",
+     "gate_parity": "pass",
+     "gate_parity_detail": "hours 162277, unmatched 0, differing none",
+     "gate_segments": "pass",
+     "gate_segments_detail": "fitted 58, missing in model none, without scores none, null scores 0, healthy stats rows 704",
+     "gate_selection": "pass",
+     "gate_selection_detail": "run candidate autoencoder_third_octave, rule pick ['autoencoder_third_octave'], training nbm-30ad2b3298",
+     "job_run_id": "690618740977831",
+     "model_version_hash": "nbm-30ad2b3298",
+     "pdm_version": "0.1.11",
+     "source_run_id": "dafb9b1a92764a25bc8bde61e009df97",
+     "status": "promoted"
+    }
+   }
+  ]
+ }
+}
