@@ -117,3 +117,26 @@ def test_shadow_months():
     assert tasks.shadow_months(_cfg(False, "2026-04")) == ["2026-04"]
     assert tasks.shadow_months(_cfg(False, "2026-06")) == ["2026-04", "2026-05", "2026-06"]
     assert tasks.shadow_months(_cfg(False, None)) == ["2026-04", "2026-05", "2026-06"]
+
+
+def test_case_trigger_text_does_not_depend_on_row_order():
+    from pdm.fusion.status import cases
+
+    t0 = pd.Timestamp("2026-04-10 10:00", tz=UTC)
+    sig = pd.DataFrame(
+        {
+            "method": ["vendor", "nbm", "iso", "vendor"],
+            "asset_id": "A",
+            "machine_id": "A",
+            "point_id": ["P", "P", "P", "P"],
+            "ts": [t0, t0, t0, t0 + pd.Timedelta(hours=1)],
+            "level": ["alarm", "alarm", "alarm", "alarm"],
+            "rules": ["vendor:alarm", "nbm:x,y", "iso:alarm", "vendor:alarm"],
+        }
+    )
+    changes = pd.DataFrame({"asset_id": ["A"], "ts": [t0], "status": ["ALARM"], "layers": ["vendor"]})
+    wo = pd.DataFrame(columns=["asset_id", "wo_id", "wo_type", "failure_code", "opened", "closed"])
+    a = cases(changes, sig, wo, 7)
+    b = cases(changes, sig.iloc[[2, 0, 1, 3]].reset_index(drop=True), wo, 7)
+    assert a["trigger_rules"].tolist() == b["trigger_rules"].tolist()
+    assert a["trigger_rules"].iat[0].split(";")[:3] == ["iso:iso:alarm", "nbm:nbm:x,y", "vendor:vendor:alarm"]
