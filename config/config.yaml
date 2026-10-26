@@ -600,6 +600,7 @@ models:                                   # [fixed]
 
 advisory:                                 # 10.9 controller signals for diagnosis
   tsc_pressure_reference_days: [14, 44]    # TSC pressure drop: daily median against the median 14 to 44 days earlier
+  tsc_pump_on_min_bar: 1.0                 # approved at checkpoint (b), 2026-10-26: a minute above this mean pressure counts as pump running (silver coolant_pressure_pump_on_bar; the TSC drop keeps coolant_pressure_bar)
   trip_match_days: 1                       # a compressor trip work order maps to cooler when a high-temperature trip was logged up to 1 day before it
 
 evaluation:                               # [fixed] 12, chance levels

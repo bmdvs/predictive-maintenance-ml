@@ -43,7 +43,7 @@ def healthy_windows():
 
 @dp.materialized_view(name=_name("controller_hourly"))
 def controller_hourly():
-    return controller.controller_hourly(_read("ctrl_minute"))
+    return controller.controller_hourly(_read("ctrl_minute"), CFG["advisory"]["tsc_pump_on_min_bar"])
 
 
 @dp.materialized_view(name=_name("controller_event_daily"))

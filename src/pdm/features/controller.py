@@ -3,7 +3,8 @@ controller event counts.
 
 Inputs: bronze controller minute aggregates and controller events. Outputs: hourly active-cutting
 features (seconds active, spindle and axis load statistics, speed, thermistor, coolant and hydraulic
-pressure) and daily event counts by type.
+pressure, and the coolant pressure while the through-spindle coolant pump runs) and daily event counts
+by type.
 """
 
 from __future__ import annotations
@@ -20,8 +21,15 @@ def _wmean(col: str) -> F.Column:
     return (F.sum(F.col(col) * w) / F.sum(F.when(F.col(col).isNotNull(), w))).alias(col.replace("_mean", ""))
 
 
-def controller_hourly(minute: DataFrame) -> DataFrame:
+def controller_hourly(minute: DataFrame, pump_on_min_bar: float = 1.0) -> DataFrame:
+    """Per machine, hour and program over active cutting minutes. coolant_pressure_bar is the
+    time-weighted mean, pump-off time included; coolant_pressure_pump_on_bar is the median of the
+    minutes' mean pressure over minutes above pump_on_min_bar (a minute's mean is 0 or the running
+    pressure, so this is the pressure while the pump runs)."""
     active = minute.where((F.col("execution") == "active") & (F.col("program") != ""))
+    on = F.when(
+        F.col("coolant_pressure_bar_mean") > F.lit(float(pump_on_min_bar)), F.col("coolant_pressure_bar_mean")
+    )
     aggs = [
         F.sum("seconds_in_state").alias("active_s"),
         _wmean("spindle_load_pct_mean").alias("spindle_load"),
@@ -31,6 +39,7 @@ def controller_hourly(minute: DataFrame) -> DataFrame:
         _wmean("spindle_speed_rpm_mean"),
         _wmean("spindle_temp_c_mean"),
         _wmean("coolant_pressure_bar_mean"),
+        F.percentile(on, F.lit(0.5)).alias("coolant_pressure_pump_on_bar"),
         _wmean("hydraulic_pressure_bar_mean"),
     ]
     for a in AXES:

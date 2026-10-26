@@ -114,6 +114,31 @@ def test_controller_hourly_weighting(spark):
     assert r.active_s == 90 and abs(r.spindle_load - 20.0) < 1e-9
 
 
+def test_controller_hourly_pump_on_pressure(spark):
+    # minute means: pump off (0), running at 69, a partial minute (20), running at 68.9
+    rows = [
+        ("M", _ts(f"2024-01-01 10:0{i}:00"), "P", "active", 60, p)
+        for i, p in enumerate([0.0, 69.0, 20.0, 68.9, 0.0])
+    ]
+    schema = (
+        "machine_id string, minute_utc timestamp, program string, execution string, seconds_in_state long, "
+        "coolant_pressure_bar_mean double"
+    )
+    df = spark.createDataFrame(rows, schema)
+    for c in (
+        "spindle_load_pct_mean",
+        "spindle_load_pct_p95",
+        "spindle_speed_rpm_mean",
+        "spindle_temp_c_mean",
+        "hydraulic_pressure_bar_mean",
+        *[f"{a}_load_pct_p95" for a in "xyzb"],
+    ):
+        df = df.withColumn(c, df["coolant_pressure_bar_mean"] * 0 + 1.0)
+    r = controller.controller_hourly(df, 1.0).collect()[0]
+    assert abs(r.coolant_pressure_bar - (69.0 + 20.0 + 68.9) / 5) < 1e-9
+    assert abs(r.coolant_pressure_pump_on_bar - 68.9) < 1e-9
+
+
 def test_rolling_slope_linear():
     t = pd.date_range("2024-01-01", periods=24 * 10, freq="h")
     pdf = pd.DataFrame({"point_id": "P", "hour_utc": t, "regime": "running", "implausible": False})

@@ -1024,10 +1024,12 @@ def fusion_advisory_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tsc_pressure_daily(store: Store, cfg: dict[str, Any]) -> pd.DataFrame:
-    """Daily through-spindle coolant pressure per HMC to the horizon (silver controller hourly mean over
-    active cutting time), for the queue's controller panel."""
+    """Daily through-spindle coolant pressure per HMC while the pump runs (silver
+    coolant_pressure_pump_on_bar) to the horizon, for the queue's controller panel."""
     hmc = set(store.read_pd("bronze", "reg_machines").query("`class` == 'hmc'")["machine_id"])
-    chh = store.read_pd("silver", "controller_hourly", ["machine_id", "hour_utc", "coolant_pressure_bar"])
+    chh = store.read_pd(
+        "silver", "controller_hourly", ["machine_id", "hour_utc", "coolant_pressure_pump_on_bar"]
+    )
     chh["hour_utc"] = _utc(chh["hour_utc"])
     chh = chh[chh["machine_id"].isin(hmc) & (chh["hour_utc"] < horizon(cfg))]
     a = cfg["advisory"]["tsc_pressure_reference_days"]

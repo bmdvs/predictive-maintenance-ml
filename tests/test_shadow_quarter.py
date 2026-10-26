@@ -248,7 +248,7 @@ def test_tsc_pressure_daily():
     p = np.where(hours.hour % 2 == 0, 70.0, 0.0)
     p[hours >= pd.Timestamp("2026-02-20", tz="UTC")] *= 0.9
     h = pd.DataFrame({"machine_id": "HMC-01", "hour_utc": hours, "coolant_pressure_bar": p})
-    d = adv.tsc_pressure_daily(h, (14, 44)).set_index("local_date")
+    d = adv.tsc_pressure_daily(h, (14, 44), column="coolant_pressure_bar").set_index("local_date")
     assert (d["pressure_median_bar"].iloc[1:-1].round(6).isin([70.0, 63.0])).all()
     assert d.loc["2026-01-02", "running_hours"] == 12
     assert abs(d.loc["2026-02-25", "drop_share"] - 0.1) < 1e-9
