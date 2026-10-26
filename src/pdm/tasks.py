@@ -1551,25 +1551,42 @@ def shadow_months(cfg: dict[str, Any]) -> list[str]:
 
 
 def _drift_rebaselines(
-    store: Store, cfg: dict[str, Any], since: pd.Timestamp, end: pd.Timestamp
-) -> dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]:
-    """Per point, the post-repair and post-remount re-baseline windows that started after `since`:
-    those usable for a refit (complete before end, not excluded for a nearby failure, not flagged by
-    the post-repair sanity check), as the per-point model segments use them, and those still in progress
-    at end, whose hours are left out of the comparison and which never serve as a reference (they end
-    after every month compared)."""
+    store: Store,
+    cfg: dict[str, Any],
+    since: pd.Timestamp,
+    end: pd.Timestamp,
+    scores: pd.DataFrame,
+) -> dict[str, list[Any]]:
+    """Per point, the drift references of its post-repair and post-remount re-baseline windows that
+    started after `since`: windows usable for a refit (complete before end, not excluded for a nearby
+    failure, not flagged by the post-repair sanity check), as the per-point model segments use them,
+    extended by the first scored days with no open case on the point; and windows still forming at end,
+    whose hours are not compared."""
+    from pdm.monitoring import performance as mon
+
     rb = pd.Timedelta(days=cfg["models"]["nbm"]["rebaseline_days"])
+    days = int(cfg["monitoring"]["drift"]["reference_scored_days"])
     win = _utc_cols(store.read_pd("silver", "healthy_windows"), ["start", "end"])
     win = win[win["start"] < end]
     sanity = store.read_pd("gold", "baseline_sanity")
     flagged_ids = set(sanity.loc[sanity["flagged"].astype(bool), "window_id"])
-    out: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
+    cases = _utc_cols(store.read_pd("gold", "cases"), ["opened", "closed"])
+    cases = cases[cases["opened"] < end]
+    asset_of = _points(store).set_index("point_id")["asset_id"].to_dict()
+    out: dict[str, list[Any]] = {}
     for pid, w in win.groupby("point_id"):
         plan = nbm.segment_plan(w, flagged_ids, end, rb)
         keep = plan["refit"].astype(bool) | ~plan["complete"].astype(bool)
         use = plan[(plan["reason"] != "install") & keep & (plan["start"] >= since)]
-        if len(use):
-            out[pid] = [(a, a + rb) for a in use["start"]]
+        if not len(use):
+            continue
+        c = cases[cases["asset_id"] == asset_of.get(pid)]
+        intervals = [
+            (o, min(x, end) if pd.notna(x) else end) for o, x in zip(c["opened"], c["closed"], strict=True)
+        ]
+        hours = scores.loc[scores["point_id"] == pid, "hour_utc"]
+        wins = [(a, a + rb, bool(done)) for a, done in zip(use["start"], use["complete"], strict=True)]
+        out[pid] = mon.drift_references(wins, hours, intervals, end, days)
     return out
 
 
@@ -1684,10 +1701,10 @@ def monitoring_task(store: Store, cfg: dict[str, Any]) -> dict[str, Any]:
             )
         )
     )
-    rebase = _drift_rebaselines(store, cfg, b["validation"][0], end)
     sc_drift = sc.rename(columns={"score": mon.SCORE_FEATURE})
     sc_drift["hour_utc"] = _utc(sc_drift["hour_utc"])
     sc_drift = sc_drift[sc_drift["hour_utc"] < end]
+    rebase = _drift_rebaselines(store, cfg, b["validation"][0], end, sc_drift)
     drift = pd.concat(
         [
             mon.feature_drift(ind, feats, base_months, months, rebase),

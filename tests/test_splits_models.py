@@ -440,3 +440,37 @@ def test_entrypoint_arguments(monkeypatch):
     )
     assert store.catalog == "pdm_dev" and args.experiment_root == "/Shared/pdm" and "splits" in cfg
     assert seen["spark.sql.session.timeZone"] == "UTC"
+
+
+def test_lives_register_date_on_preventive_work_order_day_is_that_replacement():
+    from pdm.models import survival
+
+    ts = lambda s: pd.Timestamp(s, tz="UTC")  # noqa: E731
+    inputs = list(_life_inputs("2022-03-01;2025-03-16", 2019))
+    pm = pd.DataFrame(
+        [
+            {
+                "asset_id": "HMC-09-CP",
+                "wo_type": "pm",
+                "failure_code": None,
+                "opened": ts("2025-03-16 05:47"),
+                "closed": ts("2025-03-16 15:35"),
+                "downtime_hours": 4.0,
+            },
+            {
+                "asset_id": "HMC-09-CP",
+                "wo_type": "condition_based",
+                "failure_code": "imbalance",
+                "opened": ts("2025-09-01 11:00"),
+                "closed": ts("2025-09-02 08:00"),
+                "downtime_hours": 3.0,
+            },
+        ]
+    )
+    inputs[4] = pd.concat([inputs[4], pm], ignore_index=True)
+    inputs[1].loc[0, "replacement_dates"] = "2022-03-01;2025-03-16;2025-09-01"
+    lives = survival.lifetimes(*inputs, close_lag_days=2).sort_values("start")
+    assert (lives["duration_days"] > 1).all()
+    starts = list(lives["start"])
+    assert ts("2025-03-16") not in starts and ts("2025-09-01") not in starts
+    assert ts("2025-03-16 15:35") in starts and ts("2025-09-02 08:00") in starts

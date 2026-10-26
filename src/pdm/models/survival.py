@@ -4,8 +4,9 @@ Inputs: register install years and replacement dates (pumps, spindles, compresso
 orders, controller collision events and the PM schedule. Output: one row per component life with its
 start, entry into the record, end, event flag (unplanned failure) or censoring (preventive replacement,
 a failure of another mode, or record end), and covariates (component class, machine age class, crash
-count, lube PM compliance). A register date inside an event failure's repair window is that failure's
-replacement, not a new life; the life in progress at the record start begins at the last register
+count, lube PM compliance). A register date inside the window of a failure, preventive or
+condition-based work order (opening day to close plus the close-time lag) is the replacement that work
+order records, not a new life; the life in progress at the record start begins at the last register
 date before it, or at install. Times are calendar days.
 """
 
@@ -48,8 +49,9 @@ def lifetimes(
     event_codes: set[str] | None = None,
 ) -> pd.DataFrame:
     """Args:
-    close_lag_days: the CMMS close-time lag; a register date from the failure's opening day to its
-        close plus this lag is the same event as the failure.
+    close_lag_days: the CMMS close-time lag; a register date from a failure's, preventive or
+        condition-based work order's opening day to its close plus this lag is the replacement that
+        work order records.
     event_codes: failure codes counted as events (default all component failure modes); failures
         with the other codes in BEARING_CODES censor the life and start a new one.
     """
@@ -93,7 +95,8 @@ def lifetimes(
         ev_f = fail[fail["asset_id"] == asset].sort_values("opened")
         ev_o = other[other["asset_id"] == asset].sort_values("opened")
         ev_p = prevent[prevent["asset_id"] == asset].sort_values("opened")
-        starts = same_event_removed(starts, unplanned[unplanned["asset_id"] == asset], lag)
+        recorded = pd.concat([unplanned[unplanned["asset_id"] == asset], ev_p], ignore_index=True)
+        starts = same_event_removed(starts, recorded, lag)
         starts = with_record_start(starts, install_year, r0)
         closes = set(ev_f["closed"]) | set(ev_o["closed"]) | set(ev_p["closed"])
         bounds = sorted(set(starts) | closes)
@@ -137,13 +140,14 @@ def lifetimes(
 
 
 def same_event_removed(
-    starts: list[pd.Timestamp], failures: pd.DataFrame, lag: pd.Timedelta
+    starts: list[pd.Timestamp], work_orders: pd.DataFrame, lag: pd.Timedelta
 ) -> list[pd.Timestamp]:
-    """Register dates outside every failure's repair window (opening day to close plus the lag); the
-    register records dates without a time, so the window starts at the opening day."""
+    """Register dates outside every replacing work order's window (opening day to close plus the lag);
+    the register records dates without a time, so the window starts at the opening day."""
     keep = []
     for s in starts:
-        inside = ((failures["opened"].dt.floor("D") <= s) & (s <= failures["closed"] + lag)).any()
+        w = work_orders
+        inside = ((w["opened"].dt.floor("D") <= s) & (s <= w["closed"] + lag)).any()
         if not inside:
             keep.append(s)
     return sorted(keep)

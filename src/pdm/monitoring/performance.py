@@ -4,7 +4,8 @@ Inputs: caught-condition rows and alert-precision rows from the evaluation, the 
 indicators, the per-point model scores, each point's post-repair re-baseline windows and the configured
 tolerances. Drift is the Wasserstein distance scaled by the reference spread; the reference is the
 validation period, or for a point re-baselined after the validation start its latest completed
-post-repair re-baseline window, as the baselines are. Outputs: monthly event_performance, monthly
+post-repair re-baseline window plus the first scored days after it with no open case on the point (the
+window alone, marked, when a case opens within those days). Outputs: monthly event_performance, monthly
 drift per point and feature (the per-point model score as feature "nbm_score") and
 retraining_decision with the action a retrain verdict calls for. Profiles on the platform come from
 Databricks data profiling; the local run computes the same drift statistic as the reference.
@@ -12,7 +13,7 @@ Databricks data profiling; the local run computes the same drift statistic as th
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -79,42 +80,98 @@ def month_end_utc(month: str) -> pd.Timestamp:
     return (start + pd.offsets.MonthBegin(1)).tz_convert("UTC")
 
 
+class Reference(NamedTuple):
+    """A post-repair drift reference: the re-baseline window [start, window_end) extended to
+    reference_end; reference_end is None while the reference is still forming at the horizon."""
+
+    start: pd.Timestamp
+    window_end: pd.Timestamp
+    reference_end: pd.Timestamp | None
+    window_only: bool
+
+
+def drift_references(
+    windows: list[tuple[pd.Timestamp, pd.Timestamp, bool]],
+    scored_hours: pd.Series,
+    cases: list[tuple[pd.Timestamp, pd.Timestamp]],
+    end: pd.Timestamp,
+    days: int,
+) -> list[Reference]:
+    """Per re-baseline window of a point: the window plus the first `days` scored local days after it
+    with no case open on the point, or the window alone (window_only) when a case opens within them.
+
+    Args:
+        windows: (start, window_end, complete) per window; an incomplete window is still forming.
+        scored_hours: the point's per-point model score hours (UTC) before end.
+        cases: the point's asset's cases (opened, closed), opened before end; closed is cut at end.
+        end: the run's horizon.
+        days: the scored days that extend the window.
+    """
+    hours = pd.to_datetime(pd.Series(scored_hours), utc=True).sort_values()
+    out = []
+    for a, b, complete in sorted(windows):
+        if not complete:
+            out.append(Reference(a, b, None, False))
+            continue
+        after = hours[(hours >= b) & (hours < end)]
+        open_ = np.zeros(len(after), dtype=bool)
+        for o, c in cases:
+            open_ |= ((after >= o) & (after < c)).to_numpy()
+        day = after[~open_].dt.tz_convert(LOCAL_TZ).dt.normalize()
+        first = list(dict.fromkeys(day))[:days]
+        span_end = (first[-1] + pd.Timedelta(days=1)).tz_convert("UTC") if len(first) == days else end
+        opened = any(b <= o < span_end for o, _ in cases)
+        if opened:
+            out.append(Reference(a, b, b, True))
+        elif len(first) == days:
+            out.append(Reference(a, b, span_end, False))
+        else:
+            out.append(Reference(a, b, None, False))
+    return out
+
+
 def feature_drift(
     ind: pd.DataFrame,
     features: list[str],
     baseline_months: list[str],
     months: list[str],
-    rebaselines: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] | None = None,
+    references: dict[str, list[Reference]] | None = None,
 ) -> pd.DataFrame:
     """Per point, feature and month: the month's values against the reference.
 
     Args:
-        rebaselines: per point, its post-repair re-baseline windows (start, end) that started after the
-            validation start and passed the post-repair check. Once a window has completed by a month's
-            end, the month is compared with that window, from the window's end on; hours inside any
-            re-baseline window are not compared.
+        references: per point, its post-repair drift references (drift_references). Once a reference
+            has formed by a month's end, the month is compared with it, from its end on; hours inside a
+            reference, or after the start of one still forming, are not compared.
 
     Returns:
-        point_id, feature, month, wasserstein_scaled and reference ("validation" or "re-baseline
-        <start date>").
+        point_id, feature, month, wasserstein_scaled and reference ("validation", "re-baseline <start
+        date> plus scored days" or "re-baseline <start date>, window only (case within the scored
+        days)").
     """
-    rebaselines = rebaselines or {}
+    references = references or {}
     d = ind.assign(month=month_of(ind["hour_utc"]))
     rows = []
     for pid, g in d.groupby("point_id"):
         t = pd.to_datetime(g["hour_utc"], utc=True)
-        wins = sorted(rebaselines.get(pid, []))
+        refs = sorted(references.get(pid, []))
         inside = np.zeros(len(g), dtype=bool)
-        for a, b in wins:
-            inside |= ((t >= a) & (t < b)).to_numpy()
+        for r in refs:
+            stop = r.reference_end
+            inside |= ((t >= r.start) & ((t < stop) if stop is not None else True)).to_numpy()
         for m in months:
-            done = [w for w in wins if w[1] <= month_end_utc(m)]
+            done = [r for r in refs if r.reference_end is not None and r.reference_end <= month_end_utc(m)]
             in_month = (g["month"] == m).to_numpy() & ~inside
             if done:
-                a, b = done[-1]
-                base_mask = ((t >= a) & (t < b)).to_numpy()
-                cur_mask = in_month & (t >= b).to_numpy()
-                ref = f"re-baseline {a.tz_convert(LOCAL_TZ):%Y-%m-%d}"
+                r = done[-1]
+                base_mask = ((t >= r.start) & (t < r.reference_end)).to_numpy()
+                cur_mask = in_month & (t >= r.reference_end).to_numpy()
+                day = f"{r.start.tz_convert(LOCAL_TZ):%Y-%m-%d}"
+                ref = (
+                    f"re-baseline {day}, window only (case within the scored days)"
+                    if r.window_only
+                    else f"re-baseline {day} plus scored days"
+                )
             else:
                 base_mask = g["month"].isin(baseline_months).to_numpy()
                 cur_mask = in_month

@@ -615,7 +615,7 @@ evaluation:                               # [fixed] 12, chance levels
 monitoring:                               # [fixed] 10.10
   tolerance: {recall_drop: 0.25, alerts_per_asset_month_ratio: [0.5, 2.0]}
   consecutive_months: 2
-  drift: {method: databricks_data_profiling, score_test: wasserstein, feature_share_drifted: 0.30, feature_threshold: 0.5}   # platform tooling after the Azure Databricks merge (was evidently); tests and thresholds unchanged; feature_threshold 0.5 approved at the step 5 review
+  drift: {method: databricks_data_profiling, score_test: wasserstein, feature_share_drifted: 0.30, feature_threshold: 0.5, reference_scored_days: 30}   # platform tooling after the Azure Databricks merge (was evidently); tests and thresholds unchanged; feature_threshold 0.5 approved at the step 5 review; reference_scored_days 30 approved at checkpoint (b), 2026-10-26: a post-repair drift reference is the re-baseline window plus the first 30 scored days with no open case
 
 checks:                                   # [fixed] sections 9 and 16
   healthy_band_rule: p05_p95_within_range           # check 2: 5th to 95th percentile inside the stated range
