@@ -48,7 +48,7 @@ resources:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
               as_of: "{{job.parameters.as_of}}"
-              stages: "{{job.parameters.train_stages}}"
+              train_stages: "{{job.parameters.train_stages}}"
               experiment_root: ${var.experiment_root}
               job_run_id: "{{job.run_id}}"
           libraries:
@@ -93,6 +93,6 @@ resources:
               catalog: ${var.catalog}
               config: ${workspace.file_path}/config/config.yaml
               as_of: "{{job.parameters.as_of}}"
-              stages: "{{job.parameters.monitor_stages}}"
+              monitor_stages: "{{job.parameters.monitor_stages}}"
           libraries:
             - whl: ../dist/bundle/*.whl

@@ -225,3 +225,19 @@ def test_tsc_pressure_daily():
     assert (d["pressure_median_bar"].iloc[1:-1].round(6).isin([70.0, 63.0])).all()
     assert d.loc["2026-01-02", "running_hours"] == 12
     assert abs(d.loc["2026-02-25", "drop_share"] - 0.1) < 1e-9
+
+
+def test_every_job_parameter_is_accepted_by_every_task():
+    # Databricks passes every job parameter to every Python wheel task
+    args = entrypoints.parse(
+        "pdm-score",
+        [
+            "--catalog=pdm_dev",
+            "--config=c.yaml",
+            "--as_of=2026-06",
+            "--auto_promote=false",
+            "--train_stages=survival",
+            "--monitor_stages=monitoring",
+        ],
+    )
+    assert args.train_stages == "survival" and args.monitor_stages == "monitoring"
