@@ -1,11 +1,13 @@
-"""Monthly event performance per method, feature drift against the validation baseline, and the
-retraining decision.
+"""Monthly event performance per method, feature and score drift, and the retraining decision.
 
 Inputs: caught-condition rows and alert-precision rows from the evaluation, the regime-tagged hourly
-indicators, and the configured tolerances. Outputs: monthly event_performance, monthly drift per point
-and indicator (Wasserstein distance scaled by the baseline spread) and retraining_decision. Profiles
-on the platform come from Databricks data profiling; the local run computes the same drift statistic
-as the reference.
+indicators, the per-point model scores, each point's post-repair re-baseline windows and the configured
+tolerances. Drift is the Wasserstein distance scaled by the reference spread; the reference is the
+validation period, or for a point re-baselined after the validation start its latest completed
+post-repair re-baseline window, as the baselines are. Outputs: monthly event_performance, monthly
+drift per point and feature (the per-point model score as feature "nbm_score") and
+retraining_decision with the action a retrain verdict calls for. Profiles on the platform come from
+Databricks data profiling; the local run computes the same drift statistic as the reference.
 """
 
 from __future__ import annotations
@@ -64,31 +66,75 @@ def event_performance(
     return pd.DataFrame(rows).sort_values(["method", "month"]).reset_index(drop=True)
 
 
+SCORE_FEATURE = "nbm_score"
+RETRAIN_ACTION = (
+    "review and full refit: training cutoff moved forward, healthy windows and thresholds re-derived, "
+    "registered as a challenger with auto_promote=false for manual review"
+)
+
+
+def month_end_utc(month: str) -> pd.Timestamp:
+    """The end of a local month (YYYY-MM) as a UTC timestamp."""
+    start = pd.Timestamp(f"{month}-01").tz_localize(LOCAL_TZ)
+    return (start + pd.offsets.MonthBegin(1)).tz_convert("UTC")
+
+
 def feature_drift(
-    ind: pd.DataFrame, features: list[str], baseline_months: list[str], months: list[str]
+    ind: pd.DataFrame,
+    features: list[str],
+    baseline_months: list[str],
+    months: list[str],
+    rebaselines: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] | None = None,
 ) -> pd.DataFrame:
+    """Per point, feature and month: the month's values against the reference.
+
+    Args:
+        rebaselines: per point, its post-repair re-baseline windows (start, end) that started after the
+            validation start and passed the post-repair check. Once a window has completed by a month's
+            end, the month is compared with that window, from the window's end on; hours inside any
+            re-baseline window are not compared.
+
+    Returns:
+        point_id, feature, month, wasserstein_scaled and reference ("validation" or "re-baseline
+        <start date>").
+    """
+    rebaselines = rebaselines or {}
     d = ind.assign(month=month_of(ind["hour_utc"]))
     rows = []
     for pid, g in d.groupby("point_id"):
-        base = g[g["month"].isin(baseline_months)]
-        for f in features:
-            b = base[f].dropna().to_numpy(float)
-            if b.size < 10:
-                continue
-            spread = float(np.std(b)) or 1.0
-            for m in months:
-                x = g.loc[g["month"] == m, f].dropna().to_numpy(float)
-                if x.size < 10:
+        t = pd.to_datetime(g["hour_utc"], utc=True)
+        wins = sorted(rebaselines.get(pid, []))
+        inside = np.zeros(len(g), dtype=bool)
+        for a, b in wins:
+            inside |= ((t >= a) & (t < b)).to_numpy()
+        for m in months:
+            done = [w for w in wins if w[1] <= month_end_utc(m)]
+            in_month = (g["month"] == m).to_numpy() & ~inside
+            if done:
+                a, b = done[-1]
+                base_mask = ((t >= a) & (t < b)).to_numpy()
+                cur_mask = in_month & (t >= b).to_numpy()
+                ref = f"re-baseline {a.tz_convert(LOCAL_TZ):%Y-%m-%d}"
+            else:
+                base_mask = g["month"].isin(baseline_months).to_numpy()
+                cur_mask = in_month
+                ref = "validation"
+            for f in features:
+                b_ = g.loc[base_mask, f].dropna().to_numpy(float)
+                x = g.loc[cur_mask, f].dropna().to_numpy(float)
+                if b_.size < 10 or x.size < 10:
                     continue
+                spread = float(np.std(b_)) or 1.0
                 rows.append(
                     {
                         "point_id": pid,
                         "feature": f,
                         "month": m,
-                        "wasserstein_scaled": wasserstein_distance(b, x) / spread,
+                        "wasserstein_scaled": wasserstein_distance(b_, x) / spread,
+                        "reference": ref,
                     }
                 )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["point_id", "feature", "month", "wasserstein_scaled", "reference"])
 
 
 def retraining_decision(
@@ -121,7 +167,11 @@ def retraining_decision(
         rate_bad = pd.notna(rate_ratio) and not (lo <= rate_ratio <= hi)
         streak = streak + 1 if (recall_bad or rate_bad) else 0
         dm = drift[drift["month"] == r.month] if len(drift) else drift
-        drifted = float((dm["wasserstein_scaled"] > thr).mean()) if len(dm) else np.nan
+        fm = dm[dm["feature"] != SCORE_FEATURE] if len(dm) else dm
+        sm = dm[dm["feature"] == SCORE_FEATURE] if len(dm) else dm
+        drifted = float((fm["wasserstein_scaled"] > thr).mean()) if len(fm) else np.nan
+        score_drifted = float((sm["wasserstein_scaled"] > thr).mean()) if len(sm) else np.nan
+        retrain = bool(streak >= need)
         rows.append(
             {
                 "method": method,
@@ -129,10 +179,15 @@ def retraining_decision(
                 "recall": r.recall,
                 "recall_reference": ref.get("recall"),
                 "alerts_rate_ratio": rate_ratio,
-                "primary_trigger": bool(streak >= need),
+                "primary_trigger": retrain,
                 "drift_share": drifted,
-                "secondary_trigger": bool(pd.notna(drifted) and drifted > share),
-                "retrain": bool(streak >= need),
+                "score_drift_share": score_drifted,
+                "secondary_trigger": bool(
+                    (pd.notna(drifted) and drifted > share)
+                    or (pd.notna(score_drifted) and score_drifted > share)
+                ),
+                "retrain": retrain,
+                "action": RETRAIN_ACTION if retrain else "none",
             }
         )
     return pd.DataFrame(rows)

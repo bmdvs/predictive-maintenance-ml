@@ -1,10 +1,12 @@
 """Component lifetimes for the fleet survival model: Weibull AFT and Cox with left truncation.
 
-Inputs: register install and replacement dates (pumps, spindles, compressor bearings), CMMS work
+Inputs: register install years and replacement dates (pumps, spindles, compressor bearings), CMMS work
 orders, controller collision events and the PM schedule. Output: one row per component life with its
-start, entry into the record, end, event flag (unplanned failure) or censoring (preventive replacement
-or record end), and covariates (component class, machine age class, crash count, lube PM compliance).
-Times are calendar days.
+start, entry into the record, end, event flag (unplanned failure) or censoring (preventive replacement,
+a failure of another mode, or record end), and covariates (component class, machine age class, crash
+count, lube PM compliance). A register date inside an event failure's repair window is that failure's
+replacement, not a new life; the life in progress at the record start begins at the last register
+date before it, or at install. Times are calendar days.
 """
 
 from __future__ import annotations
@@ -42,9 +44,20 @@ def lifetimes(
     collisions: pd.DataFrame,
     pm: pd.DataFrame,
     record: tuple[pd.Timestamp, pd.Timestamp],
+    close_lag_days: float = 0.0,
+    event_codes: set[str] | None = None,
 ) -> pd.DataFrame:
+    """Args:
+    close_lag_days: the CMMS close-time lag; a register date from the failure's opening day to its
+        close plus this lag is the same event as the failure.
+    event_codes: failure codes counted as events (default all component failure modes); failures
+        with the other codes in BEARING_CODES censor the life and start a new one.
+    """
     r0, r1 = record
+    lag = pd.Timedelta(days=close_lag_days)
+    codes = BEARING_CODES if event_codes is None else set(event_codes)
     age = machines.set_index("machine_id")["age_class"].to_dict()
+    installed = machines.set_index("machine_id")["install_year"].to_dict()
     comps = []
     for p in pumps.itertuples():
         comps.append(
@@ -53,32 +66,48 @@ def lifetimes(
                 "tsc_pump" if p.kind == "tsc" else "flood_pump",
                 p.machine_id,
                 _dates(p.replacement_dates),
+                installed.get(p.machine_id),
             )
         )
     for s in spindles.itertuples():
-        comps.append((f"{s.machine_id}-SP", "spindle", s.machine_id, _dates(s.rebuild_dates)))
+        comps.append(
+            (
+                f"{s.machine_id}-SP",
+                "spindle",
+                s.machine_id,
+                _dates(s.rebuild_dates),
+                installed.get(s.machine_id),
+            )
+        )
     for c in compressors.itertuples():
         starts = sorted(set(_dates(c.motor_bearing_replaced) + _dates(c.airend_rebuilt)))
-        comps.append((c.asset_id, "compressor", c.asset_id, starts))
+        comps.append((c.asset_id, "compressor", c.asset_id, starts, c.install_year))
     wo = work_orders.copy()
-    fail = wo[(wo["wo_type"] == "unplanned_repair") & wo["failure_code"].isin(BEARING_CODES)]
+    unplanned = wo[(wo["wo_type"] == "unplanned_repair") & wo["failure_code"].isin(BEARING_CODES)]
+    fail = unplanned[unplanned["failure_code"].isin(codes)]
+    other = unplanned[~unplanned["failure_code"].isin(codes)]
     prevent = wo[wo["wo_type"].isin(["pm", "condition_based"]) & (wo["downtime_hours"] > 0)]
     lube = pm[pm["pm_task"] == "spindle_lube_check"]
     rows = []
-    for asset, cls, machine, starts in comps:
-        starts = sorted(starts) or [r0 - 365 * DAY]
+    for asset, cls, machine, starts, install_year in comps:
         ev_f = fail[fail["asset_id"] == asset].sort_values("opened")
+        ev_o = other[other["asset_id"] == asset].sort_values("opened")
         ev_p = prevent[prevent["asset_id"] == asset].sort_values("opened")
-        bounds = sorted(set([s for s in starts]) | set(ev_f["closed"]) | set(ev_p["closed"]))
+        starts = same_event_removed(starts, unplanned[unplanned["asset_id"] == asset], lag)
+        starts = with_record_start(starts, install_year, r0)
+        closes = set(ev_f["closed"]) | set(ev_o["closed"]) | set(ev_p["closed"])
+        bounds = sorted(set(starts) | closes)
         bounds = [b for b in bounds if b < r1]
         for k, start in enumerate(bounds):
             end_limit = bounds[k + 1] if k + 1 < len(bounds) else r1
-            f = ev_f[(ev_f["opened"] > start) & (ev_f["opened"] <= end_limit)]
-            pv = ev_p[(ev_p["opened"] > start) & (ev_p["opened"] <= end_limit)]
-            if len(f):
-                end, event = f["opened"].iat[0], 1
-            elif len(pv):
-                end, event = pv["opened"].iat[0], 0
+            ends = []
+            for g, flag in ((ev_f, 1), (ev_o, 0), (ev_p, 0)):
+                x = g[(g["opened"] > start) & (g["opened"] <= end_limit)]
+                if len(x):
+                    ends.append((x["opened"].iat[0], -flag))
+            if ends:
+                end, neg = min(ends)
+                event = -neg
             else:
                 end, event = end_limit, 0
             if end <= r0:
@@ -105,6 +134,32 @@ def lifetimes(
                 }
             )
     return pd.DataFrame(rows)
+
+
+def same_event_removed(
+    starts: list[pd.Timestamp], failures: pd.DataFrame, lag: pd.Timedelta
+) -> list[pd.Timestamp]:
+    """Register dates outside every failure's repair window (opening day to close plus the lag); the
+    register records dates without a time, so the window starts at the opening day."""
+    keep = []
+    for s in starts:
+        inside = ((failures["opened"].dt.floor("D") <= s) & (s <= failures["closed"] + lag)).any()
+        if not inside:
+            keep.append(s)
+    return sorted(keep)
+
+
+def with_record_start(starts: list[pd.Timestamp], install_year: Any, r0: pd.Timestamp) -> list[pd.Timestamp]:
+    """Adds the start of the life in progress at the record start when no register date precedes it:
+    the install (mid-year of the register's install year, which records the year only), or one year
+    before the record when the register has no install year."""
+    if any(s < r0 for s in starts):
+        return sorted(starts)
+    if install_year is not None and not (isinstance(install_year, float) and np.isnan(install_year)):
+        first = pd.Timestamp(year=int(install_year), month=7, day=1, tz="UTC")
+    else:
+        first = r0 - 365 * DAY
+    return sorted([first, *starts])
 
 
 def fit_models(lives: pd.DataFrame) -> dict[str, Any]:
