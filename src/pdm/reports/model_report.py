@@ -15,7 +15,7 @@ import pandas as pd
 from matplotlib.patches import FancyBboxPatch, Rectangle
 
 from pdm.evaluation import events as ev
-from pdm.reports import style
+from pdm.reports import appendix, style
 from pdm.reports.data import END, LABEL, METHODS, Q2, QUARTER, TZ, YEAR, Data, local, utc
 from pdm.reports.text import PageText
 
@@ -676,7 +676,10 @@ class ModelReport:
             ),
             "lubrication": ("Spindle points", "Broadband HF without fault frequencies"),
             "imbalance": ("Pump and compressor points", "1x radial"),
-            "spindle cooling": ("Controller", "Spindle thermistor residual"),
+            "spindle cooling": (
+                "Spindle points (housing temperature) and the controller thermistor",
+                "Sensor temperature; thermistor residual",
+            ),
             "rotary union": ("Controller and spindle points", "TSC pressure drop with HF"),
             "pump seal or impeller": ("Pump points", "HF and 1x; TSC pressure"),
             "other machine stoppage": ("Controller", "Axis load drift"),
@@ -722,7 +725,9 @@ class ModelReport:
             rows.append(
                 {
                     "Version": v["version"],
-                    "Status": tg.get("status", "").replace("_", " "),
+                    "Status": "registered before promotion gates"
+                    if str(v["version"]) == "1"
+                    else tg.get("status", "").replace("_", " "),
                     "Month gated": tg.get("false_episodes_month", ""),
                     "Selection": tg.get("gate_selection", ""),
                     "Parity": tg.get("gate_parity", ""),
@@ -767,61 +772,10 @@ class ModelReport:
         return style.table(pd.DataFrame(rows, columns=["Indicator", "Band", "What it measures"]))
 
     def definitions(self) -> str:
-        d = self.d
-        rows = [
-            (
-                "Caught",
-                "An alert episode or open case on the same asset (affected point, or any point for asset-level causes) at confirmation, opened within the 60 days before it",
-            ),
-            (
-                "False episode",
-                "An alert episode followed by no confirmed condition on the asset within 30 days; episodes whose window is open at the record end count as false as published and are shown as outcome pending",
-            ),
-            (
-                "Warning days",
-                "From the opening of the episode or case (a fused case's chain) to confirmation",
-            ),
-            ("Matched budget", "Each method at the vendor rules' false episodes per asset-month"),
-            ("Chance", "The catch share expected from each method's case-open time share per asset"),
-            (
-                "Healthy hours",
-                "A point's measured hours outside repairs, open work, the 30 days before a confirmed condition and the 21-day re-baseline windows",
-            ),
-            (
-                "Inspection hours per false episode",
-                f"{d.inspection_hours:.2f} h, the median labor hours of the CMMS inspection work orders",
-            ),
-            (
-                "Request outcomes",
-                "As of the record end: confirmed finding, still open at the record end, or closed with no finding recorded",
-            ),
-            (
-                "Drift reference",
-                "The validation period, or for a point re-baselined after the validation start its re-baseline window plus the first 30 scored days with no open case on the point (the window alone, marked, when a case opens within them)",
-            ),
-            (
-                "Window-only drift references",
-                "HMC-01-SP-F, HMC-01-SP-R, HMC-03-SP-F, HMC-03-SP-R, HMC-04-SP-F, HMC-04-SP-R and HMC-04-TSC keep the 21-day window: no score drift, feature drift against the narrow window",
-            ),
-            (
-                "Through-spindle coolant pressure",
-                "The panel shows the pressure while the pump runs; the advisory pressure drop reads the time-weighted series, pump-off time included",
-            ),
-        ]
-        return style.table(pd.DataFrame(rows, columns=["Term", "Definition"]))
+        return style.table(appendix.definitions(appendix.load()))
 
     def limitations(self) -> str:
-        rows = [
-            "Secondary trigger: fires in April because points whose post-repair references are still forming leave the denominator, and in June because narrow post-repair score references give large scaled distances; the retrain verdicts come from the primary trigger",
-            "Window-only drift references: six spindle points and HMC-04-TSC keep the 21-day window",
-            "The advisory pressure drop reads the time-weighted pressure, which masks the rotary-union leak drops; the drop feeds diagnosis only, so it opens no case",
-            "Monitoring reruns for earlier months use the monitoring stage only; a full rerun would recompute those months' evaluation from later cases",
-            "Cross-platform model fits: the autoencoder per-point models and the penalized Cox concordance differ across platforms at outcome level; parity is judged on outcomes",
-            "Covariate survival models are not supported by this record",
-            "Bursts are retained on vendor alerts and weekly, so cases opened by the per-point models have no burst at the first alarm",
-            "Shadow mode: no CMMS work request numbers and no inspections against advisory requests in the quarter",
-        ]
-        rows += self.t.items(S, "Exhibit: Limitations")
+        rows = appendix.limitations(appendix.load()) + self.t.items(S, "Exhibit: Limitations")
         return style.table(pd.DataFrame({"Limitation": rows}))
 
     # ---------------------------------------------------------------- page
@@ -838,7 +792,6 @@ class ModelReport:
         t.lines(S, "Tiles:")
         t.lines(S, "| Tile |")
         x("Exhibit: Shadow quarter", self.tiles())
-        self.text("Request outcomes use the record-end definition")
         self.h(2, "2. Model results", "s2")
         self.h(3, "2.1 Detection and warning", "s21", True)
         self.text("The model layer caught more conditions")

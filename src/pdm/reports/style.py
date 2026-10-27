@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import re
 from pathlib import Path
 from typing import Any
 
@@ -105,7 +106,10 @@ def fmt_num(v: Any, d: int) -> str:
         return f"{int(v):,}"
     if isinstance(v, (float, np.floating)):
         return f"{v:,.{d}f}"
-    return html.escape(str(v))
+    return html.escape(REQUEST_ID.sub(r"\1-\2", str(v)))
+
+
+REQUEST_ID = re.compile(r"\b(WR-[A-Z0-9-]+)\|(\d{10})\b")
 
 
 def table(

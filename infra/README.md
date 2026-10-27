@@ -35,6 +35,20 @@ directory listing (`cloudFiles.useNotifications` false); nothing depends on file
 The Azure resources themselves (resource group `rg-pdm`, workspace `dbw-pdm`, storage account,
 access connector and its role assignment) are created in the Azure portal; `azure_check.sh` verifies them.
 
+## Local Java for Spark tests
+
+The local Spark tests and the parity runner need `JAVA_HOME` set to an installed JDK 17. A JDK update
+installs into a new folder named for the new version (for example `jdk-17.0.20-hotspot` became
+`jdk-17.0.20.101-hotspot`) and removes the old one, so a `JAVA_HOME` that names the old folder makes local
+Spark hang at startup. After a JDK update, point `JAVA_HOME` at the new folder:
+
+```
+setx JAVA_HOME "C:\Program Files\Microsoft\jdk-<version>-hotspot"
+```
+
+On Windows, also set `PYSPARK_PYTHON` to the virtual environment's `python.exe` so Spark workers start
+the same interpreter.
+
 ## Bundle
 
 Unity Catalog objects (catalog, managed location, credential, external locations, schemas and the
