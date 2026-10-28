@@ -61,7 +61,7 @@ Spindle and pump failures on the HMC cell stop the shop's highest-margin work, a
 
 ## Code
 
-### Data pipeline: [`pipelines/`](pipelines/) and [`src/pdm/ingest/`](src/pdm/ingest/), [`src/pdm/quality/`](src/pdm/quality/)
+### Data pipeline: [`databricks/pipeline/`](databricks/pipeline/) and [`src/pdm/ingest/`](src/pdm/ingest/), [`src/pdm/quality/`](src/pdm/quality/)
 
 | Layer | What it is, does and contains |
 |---|---|
@@ -99,14 +99,14 @@ Spindle and pump failures on the HMC cell stop the shop's highest-margin work, a
 
 | File | What it does |
 |---|---|
-| [`databricks.yml`](databricks.yml), [`resources/`](resources/) | The Declarative Automation Bundle: dev and prod targets, the Lakeflow pipeline and the monthly job. |
-| [`jobs/`](jobs/), `src/pdm/entrypoints.py`, `src/pdm/tasks.py` | The job's Python wheel tasks: train, promote, score and monitor. |
+| [`databricks.yml`](databricks.yml), [`databricks/`](databricks/) | The Declarative Automation Bundle: dev and prod targets, the Lakeflow pipeline and the monthly job. |
+| [`src/pdm/entrypoints.py`](src/pdm/entrypoints.py), [`src/pdm/tasks.py`](src/pdm/tasks.py) | The job's Python wheel tasks: train, promote, score and monitor. |
 | `src/pdm/registry.py` | Champion and challenger promotion in the Unity Catalog model registry, with the four promotion gates. |
 | `src/pdm/monitoring/performance.py` | Monthly event performance per method, feature and score drift, and the retraining decision. |
 | `src/pdm/parity.py` | Runs the pipeline and every job task locally on the exports, checked against the workspace's tables. |
-| [`infra/`](infra/) | Unity Catalog setup, landing the exports, service principal grants and the data profiles, as reproducible CLI scripts. |
+| [`databricks/scripts/`](databricks/scripts/) | Unity Catalog setup, landing the exports, service principal grants and the data profiles, as reproducible CLI scripts. |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lint and tests on every change, and bundle validation when workspace credentials are configured. |
-| [`src/pdm/reports/`](src/pdm/reports/) | Builds the queue, both reports and this README from the gold snapshot in [`exports/gold_snapshot/`](exports/gold_snapshot/). |
+| [`src/pdm/reports/`](src/pdm/reports/) | Builds the queue, both reports and this README from the gold snapshot in [`data/gold_snapshot/`](data/gold_snapshot/). |
 
 ---
 

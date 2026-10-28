@@ -2,9 +2,9 @@
 gate; score the per-point models from the registered champion; prognosis, fusion, advisory, evaluation
 and monitoring.
 
-Each task reads its inputs from the Store and writes its output tables back; job entry points under
-jobs/ and the local parity runner call these functions. MLflow logging is optional (tracking off in
-tests). While the shadow quarter is held out, no task writes anything computed on it.
+Each task reads its inputs from the Store and writes its output tables back; the job's console entry
+points (pdm.entrypoints) and the local parity runner call these functions. MLflow logging is optional
+(tracking off in tests). While the shadow quarter is held out, no task writes anything computed on it.
 """
 
 from __future__ import annotations

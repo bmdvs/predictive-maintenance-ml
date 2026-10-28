@@ -1,4 +1,4 @@
-"""Read access to the gold snapshot (exports/gold_snapshot) with the Store's read interface, so the page
+"""Read access to the gold snapshot (data/gold_snapshot) with the Store's read interface, so the page
 build reuses the pipeline's own functions without a workspace or Spark.
 
 Inputs: the snapshot's Parquet files by schema and table. Output: pandas DataFrames.
@@ -12,7 +12,7 @@ import pandas as pd
 
 from pdm import paths
 
-ROOT = paths.REPO_ROOT / "exports" / "gold_snapshot"
+ROOT = paths.GOLD_SNAPSHOT_DIR
 RENAMED = {("silver", "controller_hourly"): "controller_hourly_hmc"}
 
 

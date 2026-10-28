@@ -1,11 +1,13 @@
-# infra
+# databricks
 
-Setup steps the bundle does not express, as Azure CLI and Databricks CLI commands with variables. No
+The bundle resources (`jobs.yml`, `pipeline.yml`, included by `databricks.yml` at the repository root),
+the pipeline sources (`pipeline/`) and, under `scripts/`, the setup steps the bundle does not express, as
+Azure CLI and Databricks CLI commands with variables. No
 workspace URLs, tenant or subscription identifiers, keys or tokens are stored here; they come from
 environment variables or the local CLI profiles (`~/.databrickscfg`, `~/.azure`, both outside the
 repository).
 
-| Script | Purpose | Stage |
+| Script (`scripts/`) | Purpose | Stage |
 |---|---|---|
 | `azure_check.sh` | Read-only check of the Azure resources: storage account (hierarchical namespace, LRS, region), containers `landing` and `managed`, access connector `ac-pdm` with Storage Blob Data Contributor on the account, workspace tier and region | Environment setup |
 | `unity_catalog.sh` | Storage credential `cred_pdm`; external locations `loc_pdm_landing` (container `landing`) and `loc_pdm_managed` (container `managed`), both created with validation skipped; catalog `pdm` with its managed location on `loc_pdm_managed`; schemas `landing`, `bronze`, `silver`, `gold`, `ml`, `monitoring` with no schema-level locations; external volume `pdm.landing.exports`. `--check` verifies read-only. `--dev` creates the development catalog `pdm_dev` (managed location on a `pdm_dev` folder of the managed container, the same schemas, managed volume `landing.autoloader` for Auto Loader schema tracking); `--dev-check` verifies it read-only | Environment setup |

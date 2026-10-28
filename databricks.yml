@@ -5,12 +5,12 @@ bundle:
 # DATABRICKS_HOST, so no workspace identifier is committed.
 
 include:
-  - resources/*.yml
+  - databricks/*.yml
 
 artifacts:
   pdm_wheel:
     type: whl
-    build: python infra/build_wheel.py
+    build: python databricks/scripts/build_wheel.py
     path: .
     files:
       - source: dist/bundle/*.whl

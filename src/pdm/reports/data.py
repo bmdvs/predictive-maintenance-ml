@@ -1,6 +1,6 @@
 """Shared inputs for the pages, read once from the gold snapshot through the pipeline's own functions.
 
-Inputs: exports/gold_snapshot (SnapshotStore) and config.yaml. Outputs: the Data object with the tables,
+Inputs: data/gold_snapshot (SnapshotStore) and config.yaml. Outputs: the Data object with the tables,
 conditions, alert episodes and derived frames the three pages and the README use.
 """
 
