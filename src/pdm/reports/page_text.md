@@ -52,24 +52,34 @@ The text of the pages, assembled with their exhibits by pdm.reports.build.
 
 ### 1. Summary
 
-Over the April to June 2026 shadow quarter, the model layer warned before 3 of the 4 conditions confirmed on the 14 instrumented assets, against 2 of 4 for the vendor's alert rules. Its false-alert rate was similar: 0.22 false episodes per asset-month against 0.19. Over the evaluation year, July 2025 to June 2026, it caught 6 of 12 conditions against 4 of 12, with fewer false episodes (0.19 against 0.21) and a longer median warning (34.8 against 31.8 days). In the quarter alone, its median warning was shorter (18.9 against 25.5 days).
+The shop monitors machine condition from two sources:
+- **Controller data** from all 20 machines: spindle and axis loads, the spindle thermistor and, on the HMCs, through-spindle coolant pressure.
+- **Wireless sensor data:** hourly vibration and temperature measurements from 20 sensor points on 14 assets (the four HMCs' spindles and coolant pumps, and the two compressors).
 
-The model layer's additional catches were a coolant pump seal and impeller failure and an HMC spindle cooling fault. The vendor rules caught neither type in the year. On machine components without sensors, controller data caught 1 of 6 conditions: a VMC spindle bearing, 9.3 days before an 80-hour stoppage.
+Through June 2026, the shop maintained its equipment on interval-based PM and two condition-monitoring layers:
+- **Controller health** compares each machine's controller data with its expected behavior. Spindle and axis loads are compared by part program with the program's first-month baseline. The spindle thermistor and compressor discharge temperatures are compared with expected values for speed, season, room temperature and load. It is the only layer covering the machine components without sensors.
+- **Vendor rules** are the sensor vendor's threshold alerts on the wireless sensor data: vibration velocity, high-frequency acceleration and bearing fault bands. Each point's baseline is set after installation and after each repair. An alert is raised when a measure exceeds the baseline by 25 percent of the ISO 20816 zone B width for two consecutive hours (50 percent for an alarm), or when a bearing fault band rises 6 dB above baseline for three hours.
 
-The difference between the two methods rests on two conditions, so it is consistent with the model layer's advantage but too small to establish it. Work requests named the confirmed cause for 3 of 7 conditions.
+This project adds two layers:
+- **The vibration model** is a machine learning model for each sensor point, trained on the point's healthy hours, that flags hours whose vibration spectrum departs from that history.
+- **The fusion layer** combines the vibration model's signals with those of the two existing layers into one status per asset, opens a case at ALARM, and raises a work request with the suspected condition.
+
+The fusion layer is the shop's new operating output. It runs hourly on every monitored asset, and its cases and work requests are what maintenance acts on. **This report evaluates the vibration model against the vendor rules, and the fusion layer as the result the shop would operate on.**
+
+Over the evaluation year, July 2025 to June 2026, **18 conditions were confirmed:**
+- **Six were on machine components without sensors,** where only controller health applies: four machine stoppages, a spindle crash and a spindle bearing failure. Together they caused 369 hours of downtime. Controller health caught one, the VMC-06 spindle bearing, 9.3 days before its 80-hour stoppage. The other five showed no precursor in the controller data.
+- **Twelve were on the instrumented assets,** ten on the HMC cell and two on the compressors. Together they caused 92 hours of downtime.
+
+Of the 12 conditions on instrumented assets, the vibration model caught 7 and the vendor rules 4, at similar false-alert rates (0.22 and 0.19 false episodes per asset-month, counting only episodes whose outcome was known at the record end). The vibration model caught every condition the vendor rules caught, plus three they missed: the HMC-01 flood pump bearing failure, the HMC-01 flood pump seal and impeller failure, and the HMC-04 spindle cooling fault. On the four conditions both caught, the vendor rules warned earlier: a median of 31.8 days against 26.8. In the April to June 2026 shadow quarter, held out until the models were final, the vibration model caught 3 of 4 conditions against 2 of 4.
+
+The fusion layer caught 6 of the 12 at 0.17 false episodes per asset-month. It merges the vibration model's repeated and paired alerts into one case per asset, and it holds vendor alerts that no other layer confirms at WATCH. This keeps its false-alert rate level with the vendor rules while retaining all but one of the vibration model's additional catches. The exception was the HMC-01 flood pump bearing.
+
+The differences rest on a few conditions, so they are consistent with the vibration model's advantage but too few to establish it. Work requests named the confirmed cause for 3 of 7 conditions, and 19 of the 40 requests named no condition.
 
 Through-spindle coolant pressure, measured while the pump runs, fell 5 to 10 percent ahead of each of the three rotary-union leaks in the record. The advisory reads a pressure series that hides those drops. Moving it to the pump-on series is the highest-value change identified (section 2.1).
 
-**Exhibit: Shadow quarter, model layer beside vendor alert rules**
-
-Tiles:
-
-| Tile | Model layer | Vendor rules |
-|---|---|---|
-| Conditions caught | 3 of 4 | 2 of 4 |
-| Median warning | 18.9 days | 25.5 days |
-| False episodes per asset-month | 0.22, or 0.14 with outcome known | 0.19, or 0.10 with outcome known |
-| Work requests | 11 raised, 2 confirmed, 4 open at the record end | |
+**Exhibit: Vendor rules, vibration model and fusion layer, July 2025 to June 2026**
+Panel 2 note: "Median over the four conditions caught by all three methods."
 
 ### 2. Model results
 

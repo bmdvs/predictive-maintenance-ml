@@ -59,33 +59,66 @@ class ModelReport:
         return style.save(f, f"model_{name}", name, up=1)
 
     # ---------------------------------------------------------------- exhibits
-    def tiles(self) -> str:
+    def summary_panels(self, note: str) -> str:
+        """Year results for the vendor rules, the vibration model and the fusion layer: conditions caught,
+        median warning on the conditions all three caught, and false episodes per asset-month with outcome known."""
         d = self.d
-        hs = d.g("evaluation_headline_shadow")
-        q = hs[hs["period"] == QUARTER]
-        pend = d.pending.set_index(["method", "period"])
-        out = ""
-        for m, lab in (("model_layer_instrumented", "Model layer"), ("rule_floor", "Vendor rules")):
-            r = _op(d, q[q["method"] == m]).iloc[0]
-            p = pend.loc[(m, "quarter")]
-            items = [
-                ("Conditions caught", f"{int(r.caught)} of {int(r.conditions)}"),
-                ("Median warning", f"{r.warning_days_median:.1f} days"),
-                (
-                    "False episodes per asset-month",
-                    f"{r.false_per_asset_month:.2f}, or {p.false_closed_rate:.2f} with outcome known",
-                ),
-            ]
-            out += f"<div class='kpi-head'>{lab}</div>" + style.tiles(items)
-        o = d.outcomes["outcome_end"].value_counts()
-        out += "<div class='kpi-head'>Work requests</div>" + style.tiles(
-            [
-                ("Raised", str(len(d.outcomes))),
-                ("Confirmed", str(int(o.get("Confirmed finding", 0)))),
-                ("Open at the record end", str(int(o.get("Still open at the record end", 0)))),
-            ]
+        methods = (
+            ("rule_floor", "Vendor rules"),
+            ("nbm", "Vibration model"),
+            ("model_layer_instrumented", "Fusion layer"),
         )
-        return out
+        e = d.events("evaluation_events_shadow", YEAR)
+        e = e[e["method"].isin([m for m, _ in methods])]
+        e["caught"] = e["caught"].astype(bool)
+        shared = set.intersection(*(set(e[(e["method"] == m) & e["caught"]]["wo_id"]) for m, _ in methods))
+        pend = d.pending.set_index(["method", "period"])
+        labels = [lab for _, lab in methods]
+        cols = [COL[m] for m, _ in methods]
+        caught = [int(e[(e["method"] == m)]["caught"].sum()) for m, _ in methods]
+        total = [int((e["method"] == m).sum()) for m, _ in methods]
+        warn = [
+            float(e[(e["method"] == m) & e["wo_id"].isin(shared)]["warning_days"].median())
+            for m, _ in methods
+        ]
+        false = [float(pend.loc[(m, "year"), "false_closed_rate"]) for m, _ in methods]
+        f, axs = style.fig(h=3.4, w=8.6, ncols=3)
+        x = np.arange(len(methods))
+        ax = axs[0]
+        ax.bar(x, caught, color=cols, width=0.6)
+        ax.bar(x, np.subtract(total, caught), bottom=caught, color="#E6E6E6", width=0.6)
+        for i, (c, n) in enumerate(zip(caught, total, strict=True)):
+            ax.text(i, c / 2, str(c), ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+            ax.text(
+                i, c + (n - c) / 2, str(n - c), ha="center", va="center", color=style.DARK_GREY, fontsize=8
+            )
+        ax.set_title(f"Conditions caught, of {total[0]}", fontsize=9)
+        ax.legend(
+            handles=[Rectangle((0, 0), 1, 1, color=c) for c in (style.DARK_GREY, "#E6E6E6")],
+            labels=["Caught", "Missed"],
+            frameon=False,
+            fontsize=7,
+            loc="upper left",
+            bbox_to_anchor=(0, -0.22),
+            ncol=2,
+        )
+        for ax, vals, title, fmt in (
+            (axs[1], warn, "Median warning, days", "{:.1f}"),
+            (axs[2], false, "False episodes per asset-month,\noutcome known", "{:.2f}"),
+        ):
+            ax.bar(x, vals, color=cols, width=0.6)
+            for i, v in enumerate(vals):
+                ax.text(i, v, fmt.format(v), ha="center", va="bottom", fontsize=9)
+            ax.set_title(title, fontsize=9)
+            ax.set_ylim(0, max(vals) * 1.18)
+        axs[1].text(
+            0.5, -0.24, note, transform=axs[1].transAxes, ha="center", va="top", fontsize=7, wrap=True
+        )
+        for ax in axs:
+            ax.set_xticks(x)
+            ax.set_xticklabels([lab.replace(" ", "\n") for lab in labels], fontsize=8)
+        f.tight_layout()
+        return self.img(f, "summary_year")
 
     def timeline(self) -> str:
         d = self.d
@@ -783,15 +816,19 @@ class ModelReport:
         d, t, x = self.d, self.t, self.exhibit
         self.h(2, "1. Summary", "s1")
         for s in (
-            "Over the April to June 2026 shadow quarter",
-            "The model layer's additional catches",
-            "The difference between the two methods",
+            "The shop monitors machine condition",
+            "Through June 2026, the shop maintained",
+            "This project adds two layers",
+            "The fusion layer is the shop's new operating output",
+            "Over the evaluation year, July 2025 to June 2026",
+            "Of the 12 conditions on instrumented assets",
+            "The fusion layer caught 6 of the 12",
+            "The differences rest on a few conditions",
             "Through-spindle coolant pressure, measured",
         ):
             self.text(s)
-        t.lines(S, "Tiles:")
-        t.lines(S, "| Tile |")
-        x("Exhibit: Shadow quarter", self.tiles())
+        note = re.search(r'"(.+?)"', t.lines(S, "Exhibit: Vendor rules")[1]).group(1)
+        x("Exhibit: Vendor rules, vibration model and fusion layer", self.summary_panels(note))
         self.h(2, "2. Model results", "s2")
         self.h(3, "2.1 Detection and warning", "s21", True)
         self.text("The model layer caught more conditions")
