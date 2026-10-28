@@ -260,15 +260,11 @@ The autoencoder was selected by the rule set before validation. Thresholds come 
 
 **Exhibit: Candidate models on the training period**
 
-**Exhibit: MLflow run comparison** (screenshot)
-
 **E. Model governance**
 - **The cycle.** Each monthly cycle trains a challenger and registers it. It becomes the champion only if it passes four gates: the selection rule's pick, the registered model reproducing training's scores (to 1e-9 relative), every fitted segment present, and false episodes on the latest month within twice the validation rate.
 - **The record.** Versions 5, 6 and 7 were promoted in April, May and June. May's false-episode rate, 0.47, came closest to the 0.51 budget.
 
 **Exhibit: Registered model versions and gate results**
-
-**Exhibit: Registered model page** (screenshot)
 
 **F. Supervised layer**
 
@@ -289,12 +285,6 @@ The system runs on Azure Databricks with Unity Catalog:
 It is deployed from a Declarative Automation Bundle with development and production targets. Through the shadow quarter, GitHub Actions validated every pull request and deployed production as a service principal; it now lints and tests every change. Every cloud result was checked against a local run of the same code.
 
 **Exhibit: Architecture**
-
-**Exhibit: Pipeline graph** (screenshot)
-
-**Exhibit: Lineage of the cases table** (screenshot)
-
-**Exhibit: Job run history** (screenshot)
 
 **I. Limitations**
 
@@ -350,8 +340,6 @@ Data-quality exceptions rose from 9 to 15 point-months over the quarter, 35 in a
 **Exhibit: Feature drift by point and month**
 
 **Exhibit: Data quality by point and month**
-
-**Exhibit: Data profiling dashboard** (screenshot)
 
 #### 2.3 Model updates and baseline resets
 
@@ -432,7 +420,7 @@ Spindle and pump failures on the HMC cell stop the shop's highest-margin work. V
 - **Deployment:** `databricks bundle deploy -t prod` from a Declarative Automation Bundle with dev and prod targets, deployed through the shadow quarter by GitHub Actions as a service principal. GitHub Actions lints and tests every change.
 - **Cost:** about $6 in Azure infrastructure through October 27, 2026, with Databricks usage covered by the trial allowance.
 
-(Architecture diagram; pipeline graph and job history screenshots.)
+(Architecture diagram.)
 
 **How to run**
 

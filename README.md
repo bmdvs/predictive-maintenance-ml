@@ -58,9 +58,6 @@ Spindle and pump failures on the HMC cell stop the shop's highest-margin work. V
 
 ![architecture](docs/figures/model_architecture.png)
 
-![pipeline graph](docs/platform/pipeline_graph.png)
-![job run history](docs/platform/job_run_history.png)
-
 ## How to run
 
 - locally: the parity runner and the page build;

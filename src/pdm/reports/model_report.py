@@ -960,16 +960,8 @@ class ModelReport:
                 cand, {"Caught in training, %": 0, "Chance, %": 0, "False episodes per asset-month": 3}
             ),
         )
-        x(
-            "Exhibit: MLflow run comparison",
-            style.screenshot("platform/mlflow_run_comparison.png", "", up=1).split("</div>", 1)[1],
-        )
         self.ap("E. Model governance", "aE")
         x("Exhibit: Registered model versions and gate results", self.versions())
-        x(
-            "Exhibit: Registered model page",
-            style.screenshot("platform/registered_model.png", "", up=1).split("</div>", 1)[1],
-        )
         self.ap("F. Supervised layer", "aF")
         self.text("The training period holds 6 failures")
         self.ap("G. Validation results, July 2025 to March 2026", "aG")
@@ -1020,12 +1012,6 @@ class ModelReport:
                 h=3.2,
             ),
         )
-        for start, f in (
-            ("Exhibit: Pipeline graph", "platform/pipeline_graph.png"),
-            ("Exhibit: Lineage of the cases table", "platform/lineage_cases.png"),
-            ("Exhibit: Job run history", "platform/job_run_history.png"),
-        ):
-            x(start, style.screenshot(f, "", up=1).split("</div>", 1)[1])
         self.ap("I. Limitations", "aI")
         x("Exhibit: Limitations", self.limitations())
         body = "".join(self.parts)

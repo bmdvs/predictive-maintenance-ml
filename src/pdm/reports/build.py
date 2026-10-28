@@ -48,9 +48,6 @@ def readme(t: PageText) -> str:
         if first.startswith("(Architecture"):
             t.lines("D", "(Architecture")
             out.append("![architecture](docs/figures/model_architecture.png)\n")
-            out.append(
-                "![pipeline graph](docs/platform/pipeline_graph.png)\n![job run history](docs/platform/job_run_history.png)\n"
-            )
             continue
         if first.startswith("As 13.6"):
             t.lines("D", "As 13.6")
