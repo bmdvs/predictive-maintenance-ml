@@ -1,0 +1,53 @@
+[project]
+name = "pdm"
+version = "0.1.16"
+description = "Condition monitoring and predictive maintenance for a CNC machining fleet"
+requires-python = ">=3.12,<3.13"
+authors = [{ name = "Brian Davis" }]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pandas>=2.1",
+    "pyarrow>=15",
+    "pyyaml>=6.0",
+    "matplotlib>=3.8",
+    "scikit-learn>=1.4",
+    "lifelines>=0.28",
+    "mlflow>=2.12",
+    "scikit-survival>=0.23",
+]
+
+[project.scripts]
+pdm-train-models = "pdm.entrypoints:train_models"
+pdm-promote = "pdm.entrypoints:promote"
+pdm-score = "pdm.entrypoints:score"
+pdm-monitor = "pdm.entrypoints:monitor"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+spark = ["pyspark>=3.5,<3.6", "delta-spark>=3.2,<3.3", "setuptools>=68"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pdm*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "generate", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"generate/checks/realism.py" = ["E501"]
+"generate/checks/realism_full.py" = ["E501"]
+"src/pdm/reports/*.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
