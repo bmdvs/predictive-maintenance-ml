@@ -117,6 +117,9 @@ service principal, so every identity in the Databricks account has owner rights 
 account with other users, a metastore admin should instead give the model to the service principal or to a
 dedicated deploy group.
 
-Prod deploys run from GitHub Actions (`.github/workflows/ci.yml`): bundle validate on pull requests and
-pushes to main, deploy on pushes to main, with the repository secrets `DATABRICKS_HOST`,
-`DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (the service principal's OAuth secret).
+GitHub Actions (`.github/workflows/ci.yml`) runs lint and tests on every push and pull request, and
+validates the bundle against the prod target on pull requests and pushes to main, with the repository
+secrets `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (the service principal's
+OAuth secret). Through the shadow quarter it also deployed prod on every push to main; that job was removed
+on 2026-10-28, before the service principal's secret expired, and prod is deployed with
+`databricks bundle deploy -t prod`. Validation needs a current secret.
