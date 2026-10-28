@@ -38,6 +38,7 @@ TREND_UNITS = [
     ("vel", "vel_rms_mm_s", "Velocity, mm/s", False),
 ]
 BASELINE_DAYS = 60
+WHOLE_BAND = "Whole envelope band"
 FAULTS = [("BPFO", "bpfo", ":"), ("BPFI", "bpfi", "--"), ("BSF", "bsf", "-."), ("FTF", "ftf", (0, (1, 3)))]
 DEFAULT = "CMP-01"
 
@@ -111,6 +112,7 @@ class Queue:
             regime=ind["regime"].to_numpy(),
         )
         self.stats = stats
+        self.no_baseline: list[str] = []
         ref = d.st.read_pd("silver", "hourly_indicators_trend_reference")
         ref["hour_utc"] = utc(ref["hour_utc"])
         ref = ref[~ref["implausible"].fillna(False).astype(bool)]
@@ -302,7 +304,8 @@ class Queue:
                 )
                 bandwidth = float(r.band_hi_hz - r.band_lo_hz)
                 ff = kinematics.fault_frequencies_hz(orders, r.speed_rpm / 60.0)
-                energy[r.role] = {
+                whole = (ef > 0) & (ef <= bandwidth)
+                energy[r.role] = {WHOLE_BAND: float((ea[whole] ** 2).sum() / 2.0)} | {
                     f"{name} {h}x": (
                         envelope.band_values(ef, ea, ff[k] * h, hw)[0]
                         if ff[k] * h * (1 + hw) <= bandwidth
@@ -315,7 +318,20 @@ class Queue:
                 env_ax.plot(ef, ea, color=colors[r.role], lw=0.8, label=lab)
                 if r.role == "latest before the cut":
                     ff_latest = ff
-            self._fault_bars(bar_ax, p, energy)
+            if "baseline reference" in energy:
+                self._fault_bars(bar_ax, p, energy)
+            else:
+                bar_ax.axis("off")
+                bar_ax.text(
+                    0.0,
+                    0.5,
+                    f"{p}: {fixed_lines(self.t)['No comparable baseline burst']}",
+                    transform=bar_ax.transAxes,
+                    fontsize=10,
+                    color=style.DARK_GREY,
+                    va="center",
+                )
+                self.no_baseline.append(p)
             xmax = min(1.05 * 3 * max(ff_latest[k] for _, k, _ in FAULTS), bandwidth)
             marks = sorted(
                 (ff_latest[k] * h, f"{name} {h}x", ls)
@@ -364,7 +380,13 @@ class Queue:
             for k in names
         ]
         xs = np.arange(len(names))
-        colors = {"BPFO": style.BRAND_BLUE, "BPFI": style.AMBER, "BSF": style.GREEN, "FTF": style.GREY}
+        colors = {
+            "BPFO": style.BRAND_BLUE,
+            "BPFI": style.AMBER,
+            "BSF": style.GREEN,
+            "FTF": style.GREY,
+            WHOLE_BAND.split()[0]: style.DARK_GREY,
+        }
         ax.bar(xs, np.nan_to_num(ratio, nan=0.0), color=[colors[k.split()[0]] for k in names], width=0.7)
         ax.axhline(1.0, color="#000000", lw=0.9, ls="--")
         finite = [v for v in ratio if np.isfinite(v)]
@@ -380,7 +402,7 @@ class Queue:
                 color=style.DARK_GREY,
             )
         ax.set_ylim(0, ymax)
-        ax.set_xticks(xs, names, fontsize=7.5)
+        ax.set_xticks(xs, [k.replace("envelope ", "envelope\n") for k in names], fontsize=7.5)
         ax.set_ylabel("Latest / baseline", fontsize=8)
         ax.set_title(
             f"{point}, envelope energy at fault frequencies, latest burst against baseline",
@@ -598,6 +620,8 @@ if (new URLSearchParams(location.search).get('capture') === 'detail') document.b
 if (h.startsWith('panel-')) show(h.slice(6), true); else show(DEFAULT, false);
 </script>
 </body></html>"""
+        if not self.no_baseline:
+            t.not_shown.add(fixed_lines(t)["No comparable baseline burst"])
         style.write("index.html", body)
         return "docs/index.html"
 

@@ -40,6 +40,7 @@ The text of the pages, assembled with their exhibits by pdm.reports.build.
 - **Coolant pressure:** "Through-spindle coolant pressure while the pump runs. Rating 69 bar."
 - **Asset with no open case:** "No open case."
 - **HMC-03-SP:** "Status OK; case open until a repair work order or 7 quiet days close it."
+- **No comparable baseline burst:** "No baseline burst at a comparable speed."
 
 ---
 
@@ -390,9 +391,9 @@ Evaluated in shadow mode over April to June 2026:
 - over July 2025 to June 2026, it caught 6 of 12 against 4 of 12, at a lower false-alert rate.
 
 Included:
-- the maintenance queue;
-- a model report;
-- a monitoring report;
+- the [maintenance queue](https://bmdvs.github.io/predictive-maintenance-ml/);
+- a [model report](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html);
+- a [monitoring report](https://bmdvs.github.io/predictive-maintenance-ml/reports/monitoring_report.html);
 - the full pipeline, model and deployment code.
 
 (Screenshots: `queue.png`, `queue_detail.png`.)
