@@ -109,7 +109,7 @@ def fmt_num(v: Any, d: int) -> str:
     return html.escape(REQUEST_ID.sub(r"\1-\2", str(v)))
 
 
-REQUEST_ID = re.compile(r"\b(WR-[A-Z0-9-]+)\|(\d{10})\b")
+REQUEST_ID = re.compile(r"\b((?:WR-)?[A-Z]{2,3}-\d{2}(?:-[A-Z]+)*)\|(\d{10})\b")
 
 
 def table(

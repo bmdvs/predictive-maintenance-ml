@@ -272,73 +272,121 @@ class Queue:
         f.autofmt_xdate()
         return style.save(f, f"queue_ctrl_{a['asset']}", f"{a['asset']} controller")
 
-    def spectra(self, asset: str, case: pd.Series) -> tuple[str | None, list[tuple[str, float]]]:
+    def spectra(self, asset: str, case: pd.Series) -> str | None:
         b = self.bursts[self.bursts["case_id"] == case["case_id"]]
         if b.empty:
-            return None, []
+            return None
         pts = sorted(b["point_id"].unique())
         brg = self.d.st.read_pd("bronze", "reg_bearings").set_index("part")
         sens = self.d.sensors.set_index("point_id")
-        f, axes = style.fig(h=2.7 * 2 * len(pts) + 0.5, w=12.5, nrows=2 * len(pts), squeeze=False)
+        hw = float(self.d.cfg["indicators"]["envelope"]["band_half_width_frac"])
+        f, axes = style.fig(h=3.0 * 2 * len(pts) + 0.5, w=12.5, nrows=2 * len(pts), squeeze=False)
         colors = {"baseline reference": style.GREY, "latest before the cut": style.RED}
-        offsets = []
         for j, p in enumerate(pts):
-            raw_ax, env_ax = axes[2 * j, 0], axes[2 * j + 1, 0]
+            bar_ax, env_ax = axes[2 * j, 0], axes[2 * j + 1, 0]
             geo = brg.loc[sens.loc[p, "bearing"]]
             orders = kinematics.fault_orders(
                 int(geo["n"]), float(geo["d_mm"]), float(geo["pitch_mm"]), float(geo["contact_deg"])
             )
             axis = 1 if str(sens.loc[p, "radial_axis"]) == "y" else 0
-            g = b[b["point_id"] == p]
-            for r in g[g["role"] == "first after first alarm"].itertuples():
-                offsets.append((p, float(r.offset_from_first_alarm_days)))
-            last_speed, lo_amp = None, []
-            for r in g[g["role"].isin(list(colors))].itertuples():
+            g = b[(b["point_id"] == p) & b["role"].isin(list(colors))]
+            energy: dict[str, dict[str, float]] = {}
+            ff_latest, bandwidth = None, None
+            for r in g.itertuples():
                 z = np.load(self.d.st.file(r.file))
                 x = filters.remove_dc(np.asarray(z["accel_g"], dtype=float))
                 spec, freqs = filters.rfft_with_freqs(x, float(z["fs_hz"]))
                 n = x.shape[-1]
-                amp = 2 * np.abs(spec[axis]) / n
                 ef, ea = envelope.envelope_spectrum(
                     spec[axis], freqs, n, float(z["fs_hz"]), r.band_lo_hz, r.band_hi_hz
                 )
+                bandwidth = float(r.band_hi_hz - r.band_lo_hz)
+                ff = kinematics.fault_frequencies_hz(orders, r.speed_rpm / 60.0)
+                energy[r.role] = {
+                    f"{name} {h}x": (
+                        envelope.band_values(ef, ea, ff[k] * h, hw)[0]
+                        if ff[k] * h * (1 + hw) <= bandwidth
+                        else np.nan
+                    )
+                    for name, k, _ in FAULTS
+                    for h in (1, 2, 3)
+                }
                 lab = f"{r.role[:1].upper()}{r.role[1:]}, {local(r.hour_utc, '%Y-%m-%d %H:%M')}"
-                band = (freqs >= 10) & (freqs <= 1000)
-                raw_ax.semilogy(freqs[band], amp[band], color=colors[r.role], lw=0.6, label=lab)
-                lo_amp.append(amp[band])
                 env_ax.plot(ef, ea, color=colors[r.role], lw=0.8, label=lab)
                 if r.role == "latest before the cut":
-                    last_speed = r.speed_rpm
-            ff = kinematics.fault_frequencies_hz(orders, last_speed / 60.0)
-            xmax = 1.05 * 3 * max(ff[k] for _, k, _ in FAULTS)
-            for name, k, ls in FAULTS:
-                for h in (1, 2, 3):
-                    fx = ff[k] * h
-                    env_ax.axvline(fx, color=style.BRAND_BLUE, ls=ls, lw=0.7, alpha=0.75)
-                    env_ax.text(
-                        fx,
-                        1.01,
-                        f"{name} {h}x",
-                        transform=env_ax.get_xaxis_transform(),
-                        rotation=90,
-                        fontsize=6.5,
-                        color=style.BRAND_BLUE,
-                        ha="center",
-                        va="bottom",
-                    )
-            raw_ax.set_xscale("log")
-            raw_ax.set_xlim(10, 1000)
-            a = np.concatenate(lo_amp)
-            raw_ax.set_ylim(max(float(a[a > 0].min()) * 0.5, 1e-8), float(a.max()) * 2)
-            raw_ax.set_title(f"{p}, spectrum", fontsize=9, loc="left")
-            raw_ax.set_ylabel("g", fontsize=8)
-            raw_ax.set_xlabel("Hz", fontsize=8)
-            raw_ax.legend(frameon=False, fontsize=7.5, loc="upper right")
+                    ff_latest = ff
+            self._fault_bars(bar_ax, p, energy)
+            xmax = min(1.05 * 3 * max(ff_latest[k] for _, k, _ in FAULTS), bandwidth)
+            marks = sorted(
+                (ff_latest[k] * h, f"{name} {h}x", ls)
+                for name, k, ls in FAULTS
+                for h in (1, 2, 3)
+                if ff_latest[k] * h <= xmax
+            )
+            levels: list[float] = []
+            gap = 0.02 * xmax
+            top = 0
+            for fx, label, ls in marks:
+                env_ax.axvline(fx, color=style.BRAND_BLUE, ls=ls, lw=0.7, alpha=0.75)
+                level = 0
+                while level < len(levels) and fx - levels[level] < gap:
+                    level += 1
+                if level == len(levels):
+                    levels.append(fx)
+                else:
+                    levels[level] = fx
+                top = max(top, level)
+                env_ax.text(
+                    fx,
+                    1.01 + 0.27 * level,
+                    label,
+                    transform=env_ax.get_xaxis_transform(),
+                    rotation=90,
+                    fontsize=6.5,
+                    color=style.BRAND_BLUE,
+                    ha="center",
+                    va="bottom",
+                )
             env_ax.set_xlim(0, xmax)
-            env_ax.set_title(f"{p}, envelope spectrum", fontsize=9, loc="left", pad=34)
+            env_ax.set_title(f"{p}, envelope spectrum", fontsize=9, loc="left", pad=34 + 44 * top)
             env_ax.set_xlabel("Hz", fontsize=8)
+            env_ax.set_ylabel("g", fontsize=8)
+            env_ax.legend(frameon=False, fontsize=7.5, loc="upper right")
         f.tight_layout(h_pad=1.6)
-        return style.save(f, f"queue_spectra_{asset}", f"{asset} spectral evidence"), offsets
+        return style.save(f, f"queue_spectra_{asset}", f"{asset} spectral evidence")
+
+    @staticmethod
+    def _fault_bars(ax, point: str, energy: dict[str, dict[str, float]]) -> None:
+        base, last = energy.get("baseline reference", {}), energy.get("latest before the cut", {})
+        names = list(last)
+        ratio = [
+            last[k] / base[k] if base.get(k) and np.isfinite(base[k]) and np.isfinite(last[k]) else np.nan
+            for k in names
+        ]
+        xs = np.arange(len(names))
+        colors = {"BPFO": style.BRAND_BLUE, "BPFI": style.AMBER, "BSF": style.GREEN, "FTF": style.GREY}
+        ax.bar(xs, np.nan_to_num(ratio, nan=0.0), color=[colors[k.split()[0]] for k in names], width=0.7)
+        ax.axhline(1.0, color="#000000", lw=0.9, ls="--")
+        finite = [v for v in ratio if np.isfinite(v)]
+        ymax = max(finite + [1.0]) * 1.18
+        for x, v in zip(xs, ratio, strict=True):
+            ax.text(
+                x,
+                (v if np.isfinite(v) else 0.0) + ymax * 0.015,
+                f"{v:.1f}" if np.isfinite(v) else "outside band",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color=style.DARK_GREY,
+            )
+        ax.set_ylim(0, ymax)
+        ax.set_xticks(xs, names, fontsize=7.5)
+        ax.set_ylabel("Latest / baseline", fontsize=8)
+        ax.set_title(
+            f"{point}, envelope energy at fault frequencies, latest burst against baseline",
+            fontsize=9,
+            loc="left",
+        )
 
     # ---------------------------------------------------------------- panel parts
     def why(self, asset: str, points: list[str], case: pd.Series, w: pd.Series | None) -> str:
@@ -482,16 +530,9 @@ class Queue:
         if points:
             parts.append(f"<h4>{html.escape(labels[2])}</h4>" + self.trend(asset, points, case))
             if case is not None:
-                img, offsets = self.spectra(asset, case)
+                img = self.spectra(asset, case)
                 if img:
-                    parts.append(f"<h4>{html.escape(labels[3])}</h4>")
-                    line = fixed["Spectral evidence, where no burst exists at the first alarm"]
-                    for p, off in offsets:
-                        if abs(off) > 1 / 24:
-                            parts.append(
-                                f"<p class='fixed'>{html.escape(p)}: {html.escape(line.replace('{offset}', f'{off:.1f}'))}</p>"
-                            )
-                    parts.append(img)
+                    parts.append(f"<h4>{html.escape(labels[3])}</h4>{img}")
         img = self.controller(a) if (a["kind"] != "vibration" or asset.startswith("HMC-")) else None
         if img:
             title = labels[2] if a["kind"] == "controller" else labels[4]
