@@ -99,7 +99,7 @@ def headline_counts(chk: dict[str, Any], counts: dict[str, int]) -> pd.DataFrame
     insp = wo[wo["type"] == "inspection"]
     insp_done = insp[insp["findings"].fillna("") != "superseded"] if "findings" in insp else insp
     rows = [
-        ("bearing onsets (all simulated components)", int((ev["event"] == "bearing_onset").sum())),
+        ("bearing onsets (all components)", int((ev["event"] == "bearing_onset").sum())),
         ("unplanned failures", int((ev["event"] == "unplanned_failure").sum())),
         ("planned condition-based repairs", int((ev["event"] == "planned_repair").sum())),
         ("lubrication episodes", int((ev["event"] == "lube_episode_start").sum())),
