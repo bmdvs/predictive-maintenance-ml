@@ -53,7 +53,7 @@ Spindle and pump failures on the HMC cell stop the shop's highest-margin work. V
 - **Job:** a monthly Lakeflow Job: pipeline update, train, promote, score, monitor.
 - **Models:** MLflow experiments and the Unity Catalog model registry, with a `champion` alias.
 - **Monitoring:** Databricks data profiling.
-- **Deployment:** `databricks bundle deploy -t prod` from a Declarative Automation Bundle with dev and prod targets. GitHub Actions lints, tests and validates every pull request and deploys production as a service principal.
+- **Deployment:** `databricks bundle deploy -t prod` from a Declarative Automation Bundle with dev and prod targets, deployed through the shadow quarter by GitHub Actions as a service principal. GitHub Actions lints and tests every change.
 - **Cost:** about $6 in Azure infrastructure through October 27, 2026, with Databricks usage covered by the trial allowance.
 
 ![architecture](docs/figures/model_architecture.png)

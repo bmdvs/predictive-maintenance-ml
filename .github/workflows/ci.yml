@@ -1,9 +1,11 @@
 name: ci
 
 # Lint and tests on every push and pull request. The bundle is validated against the prod target on
-# pull requests from this repository and on pushes to main; there is no deploy job (deploy with
-# `databricks bundle deploy -t prod`). Authentication is the deploy service principal's OAuth secret
-# (machine to machine) from the repository secrets; nothing secret or workspace-specific is in the repository.
+# pull requests from this repository and on pushes to main only when the repository secrets
+# DATABRICKS_HOST, DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET (the deploy service principal's
+# OAuth secret) are set; without them the job is skipped. The deploy job ran through the shadow quarter
+# and was removed; restoring validation or a deploy job needs the three secrets restored. Nothing secret
+# or workspace-specific is in the repository.
 
 on:
   push:
@@ -35,11 +37,23 @@ jobs:
           MLFLOW_DISABLE_AGENT_HINT: "1"
         run: pytest -q
 
+  secrets-check:
+    runs-on: ubuntu-latest
+    outputs:
+      has_host: ${{ steps.check.outputs.has_host }}
+    steps:
+      - id: check
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        run: |
+          if [ -n "$DATABRICKS_HOST" ]; then echo "has_host=true" >> "$GITHUB_OUTPUT"; else echo "has_host=false" >> "$GITHUB_OUTPUT"; fi
+
   bundle-validate:
-    needs: lint-test
+    needs: [lint-test, secrets-check]
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      needs.secrets-check.outputs.has_host == 'true'
+      && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}

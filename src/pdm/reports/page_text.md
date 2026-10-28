@@ -286,7 +286,7 @@ The system runs on Azure Databricks with Unity Catalog:
 - MLflow experiments and the Unity Catalog model registry;
 - Databricks data profiling for monitoring.
 
-It is deployed from a Declarative Automation Bundle with development and production targets. GitHub Actions validates every pull request and deploys production as a service principal. Every cloud result was checked against a local run of the same code.
+It is deployed from a Declarative Automation Bundle with development and production targets. Through the shadow quarter, GitHub Actions validated every pull request and deployed production as a service principal; it now lints and tests every change. Every cloud result was checked against a local run of the same code.
 
 **Exhibit: Architecture**
 
@@ -429,7 +429,7 @@ Spindle and pump failures on the HMC cell stop the shop's highest-margin work. V
 - **Job:** a monthly Lakeflow Job: pipeline update, train, promote, score, monitor.
 - **Models:** MLflow experiments and the Unity Catalog model registry, with a `champion` alias.
 - **Monitoring:** Databricks data profiling.
-- **Deployment:** `databricks bundle deploy -t prod` from a Declarative Automation Bundle with dev and prod targets. GitHub Actions lints, tests and validates every pull request and deploys production as a service principal.
+- **Deployment:** `databricks bundle deploy -t prod` from a Declarative Automation Bundle with dev and prod targets, deployed through the shadow quarter by GitHub Actions as a service principal. GitHub Actions lints and tests every change.
 - **Cost:** about $6 in Azure infrastructure through October 27, 2026, with Databricks usage covered by the trial allowance.
 
 (Architecture diagram; pipeline graph and job history screenshots.)
