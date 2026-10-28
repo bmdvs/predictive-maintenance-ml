@@ -6,9 +6,10 @@ DEVIATIONS.md
 runs/
 mlruns/
 
-# Data (samples are tracked)
+# Data (samples and the gold snapshot are tracked; local_gold, the parity output, is not)
 data/*
 !data/samples/
+!data/gold_snapshot/
 
 # Python
 __pycache__/
@@ -31,9 +32,6 @@ CLAUDE-azure-databricks.md
 .env
 *.azcred
 .databricks/
-
-# Local parity outputs
-exports/local_gold/
 
 # Mechanism additions merged into CLAUDE.md
 CLAUDE-run05-mechanisms.md

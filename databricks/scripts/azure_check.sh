@@ -5,7 +5,7 @@
 #
 # Required: PDM_RESOURCE_GROUP (rg-pdm), PDM_STORAGE_ACCOUNT, PDM_LOCATION (centralus)
 # Optional: PDM_WORKSPACE (dbw-pdm), PDM_ACCESS_CONNECTOR (ac-pdm)
-# Usage: infra/azure_check.sh
+# Usage: databricks/scripts/azure_check.sh
 set -euo pipefail
 
 RG="${PDM_RESOURCE_GROUP:?set PDM_RESOURCE_GROUP}"

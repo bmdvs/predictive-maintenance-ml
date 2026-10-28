@@ -4,13 +4,13 @@
 # Identifiers come from environment variables, never from the repository.
 #
 # Required: PDM_STORAGE_ACCOUNT, and for create only PDM_ACCESS_CONNECTOR_ID (resource id of ac-pdm)
-# Usage: infra/unity_catalog.sh [PROFILE]              creates the objects
-#        infra/unity_catalog.sh [PROFILE] --check      read-only verification against the expected settings
-#        infra/unity_catalog.sh [PROFILE] --dev        creates the development catalog (bundle dev target):
+# Usage: databricks/scripts/unity_catalog.sh [PROFILE]              creates the objects
+#        databricks/scripts/unity_catalog.sh [PROFILE] --check      read-only verification against the expected settings
+#        databricks/scripts/unity_catalog.sh [PROFILE] --dev        creates the development catalog (bundle dev target):
 #                                                      catalog pdm_dev on a pdm_dev folder of the managed
 #                                                      container, the same schemas, managed volume
 #                                                      landing.autoloader for Auto Loader schema tracking
-#        infra/unity_catalog.sh [PROFILE] --dev-check  read-only verification of the development catalog
+#        databricks/scripts/unity_catalog.sh [PROFILE] --dev-check  read-only verification of the development catalog
 #
 # The external locations are created with validation skipped (force-created): file events are not
 # configured on the storage account, and Auto Loader reads by directory listing.
