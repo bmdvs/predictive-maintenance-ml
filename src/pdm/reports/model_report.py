@@ -614,6 +614,99 @@ class ModelReport:
                 )
         return style.save(f, f"model_{name}", name, up=1)
 
+    def layers(self) -> str:
+        """Equipment, data sources and monitoring layers, left to right, with the existing and added layers."""
+        existing, added, fitted, plain = "#E6E6E6", style.ACCENT, "#F2E6C9", "#FFFFFF"
+        f, ax = plt.subplots(figsize=(8.6, 4.4))
+        ax.set_axis_off()
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0.95, 6.1)
+
+        def box(x0: float, yc: float, w: float, h: float, title: str, sub: str, fc: str) -> None:
+            dark = fc == added
+            ax.add_patch(
+                FancyBboxPatch(
+                    (x0, yc - h / 2), w, h, boxstyle="round,pad=0.02", fc=fc, ec=style.DARK_GREY, lw=0.8
+                )
+            )
+            ax.text(
+                x0 + w / 2,
+                yc + 0.11,
+                title,
+                ha="center",
+                va="center",
+                fontsize=8.5,
+                fontweight="bold",
+                color="white" if dark else style.TEXT,
+            )
+            ax.text(
+                x0 + w / 2,
+                yc - 0.15,
+                sub,
+                ha="center",
+                va="center",
+                fontsize=7,
+                color="white" if dark else style.DARK_GREY,
+            )
+
+        def arrow(a: tuple[float, float], b: tuple[float, float]) -> None:
+            ax.annotate(
+                "",
+                xy=b,
+                xytext=a,
+                arrowprops={"arrowstyle": "-|>", "color": style.DARK_GREY, "lw": 0.8, "mutation_scale": 9},
+            )
+
+        equipment = [
+            ("HMCs", "4 machines", True),
+            ("Compressors", "2 units", True),
+            ("VMCs", "8 machines", False),
+            ("Lathes", "5 machines", False),
+            ("Mill-turns", "2 machines", False),
+            ("Grinder", "1 machine", False),
+        ]
+        ex0, ew, eh = 0.05, 1.55, 0.62
+        ys = [5.6 - 0.85 * i for i in range(len(equipment))]
+        sx0, sw = 2.55, 2.45
+        sensor_y, sensor_h = 5.0, 1.0
+        ctrl_y, ctrl_h = 2.6, 1.3
+        for (title, sub, has_sensor), y in zip(equipment, ys, strict=True):
+            box(ex0, y, ew, eh, title, sub, fitted if has_sensor else plain)
+        box(sx0, sensor_y, sw, sensor_h, "Sensor data", "20 points on 14 assets", plain)
+        box(sx0, ctrl_y, sw, ctrl_h, "Controller data", "Machine and compressor controllers", plain)
+        for k, y in enumerate(ys[:2]):
+            arrow((ex0 + ew + 0.04, y), (sx0 - 0.04, sensor_y + 0.2 - 0.4 * k))
+        for k, y in enumerate(ys):
+            arrow((ex0 + ew + 0.04, y), (sx0 - 0.04, ctrl_y + 0.5 - 0.2 * k))
+        lx0, lw_ = 5.65, 2.15
+        vib_y, ven_y, ch_y = 5.55, 4.45, ctrl_y
+        box(lx0, vib_y, lw_, 0.7, "Vibration model", "Autoencoder per point", added)
+        box(lx0, ven_y, lw_, 0.7, "Vendor rules", "Threshold alerts", existing)
+        box(lx0, ch_y, lw_, 0.7, "Controller health", "Load drift, temperature residuals", existing)
+        arrow((sx0 + sw + 0.04, sensor_y + 0.2), (lx0 - 0.04, vib_y))
+        arrow((sx0 + sw + 0.04, sensor_y - 0.2), (lx0 - 0.04, ven_y))
+        arrow((sx0 + sw + 0.04, ctrl_y), (lx0 - 0.04, ch_y))
+        fx0, fw = 8.25, 1.72
+        fus_y, q_y = 4.0, 1.75
+        box(fx0, fus_y, fw, 0.8, "Fusion layer", "One status per asset", added)
+        box(fx0, q_y, fw, 0.8, "Maintenance queue", "Cases and work requests", plain)
+        for y, end in ((vib_y, fus_y + 0.25), (ven_y, fus_y), (ch_y, fus_y - 0.25)):
+            arrow((lx0 + lw_ + 0.04, y), (fx0 - 0.04, end))
+        arrow((fx0 + fw / 2, fus_y - 0.44), (fx0 + fw / 2, q_y + 0.44))
+        handles = [
+            Rectangle((0, 0), 1, 1, fc=c, ec=style.DARK_GREY, lw=0.6) for c in (existing, added, fitted)
+        ]
+        f.legend(
+            handles,
+            ["Existing", "Added", "Wireless sensors fitted"],
+            loc="lower center",
+            ncol=3,
+            frameon=False,
+            fontsize=8,
+        )
+        f.tight_layout(rect=(0, 0.05, 1, 1))
+        return style.save(f, "model_monitoring_layers", "Equipment, data sources and monitoring layers", up=1)
+
     def spindle(self) -> str:
         f, ax = plt.subplots(figsize=(8.6, 2.8))
         ax.set_axis_off()
@@ -819,6 +912,10 @@ class ModelReport:
             "The shop monitors machine condition",
             "Through June 2026, the shop maintained",
             "This project adds two layers",
+        ):
+            self.text(s)
+        x("Exhibit: Equipment, data sources and monitoring layers", self.layers())
+        for s in (
             "The fusion layer is the shop's new operating output",
             "Over the evaluation year, July 2025 to June 2026",
             "Of the 12 conditions on instrumented assets",
