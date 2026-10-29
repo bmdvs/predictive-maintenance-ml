@@ -64,6 +64,8 @@ This project adds two layers:
 - **The vibration model** is a machine learning model for each sensor point, trained on the point's healthy hours, that flags hours whose vibration spectrum departs from that history.
 - **The fusion layer** combines the vibration model's signals with those of the two existing layers into one status per asset, opens a case at ALARM, and raises a work request with the suspected condition.
 
+**Exhibit: Equipment, data sources and monitoring layers**
+
 The fusion layer is the shop's new operating output. It runs hourly on every monitored asset, and its cases and work requests are what maintenance acts on. **This report evaluates the vibration model against the vendor rules, and the fusion layer as the result the shop would operate on.**
 
 Over the evaluation year, July 2025 to June 2026, **18 conditions were confirmed:**
