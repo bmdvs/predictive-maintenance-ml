@@ -629,9 +629,10 @@ class ModelReport:
                     (x0, yc - h / 2), w, h, boxstyle="round,pad=0.02", fc=fc, ec=style.DARK_GREY, lw=0.8
                 )
             )
+            two = "\n" in sub
             ax.text(
                 x0 + w / 2,
-                yc + 0.11,
+                yc + (0.2 if two else 0.11),
                 title,
                 ha="center",
                 va="center",
@@ -641,7 +642,7 @@ class ModelReport:
             )
             ax.text(
                 x0 + w / 2,
-                yc - 0.15,
+                yc - (0.14 if two else 0.15),
                 sub,
                 ha="center",
                 va="center",
@@ -672,7 +673,15 @@ class ModelReport:
         ctrl_y, ctrl_h = 2.6, 1.3
         for (title, sub, has_sensor), y in zip(equipment, ys, strict=True):
             box(ex0, y, ew, eh, title, sub, fitted if has_sensor else plain)
-        box(sx0, sensor_y, sw, sensor_h, "Sensor data", "20 points on 14 assets", plain)
+        box(
+            sx0,
+            sensor_y,
+            sw,
+            sensor_h,
+            "Wireless sensor data",
+            "Vibration and temperature\ndata on 20 points",
+            plain,
+        )
         box(sx0, ctrl_y, sw, ctrl_h, "Controller data", "Machine and compressor controllers", plain)
         for k, y in enumerate(ys[:2]):
             arrow((ex0 + ew + 0.04, y), (sx0 - 0.04, sensor_y + 0.2 - 0.4 * k))
@@ -680,9 +689,9 @@ class ModelReport:
             arrow((ex0 + ew + 0.04, y), (sx0 - 0.04, ctrl_y + 0.5 - 0.2 * k))
         lx0, lw_ = 5.65, 2.15
         vib_y, ven_y, ch_y = 5.55, 4.45, ctrl_y
-        box(lx0, vib_y, lw_, 0.7, "Vibration model", "Autoencoder per point", added)
-        box(lx0, ven_y, lw_, 0.7, "Vendor rules", "Threshold alerts", existing)
-        box(lx0, ch_y, lw_, 0.7, "Controller health", "Load drift, temperature residuals", existing)
+        box(lx0, vib_y, lw_, 0.7, "Vibration Model", "one ML model per point", added)
+        box(lx0, ven_y, lw_, 0.7, "Vendor Rules", "Threshold alerts", existing)
+        box(lx0, ch_y, lw_, 0.7, "Controller Health", "Load drift, linear regression", existing)
         arrow((sx0 + sw + 0.04, sensor_y + 0.2), (lx0 - 0.04, vib_y))
         arrow((sx0 + sw + 0.04, sensor_y - 0.2), (lx0 - 0.04, ven_y))
         arrow((sx0 + sw + 0.04, ctrl_y), (lx0 - 0.04, ch_y))
@@ -694,18 +703,20 @@ class ModelReport:
             arrow((lx0 + lw_ + 0.04, y), (fx0 - 0.04, end))
         arrow((fx0 + fw / 2, fus_y - 0.44), (fx0 + fw / 2, q_y + 0.44))
         handles = [
-            Rectangle((0, 0), 1, 1, fc=c, ec=style.DARK_GREY, lw=0.6) for c in (existing, added, fitted)
+            Rectangle((0, 0), 1, 1, fc=c, ec=style.DARK_GREY, lw=0.6) for c in (fitted, existing, added)
         ]
         f.legend(
             handles,
-            ["Existing", "Added", "Wireless sensors fitted"],
+            ["Wireless sensors fitted", "Existing Layers", "New Layers"],
             loc="lower center",
             ncol=3,
             frameon=False,
             fontsize=8,
         )
         f.tight_layout(rect=(0, 0.05, 1, 1))
-        return style.save(f, "model_monitoring_layers", "Equipment, data sources and monitoring layers", up=1)
+        return style.save(
+            f, "model_monitoring_layers", "Machines and Equipment, Data Sources & Monitoring Layers", up=1
+        )
 
     def spindle(self) -> str:
         f, ax = plt.subplots(figsize=(8.6, 2.8))
@@ -907,16 +918,18 @@ class ModelReport:
     # ---------------------------------------------------------------- page
     def build(self) -> str:
         d, t, x = self.d, self.t, self.exhibit
-        self.h(2, "1. Summary", "s1")
+        self.h(2, "1. Condition Monitoring Overview", "s1")
         for s in (
-            "The shop monitors machine condition",
-            "Through June 2026, the shop maintained",
-            "This project adds two layers",
+            "The shop has 20 machines",
+            "The shop historically maintained",
+            "This project adds two additional layers",
         ):
             self.text(s)
-        x("Exhibit: Equipment, data sources and monitoring layers", self.layers())
+        x("Exhibit: Machines and Equipment, Data Sources", self.layers())
+        self.text("The fusion layer is the shop's new operating output")
+        self.h(2, "2. Model results", "s2")
+        self.h(3, "2.1 Detection and warning", "s21", True)
         for s in (
-            "The fusion layer is the shop's new operating output",
             "Over the evaluation year, July 2025 to June 2026",
             "Of the 12 conditions on instrumented assets",
             "The fusion layer caught 6 of the 12",
@@ -926,8 +939,6 @@ class ModelReport:
             self.text(s)
         note = re.search(r'"(.+?)"', t.lines(S, "Exhibit: Vendor rules")[1]).group(1)
         x("Exhibit: Vendor rules, vibration model and fusion layer", self.summary_panels(note))
-        self.h(2, "2. Model results", "s2")
-        self.h(3, "2.1 Detection and warning", "s21", True)
         self.text("The model layer caught more conditions")
         self.text("In the quarter, the model layer opened")
         t.lines(S, "The event timeline as specified")
@@ -1149,7 +1160,7 @@ class ModelReport:
         self.ap("I. Limitations", "aI")
         x("Exhibit: Limitations", self.limitations())
         body = "".join(self.parts)
-        title, sub = t.field(S, "Title"), t.field(S, "Subtitle")
+        title, sub = t.field(S, "Title"), ""
         style.write("reports/model_report.html", style.report_shell(title, sub, body, self.toc))
         return "docs/reports/model_report.html"
 
