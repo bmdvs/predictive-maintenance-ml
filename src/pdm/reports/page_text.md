@@ -48,25 +48,27 @@ The text of the pages, assembled with their exhibits by pdm.reports.build.
 
 **Title:** Predictive Maintenance Model Report
 
-**Subtitle:** Shadow-mode evaluation, April to June 2026, with results for July 2025 to June 2026
+### 1. Condition Monitoring Overview
 
-### 1. Summary
+The shop has 20 machines and two air compressors that serve the plant. It monitors machine and equipment condition from two sources:
+- **Controller data** from all 20 machines (spindle and axis loads, spindle thermistor, and the HMCs' through-spindle coolant pressure) and the two compressors (load, and discharge pressure and temperature)
+- **Wireless sensor data** from 20 sensor points across the four HMCs (spindle bearings and coolant pump motors) and the two compressors (motor and airend). Each hour, every sensor point records a one-second vibration burst on three axes, sampled 25,600 times a second, along with temperature. Each HMC is monitored as three assets (the spindle and its two coolant pumps), for 14 monitored assets in all.
 
-The shop monitors machine condition from two sources:
-- **Controller data** from all 20 machines: spindle and axis loads, the spindle thermistor and, on the HMCs, through-spindle coolant pressure.
-- **Wireless sensor data:** hourly vibration and temperature measurements from 20 sensor points on 14 assets (the four HMCs' spindles and coolant pumps, and the two compressors).
+The shop historically maintained its machines and equipment on interval-based PM and two condition-monitoring layers:
+- **Controller Health** compares each machine's controller data with its expected behavior using load drift and linear regression. It is the only layer covering the machine components without sensors.
+- **Vendor Rules** are the sensor vendor's threshold alerts on three measurements computed from the hourly vibration measurement: vibration velocity, high-frequency acceleration and bearing fault-band energy. Baselines are recorded after installation and after each repair. Alert and alarm thresholds sit above the baseline by 25 and 50 percent of the ISO 20816 zone B width for the machine class, and a fault-band alert is raised when a bearing fault band rises 6 dB above baseline. Flags are generated when thresholds are exceeded for two consecutive hours (three for the fault bands).
 
-Through June 2026, the shop maintained its equipment on interval-based PM and two condition-monitoring layers:
-- **Controller health** compares each machine's controller data with its expected behavior. Spindle and axis loads are compared by part program with the program's first-month baseline. The spindle thermistor and compressor discharge temperatures are compared with expected values for speed, season, room temperature and load. It is the only layer covering the machine components without sensors.
-- **Vendor rules** are the sensor vendor's threshold alerts on the wireless sensor data: vibration velocity, high-frequency acceleration and bearing fault bands. Each point's baseline is set after installation and after each repair. An alert is raised when a measure exceeds the baseline by 25 percent of the ISO 20816 zone B width for two consecutive hours (50 percent for an alarm), or when a bearing fault band rises 6 dB above baseline for three hours.
+This project adds two additional layers:
+- **Vibration Model** reads the wireless sensor data and fits a machine learning model for each sensor point. The models are trained on the point's healthy hours and generate flags when the vibration spectrum departs from that history.
+- **Fusion Layer** combines the vibration model's signals with those of the two existing layers into one status per asset, opens a case at ALARM, and raises a work request with the suspected condition.
 
-This project adds two layers:
-- **The vibration model** is a machine learning model for each sensor point, trained on the point's healthy hours, that flags hours whose vibration spectrum departs from that history.
-- **The fusion layer** combines the vibration model's signals with those of the two existing layers into one status per asset, opens a case at ALARM, and raises a work request with the suspected condition.
+**Exhibit: Machines and Equipment, Data Sources & Monitoring Layers**
 
-**Exhibit: Equipment, data sources and monitoring layers**
+The fusion layer is the shop's new operating output. It runs hourly on every monitored asset, and its cases and work requests are what maintenance acts on. This report evaluates the existing Vendor Rules against the new Vibration Model (to assess the model's effectiveness) as well as the Fusion Layer (the results that the shop operate on).
 
-The fusion layer is the shop's new operating output. It runs hourly on every monitored asset, and its cases and work requests are what maintenance acts on. **This report evaluates the vibration model against the vendor rules, and the fusion layer as the result the shop would operate on.**
+### 2. Model results
+
+#### 2.1 Detection and warning
 
 Over the evaluation year, July 2025 to June 2026, **18 conditions were confirmed:**
 - **Six were on machine components without sensors,** where only controller health applies: four machine stoppages, a spindle crash and a spindle bearing failure. Together they caused 369 hours of downtime. Controller health caught one, the VMC-06 spindle bearing, 9.3 days before its 80-hour stoppage. The other five showed no precursor in the controller data.
@@ -82,10 +84,6 @@ Through-spindle coolant pressure, measured while the pump runs, fell 5 to 10 per
 
 **Exhibit: Vendor rules, vibration model and fusion layer, July 2025 to June 2026**
 Panel 2 note: "Median over the four conditions caught by all three methods."
-
-### 2. Model results
-
-#### 2.1 Detection and warning
 
 The model layer caught more conditions than the vendor rules in the shadow quarter and over the year, at a false-alert rate no higher than theirs, and its additional catches came from condition types the vendor rules did not catch. A condition counts as caught when an alert or case was open on the asset at confirmation and had opened within the 60 days before it.
 

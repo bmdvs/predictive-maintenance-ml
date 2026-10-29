@@ -212,7 +212,7 @@ def report_shell(title: str, subtitle: str, body: str, toc: list[tuple[str, ...]
 <title>{html.escape(title)}</title><style>{REPORT_CSS}</style></head>
 <body><div class="page-header"><h1>{html.escape(title)}</h1><div class="sub">{CREDIT}</div></div>
 <div class="layout">{nav}
-<main class="content"><div class="subtitle">{html.escape(subtitle)}</div>{body}
+<main class="content">{f'<div class="subtitle">{html.escape(subtitle)}</div>' if subtitle else ""}{body}
 </main></div></body></html>"""
 
 
