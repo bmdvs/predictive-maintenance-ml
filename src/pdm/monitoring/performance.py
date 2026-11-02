@@ -145,7 +145,7 @@ def feature_drift(
             reference, or after the start of one still forming, are not compared.
 
     Returns:
-        point_id, feature, month, wasserstein_scaled and reference ("validation", "re-baseline <start
+        point_id, feature, month, wasserstein_scaled and reference ("training reference", "re-centering <start
         date> plus scored days" or "re-baseline <start date>, window only (case within the scored
         days)").
     """
@@ -168,14 +168,14 @@ def feature_drift(
                 cur_mask = in_month & (t >= r.reference_end).to_numpy()
                 day = f"{r.start.tz_convert(LOCAL_TZ):%Y-%m-%d}"
                 ref = (
-                    f"re-baseline {day}, window only (case within the scored days)"
+                    f"re-centering {day}, window only (episode within the scored days)"
                     if r.window_only
-                    else f"re-baseline {day} plus scored days"
+                    else f"re-centering {day} plus scored days"
                 )
             else:
                 base_mask = g["month"].isin(baseline_months).to_numpy()
                 cur_mask = in_month
-                ref = "validation"
+                ref = "training reference"
             for f in features:
                 b_ = g.loc[base_mask, f].dropna().to_numpy(float)
                 x = g.loc[cur_mask, f].dropna().to_numpy(float)

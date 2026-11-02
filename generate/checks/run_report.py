@@ -135,17 +135,74 @@ def timing_projection(cfg: dict[str, Any], chk: dict[str, Any], timing: dict[str
     )
     cmp_ = per_day.filter(like="CMP").mean()
     hmc_group = (2 * sp + tsc + flood) * record_days
-    total = 4 * hmc_group + 4 * cmp_ * record_days
+    reg = load_register()
+    n_hmc = sum(1 for v in reg.machines.values() if v["class"] == "hmc")
+    n_cmp_points = sum(1 for pid in reg.sensors if pid.startswith("CMP"))
+    total = n_hmc * hmc_group + n_cmp_points * cmp_ * record_days
     overhead_s = timing["elapsed_s"] - timing["render_extract_s"]
-    wall_min = (hmc_group * ms / 1000 + overhead_s * record_days / days) / 60
+    hmc_elapsed = [v for k, v in timing.get("groups", {}).items() if k.startswith("HMC")]
+    wall_min = (
+        max(hmc_elapsed) * record_days / days / 60
+        if hmc_elapsed
+        else (hmc_group * ms / 1000 + overhead_s * record_days / days) / 60
+    )
     rows = [
         ("measured render plus extraction per burst (ms)", f"{ms:.1f}"),
         ("pilot bursts rendered", f"{timing['bursts_rendered']:,}"),
         ("pilot elapsed (s)", f"{timing['elapsed_s']:.0f}"),
         ("projected bursts, full record", f"{total:,.0f}"),
-        ("projected wall time, slowest of 5 parallel groups (min)", f"{wall_min:.0f}"),
+        ("projected wall time, slowest HMC group (min)", f"{wall_min:.0f}"),
     ]
     return pd.DataFrame(rows, columns=["quantity", "value"])
+
+
+def _rev2_section(chk: dict[str, Any], timing: dict[str, Any]) -> list[str]:
+    """Revision 2 reports: healthy thermistor in summer, overheat alarms by cause, spare-spindle passes."""
+    out: list[str] = []
+    th = chk.get("thermistor_summer")
+    if th is not None and len(th):
+        out += [
+            "Healthy spindle thermistor, summer peak (July and August, minute means):",
+            "",
+            _md_table(th),
+            "",
+        ]
+    oh = chk.get("overheat_alarms")
+    if oh:
+        out += [
+            "Overheat alarms by cause: "
+            + ", ".join(f"{k} {v}" for k, v in oh.items() if k != "cooler_stops")
+            + f"; cooler overheat stops {oh.get('cooler_stops', 0)}",
+            "",
+        ]
+    m5 = chk.get("m5")
+    if m5:
+        out += [
+            f"TSC wear onsets during cavitation (M5): {m5['onsets_during_cavitation']} over "
+            f"{m5['cavitating_tsc_hours']} cavitating TSC hours, expected {m5['expected']}; "
+            f"all TSC wear onsets {m5['tsc_wear_onsets_all']}",
+            "",
+        ]
+    tac = chk.get("temperature_alert_causes")
+    if tac is not None:
+        out += [
+            "Vendor temperature alerts by point class and cause:",
+            "",
+            _md_table(tac) if len(tac) else "none",
+            "",
+        ]
+    al = chk.get("airend_lube")
+    if al is not None and len(al):
+        out += ["Airend lubrication events per compressor against expectation:", "", _md_table(al), ""]
+    sp = timing.get("spare_spindle")
+    if sp:
+        out += [
+            f"Spare spindle resolution: {sp['passes']} pass(es); groups rerun "
+            + ("; ".join(f"pass {r['pass']}: {', '.join(r['groups'])}" for r in sp["reruns"]) or "none")
+            + f"; unplanned HMC spindle failures {sp['unplanned_spindle_failures']}",
+            "",
+        ]
+    return out
 
 
 def write(
@@ -270,6 +327,7 @@ def write(
             _md_table(full_timing(timing, counts, bronze_root, truth_dir)),
             "",
         ]
+    lines += _rev2_section(chk, timing)
     for r in results:
         if r.detail is not None and not r.detail.empty:
             lines += [f"Check {r.number} detail:", "", _md_table(r.detail), ""]

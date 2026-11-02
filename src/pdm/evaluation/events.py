@@ -12,12 +12,34 @@ interval holds no confirmation on the asset.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
 DAY = pd.Timedelta(days=1)
-AFFECTED_POINT = {"CMP-BRG-MOTOR": "-MDE", "CMP-BRG-AIREND": "-AE", "coolant_ingress": "-F"}
+AFFECTED_POINT = {"CMP-BRG-MOTOR": "-MDE", "CMP-BRG-AIREND": "-AE", "SP-COOLANT-INGRESS": "-F"}
 INSTRUMENTED = r"^(HMC-\d+-(SP|TSC|CP)|CMP-\d+)$"
+
+
+def in_comparison_scope(conds: pd.DataFrame, cfg: dict[str, Any]) -> pd.Series:
+    """Conditions in the comparison scope, from the work order alone (checkpoint (b) diagnosis decisions
+    2026-10-30, item 2): out of scope are the condition types configured as not sensor-detectable and
+    the configured failure codes (rotary union leaks without coolant ingress). Applies to ALERT catches
+    and to the failures used for ALARM. (Was every confirmed condition on the instrumented assets.)"""
+    sc = cfg["evaluation"].get("comparison_scope") or {}
+    out = ~conds["condition_type"].isin(sc.get("exclude_condition_types", []))
+    out &= ~conds["failure_code"].isin(sc.get("exclude_failure_codes", []))
+    fx = cfg["evaluation"].get("fixes") or {}
+    if fx.get("e2_scope"):
+        # E2 (2026-11-01, switch evaluation.fixes.e2_scope): cooler (compressor) conditions out of scope;
+        # rotary union conditions in scope only where the failure code records coolant ingress
+        out &= ~conds["condition_type"].isin(fx.get("e2_exclude_condition_types", ["cooler (compressor)"]))
+        ru = conds["condition_type"] == "rotary union"
+        out &= ~ru | conds["failure_code"].isin(
+            fx.get("e2_rotary_union_ingress_codes", ["SP-COOLANT-INGRESS"])
+        )
+    return out
 
 
 def condition_scope(conds: pd.DataFrame, points_by_asset: dict[str, list[str]]) -> pd.DataFrame:
@@ -100,6 +122,48 @@ def catch_table(ep: pd.DataFrame, conds: pd.DataFrame, window_days: float) -> pd
     return pd.DataFrame(rows)
 
 
+def lookback_catch_table(
+    ep: pd.DataFrame, conds: pd.DataFrame, window_days: float, lookback_days: float
+) -> tuple[pd.DataFrame, set[Any]]:
+    """E4 (2026-11-01, switch evaluation.fixes.e4_lookback_days): a condition is caught when an episode at its
+    scope was open at any time in the lookback days before its confirmation and opened no more than the
+    window before it; of several, the one open latest before the confirmation is credited (latest opening on
+    a tie) and the warning runs from its opening. Returns the catch table (as catch_table, plus the credited
+    episode's index) and the set of credited episode indexes, which are not counted as false."""
+    w = pd.Timedelta(days=window_days)
+    lb = pd.Timedelta(days=lookback_days)
+    rows, credited = [], set()
+    for c in conds.itertuples():
+        t = c.credit_ts
+        m = (
+            _scope_mask(ep, c.asset_key, c.point_scope)
+            & (ep["opened"] <= t)
+            & (ep["closed"] > t - lb)
+            & (ep["opened"] >= t - w)
+        )
+        hit = ep[m]
+        idx = None
+        if len(hit):
+            key = pd.DataFrame({"end": hit["closed"].where(hit["closed"] < t, t), "opened": hit["opened"]})
+            idx = key.sort_values(["end", "opened"]).index[-1]
+            credited.add(idx)
+        rows.append(
+            {
+                "wo_id": c.wo_id,
+                "asset_id": c.asset_id,
+                "point_scope": c.point_scope,
+                "condition_type": c.condition_type,
+                "unplanned": bool(c.unplanned),
+                "caught": idx is not None,
+                "warning_days": (t - ep.at[idx, "opened"]) / DAY if idx is not None else np.nan,
+                "downtime_hours": c.downtime_hours,
+                "machine_class": c.machine_class,
+                "credited_episode": idx,
+            }
+        )
+    return pd.DataFrame(rows), credited
+
+
 def chance_share(
     ep: pd.DataFrame, conds: pd.DataFrame, period: tuple[pd.Timestamp, pd.Timestamp], window_days: float
 ) -> float:
@@ -122,7 +186,17 @@ def chance_share(
 
 
 def false_episodes(ep: pd.DataFrame, conds_all: pd.DataFrame) -> pd.Series:
-    """True where no confirmation on the asset falls inside the episode's open interval."""
+    """The false-episode rule, one rule for ALERT and ALARM and for both methods (checkpoint (b) diagnosis
+    decisions 2026-10-30, item 8): an episode is false when no confirmation on the asset falls at or after
+    its opening and before its close, whether or not an inspection took place. The open interval is
+    [opened, closed): for an ALERT from the first persisted signal, for an ALARM from the ALARM start, to the
+    episode gap after the last signal. Nothing after the close is looked at. Confirmations are the rows of
+    conds_all (asset_key, credit_ts): from rev2.confirmations, the confirmed conditions, inspections that
+    found a condition and PM findings. When conds_all carries attrs["record_end"], an episode still open at
+    the record end with nothing confirmed is pending and not false. (Was: confirmed conditions only, no
+    pending rule, for ALERT; ALARM outcomes used the confirmations and the pending rule from the ALERT
+    opening.)"""
+    end = conds_all.attrs.get("record_end")
     out = []
     for r in ep.itertuples():
         hit = conds_all[
@@ -130,7 +204,8 @@ def false_episodes(ep: pd.DataFrame, conds_all: pd.DataFrame) -> pd.Series:
             & (conds_all["credit_ts"] >= r.opened)
             & (conds_all["credit_ts"] < r.closed)
         ]
-        out.append(hit.empty)
+        pending = end is not None and r.closed > end
+        out.append(hit.empty and not pending)
     return pd.Series(out, index=ep.index, dtype=bool)
 
 
@@ -185,7 +260,9 @@ def summarize(
 def at_budget(curve: pd.DataFrame, budget: float) -> dict[str, float]:
     """Catch share interpolated at a false-alarm budget along a method's operating curve; outside the
     curve's range the nearest end is returned and flagged."""
-    c = curve.sort_values("false_per_asset_month")
+    # stable sort, so ties keep the curve's percentile order on every platform (approved 2026-10-30,
+    # checkpoint (b) diagnosis decisions item 9; was the default sort)
+    c = curve.sort_values("false_per_asset_month", kind="stable")
     x = c["false_per_asset_month"].to_numpy(dtype=float)
     y = c["caught_share"].to_numpy(dtype=float)
     ch = c["chance_share"].to_numpy(dtype=float)

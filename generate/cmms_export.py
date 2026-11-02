@@ -67,6 +67,117 @@ _FREE_TEXT = [
 ]
 
 
+_POINT_LOCATION = {
+    "SP-F": "front set",
+    "SP-R": "rear set",
+    "TSC": "pump motor drive-end bearing",
+    "CP": "pump motor drive-end bearing",
+    "MDE": "motor drive-end bearing",
+    "AE": "airend inlet bearing",
+}
+_FINDING_TEXT = {
+    "lubrication": "lubrication degraded",
+    "cavitation": "cavitation, coolant level low",
+    "imbalance": "imbalance",
+    "misalignment": "misalignment",
+    "looseness": "looseness",
+    "rotary_union_leak": "rotary union leak",
+}
+_WEAR_TEXT = {"PMP-SEAL": "seal wear", "PMP-IMP": "impeller wear"}
+_EXPORT_CODE = {
+    "imbalance": "VIB-IMBAL",
+    "misalignment": "VIB-MISALIGN",
+    "looseness": "VIB-LOOSE",
+    "cavitation": "PMP-CAV",
+    "oil_cooler_fouled": "CMP-OILCOOL-FOUL",
+    "spindle_cooler_fault": "SP-COOLER",
+    "coolant_ingress": "SP-COOLANT-INGRESS",
+    "rotary_union_leak": "RU-LEAK",
+}
+_LUBE_CODE = {"SPINDLE": "BRG-LUBE", "COMPRESSOR": "CMP-LUBE"}
+
+
+def export_code(component: str | None, code: str | None) -> str | None:
+    """The CMMS failure code for an engine condition or finding name; codes already in the CMMS
+    convention pass through."""
+    if not isinstance(code, str):
+        return None
+    if code == "lubrication":
+        return _LUBE_CODE[str(component)]
+    return _EXPORT_CODE.get(code, code)
+
+
+_FALLBACK_BEARING_CODE = {
+    "SP-F": "BRG-WEAR",
+    "SP-R": "BRG-WEAR",
+    "TSC": "PMP-BRG",
+    "CP": "PMP-BRG",
+    "MDE": "CMP-BRG-MOTOR",
+    "AE": "CMP-BRG-AIREND",
+}
+
+
+def _location(point_id: str) -> str:
+    for suffix, text in _POINT_LOCATION.items():
+        if point_id.endswith(suffix):
+            return text
+    return "bearing"
+
+
+def inspection_finding(findings: str, asset_id: str, follow_code: str | None) -> tuple[str | None, str]:
+    """Finding code and readable finding text of a confirmed inspection, from the engine's finding
+    tokens and the code of the repair it led to (when there is one)."""
+    texts: list[str] = []
+    codes: list[str] = []
+    for tok in [t for t in findings.split(",") if t]:
+        if tok.startswith("bearing:"):
+            pid = tok.split(":", 1)[1]
+            texts.append(f"bearing damage, {_location(pid)}")
+            suffix = next((s for s in _FALLBACK_BEARING_CODE if pid.endswith(s)), None)
+            codes.append(_FALLBACK_BEARING_CODE.get(suffix or "", "BRG-WEAR"))
+        elif tok.startswith("cond:"):
+            kind = tok.split(":", 1)[1]
+            texts.append(_FINDING_TEXT.get(kind, kind.replace("_", " ")))
+            codes.append(kind)
+        elif tok == "wear":
+            code = follow_code if follow_code in _WEAR_TEXT else "PMP-SEAL"
+            texts.append(
+                _WEAR_TEXT[code]
+                if not asset_id.endswith("-TSC") or code == "PMP-SEAL"
+                else "internal clearance wear"
+            )
+            codes.append(code)
+        else:
+            texts.append(_FINDING_TEXT.get(tok, tok.replace("_", " ")))
+            codes.append(tok)
+    code = follow_code if follow_code is not None else (codes[0] if codes else None)
+    return code, "; ".join(texts)
+
+
+_SPARE_NOTES = {
+    "swap": " Spindle exchanged with the cell spare; failed spindle sent out for rebuild.",
+    "no_spare": " Cell spare out for rebuild; spindle sent out for rebuild and reinstalled on return.",
+}
+
+
+def close_time(closed: pd.Timestamp, ln: dict[str, Any], rng: np.random.Generator) -> pd.Timestamp:
+    """When the work order is closed in the CMMS: an end-of-week batch (the next close weekday on or
+    after the work, within the configured working days) or a lag of the configured days."""
+    b = ln["close_batch"]
+    if rng.random() < b["share"]:
+        target = ["mon", "tue", "wed", "thu", "fri"].index(b["weekday"])
+        local = closed.tz_convert(LOCAL_TZ)
+        day = local.normalize()
+        steps = 0
+        while day.weekday() != target or day + pd.Timedelta(hours=15) < local:
+            day += pd.Timedelta(days=1)
+            if day.weekday() < 5:
+                steps += 1
+        if steps <= b["working_days_after_work"][1]:
+            return (day + pd.Timedelta(hours=15)).tz_convert("UTC")
+    return closed + pd.Timedelta(days=float(rng.uniform(*ln["close_lag_days"])))
+
+
 def component_of(asset_id: str, mode: str | None) -> str:
     if mode in _MODE_COMPONENT:
         return _MODE_COMPONENT[mode]
@@ -135,6 +246,13 @@ def build_work_orders(
             onsets.setdefault(asset, []).append((e["ts"], str(e.get("cause"))))
     rows = []
     all_components = list(cm["failure_codes"])
+    finding_only = set(cm["finding_only_codes"])
+    pm_ids = {
+        (str(p["asset_id"])[:6], pd.Timestamp(p["completed"])): f"PM-{i:06d}"
+        for i, p in enumerate(pm_rows)
+        if p["outcome"] != "skipped" and p.get("finding") in ("spindle_cooler_fault", "rotary_union_leak")
+    }
+    inspection_tokens: dict[str, str] = {}
     for wo in work_orders:
         if str(wo.get("findings")) == "superseded":
             continue
@@ -155,6 +273,8 @@ def build_work_orders(
                 notes = "Found at spindle chiller check (monthly spindle PM). " + notes
             elif wo.get("found_by") == "operator":
                 notes = "Operator reported spindle chiller fault indication. " + notes
+            if isinstance(wo.get("spindle_repair_case"), str):
+                notes += _SPARE_NOTES[wo["spindle_repair_case"]]
             if wo.get("post_repair_finding") == "misalignment":
                 notes += (
                     " Post-repair check: misalignment found; laser alignment, corrected "
@@ -166,20 +286,34 @@ def build_work_orders(
                 if wo.get("trigger") == "overheat_alarms"
                 else "Inspected after platform alert: "
             )
-            notes = trigger + (
-                "no fault found." if wo.get("no_fault_found") else f"found {wo.get('findings')}."
-            )
+            if _is_open(wo):
+                notes = trigger.replace("Inspected after", "Inspection opened after").rstrip(": ") + "."
+            elif wo.get("no_fault_found"):
+                notes = trigger + "no fault found."
+            else:
+                inspection_tokens[str(wo["wo_id"])] = str(wo.get("findings") or "")
+                notes = trigger
         elif wtype == "pm":
-            notes = f"PM: {wo.get('task')}."
+            notes = f"PM: {str(wo.get('task')).replace('_', ' ')}."
+        elif wtype == "rebuild_order":
+            notes = (
+                "Spindle rebuild order: failed spindle out to the rebuild shop; returns as the cell spare."
+                if wo.get("spindle_repair_case") == "swap"
+                else "Spindle rebuild order: spindle out to the rebuild shop; reinstalled on this machine."
+            )
         down_h = float(wo.get("downtime_h") or 0.0)
         started = wo.get("started", wo["opened"])
         closed = wo.get("closed", started)
         lag = pd.Timedelta(0)
         if wtype in ("unplanned_repair", "condition_based", "corrective"):
-            lag = pd.Timedelta(days=float(rng.uniform(*ln["close_lag_days"])))
+            lag = close_time(pd.Timestamp(closed), ln, rng) - pd.Timestamp(closed)
+            basis = wo.get("labor_basis_h")
+            basis_h = float(basis) if basis is not None and np.isfinite(float(basis)) else down_h
             labor = float(rng.uniform(*cm["labor_frac_of_repair_time"])) * min(
-                down_h, cm["labor_h_max_per_day"] * max(np.ceil(down_h / HOURS_PER_DAY), 1.0)
+                basis_h, cm["labor_h_max_per_day"] * max(np.ceil(basis_h / HOURS_PER_DAY), 1.0)
             )
+        elif wtype == "rebuild_order":
+            labor = 0.0
         elif wtype == "inspection":
             labor = float(rng.uniform(*cm["inspection_labor_h"]))
         else:
@@ -196,21 +330,38 @@ def build_work_orders(
                 "closed": closed + lag,
                 "downtime_hours": round(down_h, 2),
                 "technician": str(rng.choice(cm["technicians"])),
-                "parts": _CODE_PARTS.get(code or "")
-                if code in _CONDITION_CODES
-                else _parts(reg, asset, comp, wtype),
+                "parts": "SPINDLE-REBUILD"
+                if wtype == "rebuild_order"
+                else (
+                    _CODE_PARTS.get(code or "")
+                    if code in _CONDITION_CODES
+                    else _parts(reg, asset, comp, wtype)
+                ),
                 "labor_hours": round(labor, 2),
                 "notes": notes,
-                "no_fault_found": bool(wo.get("no_fault_found", False)) if wtype == "inspection" else False,
+                "no_fault_found": (
+                    (None if _is_open(wo) else bool(wo.get("no_fault_found", False)))
+                    if wtype == "inspection"
+                    else False
+                ),
                 "platform_alert_id": wo.get("alert_id"),
+                "source_wo_id": _source_wo(wo, pm_ids),
                 "true_component": comp,
                 "true_failure_code": code,
             }
         )
+    follow = {r["source_wo_id"]: r["true_failure_code"] for r in rows if r["wo_type"] == "condition_based"}
+    for r in rows:
+        if r["wo_id"] in inspection_tokens:
+            code, text = inspection_finding(
+                inspection_tokens[r["wo_id"]], r["asset_id"], follow.get(r["wo_id"])
+            )
+            r["failure_code"] = r["true_failure_code"] = code
+            r["notes"] += f"found {text}."
     for i, p in enumerate(pm_rows):
         if p["outcome"] == "skipped" or p["task"] in _ENGINE_PM_TASKS:
             continue
-        note = f"PM: {p['task']}."
+        note = f"PM: {str(p['task']).replace('_', ' ')}."
         if p["task"] == "backlash_check":
             note += _backlash_note(p, axis_events)
         finding = p.get("finding")
@@ -223,6 +374,9 @@ def build_work_orders(
             note += " Spindle chiller check: cooler degraded; repair work order opened."
         elif finding == "rotary_union_leak":
             note += " TSC pressure low; rotary union leaking; replacement planned."
+        elif finding == "lubrication":
+            pm_code, pm_comp = "lubrication", "SPINDLE"
+            note += " Spindle lubrication degraded, found at the lube check; regreased."
         rows.append(
             {
                 "wo_id": f"PM-{i:06d}",
@@ -240,6 +394,7 @@ def build_work_orders(
                 "notes": note,
                 "no_fault_found": False,
                 "platform_alert_id": None,
+                "source_wo_id": None,
                 "true_component": pm_comp,
                 "true_failure_code": pm_code,
             }
@@ -262,10 +417,13 @@ def build_work_orders(
                 "notes": f"Wireless vibration sensor {se['event']} on {se['point_id']}.",
                 "no_fault_found": False,
                 "platform_alert_id": None,
+                "source_wo_id": None,
                 "true_component": None,
                 "true_failure_code": None,
             }
         )
+    for r in rows:
+        r["failure_code"] = r["true_failure_code"] = export_code(r["true_component"], r["true_failure_code"])
     df = pd.DataFrame(rows).sort_values("opened").reset_index(drop=True)
     unplanned = df.index[df["wo_type"] == "unplanned_repair"].to_numpy()
     draw = rng.random(unplanned.size)
@@ -277,7 +435,8 @@ def build_work_orders(
         others = [c for c in all_components if c != df.at[k, "true_component"]]
         comp = str(rng.choice(others))
         df.at[k, "component"] = comp
-        df.at[k, "failure_code"] = str(rng.choice(cm["failure_codes"][comp]))
+        pool = [c for c in cm["failure_codes"][comp] if c not in finding_only]
+        df.at[k, "failure_code"] = str(rng.choice(pool))
     for k in missing:
         df.at[k, "failure_code"] = None
         df.at[k, "notes"] = str(rng.choice(_FREE_TEXT))
@@ -285,6 +444,22 @@ def build_work_orders(
     df.loc[wrong, "label_noise"] = "wrong_code"
     df.loc[missing, "label_noise"] = "missing_code"
     return df.assign(**ctx.stamp())
+
+
+def _is_open(wo: dict[str, Any]) -> bool:
+    closed = wo.get("closed")
+    return closed is None or bool(pd.isna(closed))
+
+
+def _source_wo(wo: dict[str, Any], pm_ids: dict[tuple[str, pd.Timestamp], str]) -> str | None:
+    """The work order this one follows from: the inspection that found the condition, the PM check
+    that found it, or the repair a rebuild order belongs to."""
+    src = wo.get("source_wo")
+    if isinstance(src, str):
+        return src
+    if wo["type"] == "corrective":
+        return pm_ids.get((str(wo["asset_id"])[:6], pd.Timestamp(wo["opened"])))
+    return None
 
 
 def _parts(reg: Any, asset: str, comp: str, wtype: str) -> str | None:

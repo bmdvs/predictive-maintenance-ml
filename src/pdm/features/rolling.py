@@ -63,10 +63,11 @@ def _point_rolling(pdf: pd.DataFrame, base: pd.DataFrame, cfg: dict[str, Any]) -
         if len(b):
             sub = b[b["indicator"] == col]
             pooled = sub.groupby("window_id")["median"].median()
-            byreg = sub.set_index(["window_id", "regime"])["median"]
+            byreg = sub.groupby(["window_id", "regime"])["median"].median()
             keys = list(zip(out["baseline_window"], out["regime"], strict=True))
             bl = pd.Series(
-                [byreg.get(k, pooled.get(k[0], np.nan)) if k[0] is not None else np.nan for k in keys]
+                [byreg.get(k, pooled.get(k[0], np.nan)) if k[0] is not None else np.nan for k in keys],
+                dtype=float,
             )
         tt = pd.Series(t, index=s.index)
         for w in cfg["rolling"]["windows"]:
@@ -80,7 +81,7 @@ def _point_rolling(pdf: pd.DataFrame, base: pd.DataFrame, cfg: dict[str, Any]) -
             )
             out[f"{name}_med_{w}"] = med
             out[f"{name}_slope_{w}"] = slope
-            out[f"{name}_ratio_{w}"] = med / bl.to_numpy()
+            out[f"{name}_ratio_{w}"] = med / bl.to_numpy(dtype=float)
     return out
 
 

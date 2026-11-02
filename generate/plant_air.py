@@ -85,26 +85,41 @@ def compressor_hours(
         plant_minutes: scheduled minutes of the plant (any machine) per hour.
     """
     c = cfg["compressor"]
-    pattern = c["lead_pattern_weeks"]
+    pattern = [p for p in c["lead_pattern_weeks"] if p in compressor_ids] or list(compressor_ids)
     week_no = ((frame["hour_utc"] - frame["hour_utc"].iloc[0]) / pd.Timedelta(weeks=1)).astype(int).to_numpy()
     lead = np.array([pattern[w % len(pattern)] for w in week_no])
     demand_tab = c["demand_frac_of_one_unit"]
+    local_h = frame["local_hour"].to_numpy()
+    p0, p1 = c["first_shift_peak_hours_local"]
     shift = np.where(
         frame["weekday"].to_numpy() == 5,
         "saturday",
-        np.where(frame["local_hour"].to_numpy() < _second_start(cfg), "first_shift", "second_shift"),
+        np.where(
+            local_h < _second_start(cfg),
+            np.where((local_h >= p0) & (local_h < p1), "first_shift_peak", "first_shift"),
+            "second_shift",
+        ),
     )
-    demand = np.where(plant_minutes > 0, [demand_tab[s] for s in shift], demand_tab["off_shift"])
-    running_any = demand > 0
-    trim = running_any & (rng.random(len(frame)) < c["lag_trim_share_of_lead_hours"])
+    noise = 1.0 + c["demand_noise_frac"] * rng.standard_normal(len(frame))
+    demand = np.where(
+        plant_minutes > 0, np.array([demand_tab[s] for s in shift]) * noise, demand_tab["off_shift"]
+    )
+    demand = np.clip(demand, 0.0, None)
+    n_run = np.where(
+        demand > 0,
+        np.minimum(np.ceil(demand / c["unit_load_limit_frac"]), c["max_running_units"]),
+        0,
+    ).astype(int)
+    order = [[pattern[(pattern.index(ld) + k) % len(pattern)] for k in range(len(pattern))] for ld in lead]
     out = frame[["hour_utc"]].copy()
     out["lead"] = lead
+    out["order"] = [",".join(o) for o in order]
+    out["units_planned"] = n_run
     out["demand_frac"] = demand
     out["room_c"] = room_ambient_c(frame, cfg)
     for cid in compressor_ids:
-        is_lead = lead == cid
-        out[f"{cid}_running"] = running_any & (is_lead | trim)
-        out[f"{cid}_load_frac"] = (
-            np.where(is_lead, demand, np.where(trim, demand, 0.0)) * out[f"{cid}_running"]
-        )
+        rank = np.array([o.index(cid) if cid in o else len(o) for o in order])
+        run = rank < n_run
+        out[f"{cid}_running"] = run
+        out[f"{cid}_load_frac"] = np.where(run, demand / np.maximum(n_run, 1), 0.0)
     return out

@@ -559,6 +559,32 @@ def run_checks(
             cfg, reg, bronze_root, truth_dir, scalars, truth, events, sensor_events, m
         )
         results = results[:4] + full + results[4:]
+    else:
+        from generate.checks.realism_full import check_replay
+
+        alerts_path = bronze_root / "cm_platform" / "alerts" / "alerts.parquet"
+        alerts = (
+            pd.read_parquet(alerts_path)
+            if alerts_path.exists()
+            else pd.DataFrame(columns=["point_id", "alert_ts", "level", "rules"])
+        )
+        results.append(check_replay(cfg, reg, scalars, sensor_events, alerts))
+    from generate.checks import realism_rev2
+
+    hours = pd.to_datetime(truth["hour_utc"], utc=True)
+    rev2, rev2_extra = realism_rev2.run_rev2_checks(
+        cfg,
+        reg,
+        bronze_root,
+        truth_dir,
+        scalars,
+        truth,
+        events,
+        hours.min(),
+        hours.max() + pd.Timedelta(hours=1),
+    )
+    results += rev2
+    extra = {**extra, **rev2_extra}
     return {
         "results": results,
         **extra,

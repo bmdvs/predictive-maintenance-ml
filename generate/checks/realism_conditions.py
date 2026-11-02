@@ -440,6 +440,12 @@ def check_thermal(
 
     sc = starts[starts["kind"] == "spindle_cooling"]
     lo_s, hi_s = cfg["spindle_cooling"]["thermistor_residual_rise_c"]
+    lo_a, hi_a = cfg["spindle_cooling"]["abrupt_residual_c"]
+    other_heat: dict[str, pd.Series] = {}
+    if machine_hours is not None and len(sc):
+        mh = machine_hours[machine_hours["machine_id"].str.startswith("HMC")]
+        mh = mh[(mh["lube_temp_c"] > 0) | (mh["spindle_s4"] > 0)]
+        other_heat = {k: pd.to_datetime(g["hour_utc"], utc=True) for k, g in mh.groupby("machine_id")}
     if len(sc):
         cs = cfg["controller_signals"]["spindle_temp"]
         sa = cfg["benign"]["shop_ambient_c"]
@@ -457,6 +463,8 @@ def check_thermal(
                 ],
             )
             df = df[(df["execution"] == "active") & (df["seconds_in_state"] == SECONDS_PER_MINUTE)]
+            if mid in other_heat:
+                df = df[~df["minute_utc"].dt.floor("h").isin(other_heat[mid])]
             local = df["minute_utc"].dt.tz_convert(TZ)
             amb = seasonal_c(
                 local.dt.dayofyear.to_numpy(float), sa["annual_mean"], sa["annual_amplitude"], coldest
@@ -477,14 +485,18 @@ def check_thermal(
                 level = float(cl["level"].iat[0]) if not cl.empty else np.nan
                 base, rise = _episode_rise(daily, st["ts"], t_clear, end, base_days)
                 completed = t_clear is None or level >= 0.999
+                ab = st.get("p_abrupt", False)
+                abrupt = bool(ab) if pd.notna(ab) else False
+                r_lo, r_hi = (lo_a, hi_a) if abrupt else (lo_s, hi_s)
                 within = (
                     None
                     if pd.isna(rise)
-                    else bool(rise <= hi_s + tol and (rise >= lo_s - tol if completed else True))
+                    else bool(rise <= r_hi + tol and (rise >= r_lo - tol if completed else True))
                 )
                 rows.append(
                     {
                         "mechanism": "spindle_cooling",
+                        "abrupt": abrupt,
                         "asset_id": st["asset_id"],
                         "start": st["ts"],
                         "cleared": t_clear,
@@ -515,6 +527,17 @@ def check_thermal(
     by = df.groupby("mechanism")["rise_within_range"].apply(
         lambda s: f"{int(s.dropna().sum())}/{s.notna().sum()}"
     )
+    unmeasured = df[
+        (df["mechanism"] == "spindle_cooling")
+        & df["rise_within_range"].isna()
+        & ~df.get("abrupt", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    ]
+    unmeasured_text = (
+        "; not measurable (no baseline hours free of lubrication or stage-4 heat): "
+        + ", ".join(f"{r.asset_id} {pd.Timestamp(r.start):%Y-%m}" for r in unmeasured.itertuples())
+        if len(unmeasured)
+        else ""
+    )
     sp_ok, sp_text = True, ""
     if machine_hours is not None:
         sp_ok, sp_text = spindle_overheat_consistency(cfg, reg, bronze_root, events, machine_hours, end)
@@ -522,7 +545,9 @@ def check_thermal(
         "22",
         "Thermal mechanisms",
         f"measured residual rise within the configured range +/- {tol} C (lower bound only for episodes "
-        f"that reached full rise); compressor residual back within {tol} C of its pre-episode level on "
+        f"that reached full rise; spindle cooling: gradual {lo_s}-{hi_s} C with hours of lubrication or "
+        f"stage-4 heat excluded, abrupt {lo_a}-{hi_a} C); compressor residual back within {tol} C of its "
+        "pre-episode level on "
         f"day {ret_days} after cleaning in >= {need:.0%}; velocity median during episodes of at least "
         f"{vel_days} days within the point's healthy p05-p95; every cooler overheat stop has a rendered "
         "thermistor reading at the limit in the stop hour; no healthy cutting hour reaches the limit; "
@@ -531,6 +556,7 @@ def check_thermal(
         f"rise within range: {', '.join(f'{k} {v}' for k, v in by.items())}; compressor return by day "
         f"{ret_days}: "
         + (f"{int(ret.sum())}/{len(ret)} ({ret_share:.0%})" if len(ret) else "no measurable cleaned episodes")
+        + unmeasured_text
         + f"; velocity in healthy range {int(vel.sum())}/{len(vel)}"
         + sp_text,
         bool(rise_ok and ret_ok and vel_ok and sp_ok),
@@ -666,13 +692,13 @@ def spindle_cooling_outcomes(events: pd.DataFrame, wo_truth: pd.DataFrame) -> di
 
 _BEARING_CODES = {"BRG-WEAR", "BRG-SPALL", "BRG-LUBE", "PMP-BRG", "CMP-BRG-MOTOR", "CMP-BRG-AIREND"}
 _TYPE_BY_CODE = {
-    "imbalance": "imbalance",
-    "misalignment": "misalignment",
-    "looseness": "looseness",
-    "rotary_union_leak": "rotary union",
-    "coolant_ingress": "rotary union",
-    "oil_cooler_fouled": "cooler (compressor)",
-    "spindle_cooler_fault": "spindle cooling",
+    "VIB-IMBAL": "imbalance",
+    "VIB-MISALIGN": "misalignment",
+    "VIB-LOOSE": "looseness",
+    "RU-LEAK": "rotary union",
+    "SP-COOLANT-INGRESS": "rotary union",
+    "CMP-OILCOOL-FOUL": "cooler (compressor)",
+    "SP-COOLER": "spindle cooling",
     "CRASH-DMG": "crash",
     "PMP-SEAL": "pump seal or impeller",
     "PMP-IMP": "pump seal or impeller",
@@ -681,11 +707,15 @@ _TYPE_BY_CODE = {
 }
 
 
-def _condition_type(r: Any) -> str | None:
+_LUBE_CODES = {"BRG-LUBE", "CMP-LUBE"}
+
+
+def _condition_type(r: Any, followed: set[str]) -> str | None:
     code = r.failure_code if isinstance(r.failure_code, str) else None
-    notes = r.notes if isinstance(r.notes, str) else ""
+    if r.wo_type in ("inspection", "pm") and code in _LUBE_CODES and r.wo_id not in followed:
+        return "lubrication"
     if r.wo_type == "inspection":
-        return "lubrication" if "lubrication" in notes else None
+        return None
     if r.wo_type == "pm":
         return _TYPE_BY_CODE.get(code) if code else None
     if r.wo_type not in ("unplanned_repair", "condition_based", "corrective"):
@@ -704,25 +734,25 @@ def confirmed_conditions(
 ) -> dict[str, Any]:
     """Confirmed conditions by type and evaluation period from bronze CMMS work orders only."""
     wo = pd.read_parquet(bronze_root / "cmms" / "work_orders.parquet")
-    wo = wo.assign(ctype=[_condition_type(r) for r in wo.itertuples()]).dropna(subset=["ctype"])
+    followed = set(wo["source_wo_id"].dropna())
+    wo = wo.assign(ctype=[_condition_type(r, followed) for r in wo.itertuples()]).dropna(subset=["ctype"])
     sp = cfg["splits"]
     local_day = wo["opened"].dt.tz_convert(TZ).dt.date.astype(str)
     period = np.select(
         [
             local_day.between(str(sp["train"][0]), str(sp["train"][1])),
-            local_day.between(str(sp["validation"][0]), str(sp["validation"][1])),
             local_day.between(str(sp["shadow"][0]), str(sp["shadow"][1])),
         ],
-        ["training", "validation", "shadow"],
+        ["training", "shadow_year"],
         default="outside",
     )
     wo = wo.assign(period=period)
     tab = wo.groupby(["ctype", "period"]).size().unstack(fill_value=0)
-    for col in ("training", "validation", "shadow"):
+    for col in ("training", "shadow_year"):
         if col not in tab:
             tab[col] = 0
-    tab = tab[["training", "validation", "shadow"]]
-    tab["jul2025_jun2026"] = tab["validation"] + tab["shadow"]
+    tab = tab[["training", "shadow_year"]]
+    tab["jul2025_jun2026"] = tab["shadow_year"]
     tab = tab.sort_values("jul2025_jun2026", ascending=False)
     total = tab.sum().rename("total")
     tab = pd.concat([tab, total.to_frame().T])

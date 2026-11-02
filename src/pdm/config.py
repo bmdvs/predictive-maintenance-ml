@@ -16,7 +16,17 @@ from pdm import paths
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
     with open(path or paths.CONFIG_FILE, encoding="utf-8") as fh:
-        return yaml.safe_load(fh)
+        return apply_evaluation_fixes(yaml.safe_load(fh))
+
+
+def apply_evaluation_fixes(cfg: dict[str, Any]) -> dict[str, Any]:
+    """E1 (2026-11-01, switch evaluation.fixes.e1_close_gap_days): the episode close gap for every method
+    and level (was evaluation.catch.episode_gap_days, 7); the crediting window is unchanged. E2 and E3 are
+    read where they apply (evaluation.events.in_comparison_scope; the per-condition flags)."""
+    fx = (cfg.get("evaluation") or {}).get("fixes") or {}
+    if fx.get("e1_close_gap_days"):
+        cfg["evaluation"]["catch"]["episode_gap_days"] = float(fx["e1_close_gap_days"])
+    return cfg
 
 
 @dataclass(frozen=True)

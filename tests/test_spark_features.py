@@ -48,34 +48,38 @@ def _wo(spark):
                 8.0,
                 "",
                 None,
+                None,
             ),
             (
                 "W2",
                 "HMC-01-CP",
                 "inspection",
-                None,
+                "BRG-LUBE",
                 _ts("2023-08-01 10:00:00"),
                 _ts("2023-08-01 11:00:00"),
                 0.0,
                 1.0,
-                "Inspected after platform alert: found lubrication.",
+                "Inspected after platform alert: found lubrication degraded.",
                 "A1",
+                None,
             ),
             (
                 "W3",
                 "CMP-01",
                 "pm",
-                "oil_cooler_fouled",
+                "CMP-OILCOOL-FOUL",
                 _ts("2024-08-01 10:00:00"),
                 _ts("2024-08-03 10:00:00"),
                 0.0,
                 1.0,
-                "PM: oil_cooler_cleaning.",
+                "PM: oil cooler cleaning.",
+                None,
                 None,
             ),
         ],
         "wo_id string, asset_id string, wo_type string, failure_code string, opened timestamp, "
-        "closed timestamp, downtime_hours double, labor_hours double, notes string, platform_alert_id string",
+        "closed timestamp, downtime_hours double, labor_hours double, notes string, "
+        "platform_alert_id string, source_wo_id string",
     )
 
 

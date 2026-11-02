@@ -2,8 +2,9 @@
 
 The pipeline loads each entry with Auto Loader from the landing volume; the local parity runner
 loads the same entries as batch Parquet from the local exports. Both add _source_file and
-_ingested_at. Three CMMS and platform tables carry nanosecond timestamps; with NANOS_AS_LONG set
-they are read as integers and converted to timestamps.
+_ingested_at. Every timestamp column is listed in nanos_columns: exports written with nanosecond
+timestamps are read as integers with NANOS_AS_LONG set and converted to timestamps; columns written
+at microsecond precision read as timestamps and are left as they are.
 """
 
 from __future__ import annotations
@@ -25,17 +26,17 @@ class BronzeTable:
 
 
 BRONZE_TABLES: tuple[BronzeTable, ...] = (
-    BronzeTable("cm_scalars", "cm_platform/scalars"),
-    BronzeTable("cm_alerts", "cm_platform/alerts"),
+    BronzeTable("cm_scalars", "cm_platform/scalars", nanos_columns=("hour_utc",)),
+    BronzeTable("cm_alerts", "cm_platform/alerts", nanos_columns=("alert_ts",)),
     BronzeTable("cm_sensor_events", "cm_platform/sensor_events", nanos_columns=("ts",)),
-    BronzeTable("cm_burst_index", "cm_platform", "burst_index.parquet"),
-    BronzeTable("ctrl_minute", "controller/minute_agg"),
-    BronzeTable("ctrl_hz1", "controller/hz1"),
-    BronzeTable("ctrl_events", "controller/events"),
-    BronzeTable("ctrl_khz_index", "controller/khz_index"),
-    BronzeTable("cmp_minute", "compressor_ctrl/minute"),
-    BronzeTable("cmp_room", "compressor_ctrl/room"),
-    BronzeTable("cmp_events", "compressor_ctrl/events"),
+    BronzeTable("cm_burst_index", "cm_platform", "burst_index.parquet", ("hour_utc",)),
+    BronzeTable("ctrl_minute", "controller/minute_agg", nanos_columns=("minute_utc",)),
+    BronzeTable("ctrl_hz1", "controller/hz1", nanos_columns=("ts_utc",)),
+    BronzeTable("ctrl_events", "controller/events", nanos_columns=("ts_utc",)),
+    BronzeTable("ctrl_khz_index", "controller/khz_index", nanos_columns=("event_ts_utc",)),
+    BronzeTable("cmp_minute", "compressor_ctrl/minute", nanos_columns=("minute_utc",)),
+    BronzeTable("cmp_room", "compressor_ctrl/room", nanos_columns=("minute_utc",)),
+    BronzeTable("cmp_events", "compressor_ctrl/events", nanos_columns=("ts_utc",)),
     BronzeTable("cmms_work_orders", "cmms", "work_orders.parquet", ("opened", "started", "closed")),
     BronzeTable("cmms_pm_schedule", "cmms", "pm_schedule.parquet", ("due", "completed")),
     BronzeTable("cmms_drawbar_force_log", "cmms", "drawbar_force_log.parquet"),

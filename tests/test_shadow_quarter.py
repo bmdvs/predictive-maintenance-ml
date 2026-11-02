@@ -1,4 +1,4 @@
-"""Per-month horizons, shadow evaluation periods, the scoring log and alert rows for monitoring."""
+"""Horizons, the scoring log, alert rows and drift references for monitoring over the shadow year."""
 
 import copy
 
@@ -21,33 +21,17 @@ def _cfg(holdout: bool, as_of: str | None) -> dict:
 
 
 def test_horizon_by_month():
-    assert tasks.horizon(_cfg(True, None)) == pd.Timestamp("2026-04-01 05:00", tz=UTC)
+    assert tasks.horizon(_cfg(True, None)) == pd.Timestamp("2025-07-01 05:00", tz=UTC)
     assert tasks.horizon(_cfg(False, None)) == pd.Timestamp("2026-07-01 05:00", tz=UTC)
     assert tasks.horizon(_cfg(False, "2026-04")) == pd.Timestamp("2026-05-01 05:00", tz=UTC)
     assert tasks.horizon(_cfg(False, "2026-06")) == pd.Timestamp("2026-07-01 05:00", tz=UTC)
+    assert tasks.horizon(_cfg(False, "2025-07")) == pd.Timestamp("2025-08-01 05:00", tz=UTC)
     with pytest.raises(ValueError):
-        tasks.horizon(_cfg(False, "2026-03"))
+        tasks.horizon(_cfg(False, "2025-06"))
     with pytest.raises(ValueError):
         tasks.horizon(_cfg(False, "2026-07"))
     with pytest.raises(ValueError):
         tasks.horizon(_cfg(True, "2026-04"))
-
-
-def test_shadow_periods():
-    april = tasks.shadow_periods(_cfg(False, "2026-04"))
-    assert [p[0] for p in april] == ["2026-04", "2026-Q2"]
-    assert april[0][1] == pd.Timestamp("2026-04-01 05:00", tz=UTC) and april[0][2] == pd.Timestamp(
-        "2026-05-01 05:00", tz=UTC
-    )
-    may = tasks.shadow_periods(_cfg(False, "2026-05"))
-    assert may[0][1] == pd.Timestamp("2026-05-01 05:00", tz=UTC) and may[1][1] == pd.Timestamp(
-        "2026-04-01 05:00", tz=UTC
-    )
-    june = tasks.shadow_periods(_cfg(False, "2026-06"))
-    assert [p[0] for p in june] == ["2026-06", "2026-Q2", "2025-07_to_2026-06"]
-    assert june[2][1] == pd.Timestamp("2025-07-01 05:00", tz=UTC) and june[2][2] == pd.Timestamp(
-        "2026-07-01 05:00", tz=UTC
-    )
 
 
 def test_scoring_log_tier_and_outcome_window():
@@ -78,7 +62,7 @@ def test_scoring_log_tier_and_outcome_window():
     assert at.loc[pd.Timestamp("2026-03-01", tz=UTC), "outcome"] == 1.0
     assert at.loc[pd.Timestamp("2026-03-26", tz=UTC), "outcome"] == 0.0
     assert at.loc[pd.Timestamp("2026-04-15", tz=UTC), "outcome"] is None
-    assert set(log["period"]) <= {"validation", "gap", "shadow"}
+    assert set(log["period"]) <= {"training", "gap", "shadow"}
 
 
 def test_alert_rows_window():
@@ -103,20 +87,6 @@ def test_entrypoint_as_of():
     assert a.as_of == "2026-05"
     assert entrypoints.parse("pdm-score", ["--catalog=pdm", "--config=c.yaml", "--as_of="]).as_of == ""
     assert entrypoints.parse("pdm-score", ["--catalog", "pdm", "--config", "c.yaml"]).as_of is None
-
-
-def test_uniform_types_before_write():
-    d = pd.DataFrame({"a": [True, 3, None], "b": ["x", 1, None], "c": [1.0, 2.0, np.nan]})
-    u = tasks._uniform_types(d)
-    assert u["a"].tolist()[:2] == [1.0, 3.0] and np.isnan(u["a"].iloc[2])
-    assert u["b"].tolist() == ["x", "1", None]
-    assert u["c"].dtype == float
-
-
-def test_shadow_months():
-    assert tasks.shadow_months(_cfg(False, "2026-04")) == ["2026-04"]
-    assert tasks.shadow_months(_cfg(False, "2026-06")) == ["2026-04", "2026-05", "2026-06"]
-    assert tasks.shadow_months(_cfg(False, None)) == ["2026-04", "2026-05", "2026-06"]
 
 
 def test_case_trigger_text_does_not_depend_on_row_order():
@@ -158,20 +128,20 @@ def _ts(s: str) -> pd.Timestamp:
 def test_drift_reference_resets_after_a_rebaseline_window():
     from pdm.monitoring import performance as mon
 
-    # validation level 0; a repair on 2026-03-10 moves the level to 1 for good
+    # reference level 0; a repair on 2026-03-10 moves the level to 1 for good
     ind = _hourly("P", "2025-07-01", "2026-07-01", [("2026-03-10", 1.0)])
     base = [f"2025-{m:02d}" for m in range(7, 13)]
     months = ["2026-04", "2026-05", "2026-06"]
     plain = mon.feature_drift(ind, ["x"], base, months)
-    assert (plain["wasserstein_scaled"] > 5).all() and set(plain["reference"]) == {"validation"}
+    assert (plain["wasserstein_scaled"] > 5).all() and set(plain["reference"]) == {"training reference"}
     ref = mon.Reference(_ts("2026-03-10"), _ts("2026-03-31"), _ts("2026-04-30 05:00"), False)
     reset = mon.feature_drift(ind, ["x"], base, months, {"P": [ref]})
     assert set(reset["month"]) == {"2026-04", "2026-05", "2026-06"}
     assert (reset["wasserstein_scaled"] < 0.5).all()
-    assert set(reset["reference"]) == {"re-baseline 2026-03-09 plus scored days"}
+    assert set(reset["reference"]) == {"re-centering 2026-03-09 plus scored days"}
 
 
-def test_drift_reference_still_forming_keeps_validation_and_skips_its_hours():
+def test_drift_reference_still_forming_keeps_the_training_reference_and_skips_its_hours():
     from pdm.monitoring import performance as mon
 
     ind = _hourly("P", "2025-07-01", "2026-07-01", [("2026-04-20", 1.0)])
@@ -179,7 +149,9 @@ def test_drift_reference_still_forming_keeps_validation_and_skips_its_hours():
     ref = mon.Reference(_ts("2026-04-20"), _ts("2026-05-11"), None, False)
     d = mon.feature_drift(ind, ["x"], base, ["2026-04", "2026-05"], {"P": [ref]}).set_index("month")
     assert list(d.index) == ["2026-04"]
-    assert d.at["2026-04", "reference"] == "validation" and d.at["2026-04", "wasserstein_scaled"] < 0.5
+    assert (
+        d.at["2026-04", "reference"] == "training reference" and d.at["2026-04", "wasserstein_scaled"] < 0.5
+    )
 
 
 def test_drift_references_window_plus_scored_days_or_window_only():

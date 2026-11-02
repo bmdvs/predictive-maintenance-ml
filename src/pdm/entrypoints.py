@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from pdm import log, registry, tasks
+from pdm import log, ml_tasks, registry, tasks
 from pdm.config import load_config
 from pdm.store import Store
 
@@ -43,6 +43,9 @@ def parse(prog: str, argv: list[str] | None = None) -> argparse.Namespace:
     _flag(p, "as-of", default=None, help="shadow-quarter month YYYY-MM; the data horizon is its end")
     _flag(p, "train-stages", default="all", help="train: comma-separated training stages, or all")
     _flag(p, "monitor-stages", default="all", help="monitor: evaluation, monitoring, or all")
+    _flag(
+        p, "finalist", default="", help="0 or 1: train, register and score that finalist (empty: config grid)"
+    )
     return p.parse_args(argv)
 
 
@@ -56,11 +59,20 @@ def setup(prog: str, argv: list[str] | None = None) -> tuple[Store, dict[str, An
     cfg = load_config(args.config)
     if args.as_of:
         cfg["evaluation"]["as_of"] = args.as_of
+    args.alias = registry.CHAMPION
+    if str(args.finalist).strip() != "":
+        args.alias = ml_tasks.apply_finalist(cfg, int(args.finalist))
+        LOG.info(
+            "finalist %s, alias %s, candidates %s",
+            args.finalist,
+            args.alias,
+            cfg["models"]["nbm"]["candidates"],
+        )
     LOG.info("data horizon %s (as_of %s)", tasks.horizon(cfg), args.as_of or "not set")
     return Store(spark, catalog=args.catalog), cfg, args
 
 
-TRAIN_STAGES = ("rule_floor", "nbm", "controller_health", "survival", "supervised")
+TRAIN_STAGES = ("rule_floor", "ml_model", "controller_health", "survival", "supervised")
 
 
 MONITOR_STAGES = ("evaluation", "monitoring")
@@ -82,16 +94,17 @@ def train_stages(value: str) -> list[str]:
 
 
 def train_models(argv: list[str] | None = None) -> None:
-    """Rule-floor comparison runs, per-point model challengers, controller health, survival and the
-    supervised gate; --train-stages runs a subset (a survival-only run logs no per-point challenger)."""
+    """Rule-floor comparison runs, the ML Model's training run (expanding-window selection on two folds,
+    the champion refit on all of training), controller health, survival and the supervised gate;
+    --train-stages runs a subset."""
     store, cfg, args = setup("pdm-train-models", argv)
     root = args.experiment_root.rstrip("/")
     stages = train_stages(args.train_stages)
     LOG.info("training stages %s", stages)
     if "rule_floor" in stages:
         tasks.rule_floor_task(store, cfg, f"{root}/rule_floor")
-    if "nbm" in stages:
-        tasks.nbm_task(store, cfg, f"{root}/nbm", job_run_id=args.job_run_id)
+    if "ml_model" in stages:
+        ml_tasks.train_task(store, cfg, f"{root}/ml_model", job_run_id=args.job_run_id)
     if "controller_health" in stages:
         tasks.controller_health_task(store, cfg, f"{root}/controller_health")
     if "survival" in stages:
@@ -101,7 +114,8 @@ def train_models(argv: list[str] | None = None) -> None:
 
 
 def promote(argv: list[str] | None = None) -> None:
-    """Register the challenger, evaluate the gates and move the champion alias when allowed."""
+    """Register the training run's champion, evaluate the gates once and move the champion alias when
+    allowed."""
     store, cfg, args = setup("pdm-promote", argv)
     out = registry.promote(
         store,
@@ -111,38 +125,41 @@ def promote(argv: list[str] | None = None) -> None:
         job_run_id=args.job_run_id,
         run_id=args.run_id,
         auto_promote=args.auto_promote,
+        alias=args.alias,
     )
     log.get_logger("pdm.entrypoints").info("promote: %s", out)
 
 
-def champion(catalog: str) -> tuple[Any, str]:
-    """The champion per-point models from the Unity Catalog registry and their version label."""
+def champion(catalog: str, alias: str = registry.CHAMPION) -> tuple[Any, str]:
+    """The frozen ML Model from the Unity Catalog registry under the alias (champion, or challenger for the
+    second finalist) and its version label."""
     import mlflow
     from mlflow import MlflowClient
 
     mlflow.set_registry_uri("databricks-uc")
     name = registry.model_name(catalog)
-    v = MlflowClient(registry_uri="databricks-uc").get_model_version_by_alias(name, registry.CHAMPION).version
-    model = mlflow.pyfunc.load_model(f"models:/{name}@{registry.CHAMPION}").unwrap_python_model()
+    v = MlflowClient(registry_uri="databricks-uc").get_model_version_by_alias(name, alias).version
+    model = mlflow.pyfunc.load_model(f"models:/{name}@{alias}").unwrap_python_model()
     return model, f"{registry.MODEL}/{v}"
 
 
 def score(argv: list[str] | None = None) -> None:
-    """Per-point model scores from the champion, then prognosis, fusion and advisory."""
+    """The shadow year scored with the frozen ML Model, then prognosis, and the levels of both methods
+    (ALERT episodes and ALARM starts) with the ML Model's cases and work requests."""
     store, cfg, args = setup("pdm-score", argv)
-    model, version = champion(args.catalog)
-    tasks.nbm_score_task(store, cfg, model, version)
+    model, version = champion(args.catalog, args.alias)
+    ml_tasks.score_task(store, cfg, model, version)
     tasks.prognosis_task(store, cfg)
-    tasks.fusion_advisory_task(store, cfg)
+    ml_tasks.levels_task(store, cfg)
 
 
 def monitor(argv: list[str] | None = None) -> None:
-    """Evaluation, then monitoring (skipped while the shadow quarter is held out); --monitor-stages monitoring
-    recomputes monitoring as of a month without rewriting that month's published evaluation."""
+    """Evaluation, then monitoring over the twelve shadow-year months (skipped while the shadow year is held
+    out); --monitor-stages runs one of them."""
     store, cfg, args = setup("pdm-monitor", argv)
     run = stages(args.monitor_stages, MONITOR_STAGES)
     LOG.info("monitor stages %s", run)
     if "evaluation" in run:
-        tasks.evaluation_task(store, cfg)
+        ml_tasks.evaluation_task(store, cfg)
     if "monitoring" in run:
-        tasks.monitoring_task(store, cfg)
+        ml_tasks.monitoring_task(store, cfg)

@@ -312,53 +312,51 @@ It is deployed from a Declarative Automation Bundle with development and product
 
 **Title:** Model Monitoring Report
 
-**Subtitle:** April to June 2026
+**Subtitle:** July 2025 to June 2026
 
 ### 1. Summary
 
-The monitoring rule calls for a review and full refit of the model layer after May and of controller health after May and June. Both verdicts come from alert rates measured against low validation-period rates, where one alert more or less moves the ratio across the 0.5 to 2.0 band:
-- the model layer's rate moved from a third of its reference in April to 2.3 times it in May;
-- controller health's reference is 0.017 alerts per asset-month.
+The monitoring rule calls for a review and full refit of the ML Model after September and October. The verdict comes mainly from catch shares of 0.50, 0.33 and 0.50 in August, September and October against a training reference of 0.79, while the ML Model's alert rate ran at 0.4 to 1.5 times its reference of 0.267 alerts per asset-month.
 
-The drift trigger fired in April and June without changing the verdict. Each month's challenger passed its promotion gates, and versions 5 to 7 became champion in turn. A full refit is a review step and was not run within the record.
+The drift trigger fired in every month without changing the verdict. Version 13 passed its promotion gates once and stayed champion for the year. A full refit is a review step and was not run within the record.
 
-**Exhibit: Monitoring by month, model layer**
+**Exhibit: Monitoring by month, ML Model**
 
 #### 2.1 Performance and alert rates
 
-The model layer caught both conditions in May and one of two in April; June had no confirmed conditions. Its alert rate was:
-- 0.07 per asset-month in April;
-- 0.50 in May, when 6 of its 7 alerts were not followed by a confirmed condition;
-- 0.21 in June.
+The ML Model caught 23 of the 32 conditions over the year; June had no confirmed conditions. Its alert rate was:
+- 0.39 per asset-month in July and April, its highest;
+- 0.25 in June, when all 7 of its alerts were false;
+- 0.11 in August, its lowest.
 
-The vendor rules stayed within their band all quarter, at 0.21 to 0.29.
+Vendor Rules stayed within their band in every month but August, at 0.14 to 0.61.
 
-**Exhibit: Alerts per asset-month against the validation rate and its tolerance band**
+**Exhibit: Alerts per asset-month against the training reference rate and its tolerance band**
 
 **Exhibit: Event performance by month and method**
 
 #### 2.2 Drift and data quality
 
-Feature drift flagged 8, 5 and 8 of the 20 points in April, May and June. The largest distances were on the CMP-01 airend, which carries an open bearing case at the record end, and the HMC-04 flood pump.
+Feature drift flagged 10 to 19 of the 40 points each month. The largest distances were on the HMC-07 TSC pump and the HMC-01 flood pump.
 
 The drift trigger fired for two reasons:
-- **April:** points whose post-repair references were still forming left the comparison, which raised the drifted share among the rest.
-- **June:** score drift on four points whose post-repair references are narrow.
+- **Score drift:** 37% to 63% of point scores drifted each month, above the 30% share.
+- **Feature drift:** 24% to 37% of point-features drifted, above the 30% share in 10 of the 12 months.
 
-Data-quality exceptions rose from 9 to 15 point-months over the quarter, 35 in all. Most are isolated implausible rows spread across 18 points; the standby compressor, which takes no measurement while idle, accounts for 6.
+Data-quality exceptions ran at 19 to 29 point-months a month, 278 in all. Most are isolated implausible rows spread across all 40 points; the compressors, which take no measurement while idle, account for 96.
 
 **Exhibit: Feature drift by point and month**
 
 **Exhibit: Data quality by point and month**
 
-#### 2.3 Model updates and baseline resets
+#### 2.3 Champion and re-centering
 
-- **Model versions.** Versions 5, 6 and 7 passed all four gates and were promoted in April, May and June. May's false-episode rate was 0.47 against a 0.51 budget.
-- **Baseline resets.** Five points started new baselines after repairs in the quarter: both HMC-01 spindle points, both HMC-04 spindle points, and the HMC-04 flood pump.
+- **Model versions.** Version 13 passed all five gates once and was champion for the whole year. Its false-episode rate was 0.042 against a 0.411 limit.
+- **Re-centering.** 32 points on 22 assets were re-centered 54 times after repairs or a remount; the plausibility check flagged five, on the HMC-01, HMC-03 and HMC-08 spindles.
 
-**Exhibit: Champion per monthly cycle, with gate results**
+**Exhibit: Champion, with gate results**
 
-**Exhibit: Post-repair baseline resets**
+**Exhibit: Post-repair re-centering**
 
 ### Appendix
 - the retraining rule as defined, including the action a retrain verdict triggers;

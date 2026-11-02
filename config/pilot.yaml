@@ -1,15 +1,26 @@
 # Pilot overlay (CLAUDE.md section 14.3). Loaded only with --pilot; a full run refuses this file.
 # The override block is removed before the full run.
+# pilot04 (revision 2): HMC-01 (older) and HMC-05 (new, older) with all their points, and the four
+# compressors (dispatch is plant-level), six months from 2023-07-01, run on the full-run path.
 
 window: {start: 2023-07-01, end: 2023-12-31}
-points: [HMC-01-SP-F, HMC-01-SP-R, HMC-01-TSC, CMP-01-MDE]
-pilot_assets: [HMC-01, CMP-01, CMP-02]
+points: [HMC-01-SP-F, HMC-01-SP-R, HMC-01-TSC, HMC-01-CP, HMC-05-SP-F, HMC-05-SP-R, HMC-05-TSC, HMC-05-CP,
+         CMP-01-MDE, CMP-01-AE, CMP-02-MDE, CMP-02-AE, CMP-03-MDE, CMP-03-AE, CMP-04-MDE, CMP-04-AE]
+pilot_assets: [HMC-01, HMC-05, CMP]
 
 override:
   forced_instances:
-    - point_id: HMC-01-SP-F
+    - point_id: HMC-05-SP-F               # runs to stage 4 and failure: stage-4 housing and thermistor heat; first spare swap
       component: spindle_front
       defect: outer_race
-      onset_date: 2023-08-15
-      beta_quantile: 0.75                 # about 10 weeks onset to failure at 62 running h per week
+      onset_date: 2023-07-10
+      beta_quantile: 0.75
       inspection_detection: none          # inspections on this instance close no_fault_found
+  forced_events:
+    - {group: HMC-01, kind: spindle_failure, date: 2023-11-06}       # spare available: swap
+    - {group: HMC-05, kind: spindle_failure, date: 2023-11-20}       # spare out for rebuild: no_spare, longer repair
+    - {group: HMC-05, kind: spindle_cooling, abrupt: false, date: 2023-07-20}   # gradual chiller fault (M1)
+    - {group: HMC-01, kind: spindle_cooling, abrupt: true, date: 2023-08-15}    # abrupt chiller fault (M2)
+    - {group: HMC-01, kind: lube, date: 2023-08-01}                  # lubrication episode for the lube PM finding (M9)
+    - {group: HMC-01, kind: cavitation, asset_id: HMC-01-TSC, date: 2023-09-05}   # TSC cavitation wear multipliers (M5)
+    - {group: CMP, kind: cooler_fouling, asset_id: CMP-03, date: 2023-07-10}      # airend housing rise from fouling

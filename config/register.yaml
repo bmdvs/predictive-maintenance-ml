@@ -1,6 +1,8 @@
 # Asset register (CLAUDE.md section 5.5). Fault frequencies are computed from this geometry in code.
 # Bearing geometry: ball (or roller) count, ball diameter mm, pitch diameter mm, contact angle deg.
 # running_h_at_record_start is the component age on 2023-07-01.
+# Revision 2 (2026-10-29): 40 machines, 8 HMCs, 4 compressors, 40 sensor points; new units follow the existing pattern
+# of their class (approved at the build plan). Compressors carry lead_order for the four-unit rotation (was role: duty or standby).
 
 bearing_types:
   7014C-P4: {kind: angular_contact_ball, n: 19, d_mm: 10.53, pitch_mm: 90.0, contact_deg: 15.0}   # d/D 0.117
@@ -17,6 +19,10 @@ machines:
   - {machine_id: HMC-02, class: hmc, age_class: older, install_year: 2014, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, taper: 40, pallets: 2, tools: 60, crash_load_limit_pct: 250}
   - {machine_id: HMC-03, class: hmc, age_class: newer, install_year: 2019, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, taper: 40, pallets: 2, tools: 60, crash_load_limit_pct: 250}
   - {machine_id: HMC-04, class: hmc, age_class: newer, install_year: 2021, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, taper: 40, pallets: 2, tools: 60, crash_load_limit_pct: 250}
+  - {machine_id: HMC-05, class: hmc, age_class: older, install_year: 2013, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, taper: 40, pallets: 2, tools: 60, crash_load_limit_pct: 250}
+  - {machine_id: HMC-06, class: hmc, age_class: older, install_year: 2016, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, taper: 40, pallets: 2, tools: 60, crash_load_limit_pct: 250}
+  - {machine_id: HMC-07, class: hmc, age_class: newer, install_year: 2020, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, taper: 40, pallets: 2, tools: 60, crash_load_limit_pct: 250}
+  - {machine_id: HMC-08, class: hmc, age_class: newer, install_year: 2022, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, taper: 40, pallets: 2, tools: 60, crash_load_limit_pct: 250}
   - {machine_id: VMC-01, class: vmc, age_class: older, install_year: 2008, controller: brand_b, spindle_type: belt, rated_rpm: 8000, crash_load_limit_pct: 250}
   - {machine_id: VMC-02, class: vmc, age_class: older, install_year: 2010, controller: brand_a, spindle_type: belt, rated_rpm: 8000, crash_load_limit_pct: 250}
   - {machine_id: VMC-03, class: vmc, age_class: older, install_year: 2012, controller: brand_b, spindle_type: belt, rated_rpm: 10000, crash_load_limit_pct: 250}
@@ -25,34 +31,64 @@ machines:
   - {machine_id: VMC-06, class: vmc, age_class: newer, install_year: 2018, controller: brand_a, spindle_type: direct_drive, rated_rpm: 12000, crash_load_limit_pct: 250}
   - {machine_id: VMC-07, class: vmc, age_class: newer, install_year: 2020, controller: brand_b, spindle_type: direct_drive, rated_rpm: 12000, crash_load_limit_pct: 250}
   - {machine_id: VMC-08, class: vmc, age_class: newer, install_year: 2022, controller: brand_a, spindle_type: direct_drive, rated_rpm: 12000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-09, class: vmc, age_class: older, install_year: 2009, controller: brand_a, spindle_type: belt, rated_rpm: 8000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-10, class: vmc, age_class: older, install_year: 2011, controller: brand_b, spindle_type: belt, rated_rpm: 8000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-11, class: vmc, age_class: older, install_year: 2013, controller: brand_a, spindle_type: belt, rated_rpm: 10000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-12, class: vmc, age_class: older, install_year: 2015, controller: brand_b, spindle_type: belt, rated_rpm: 10000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-13, class: vmc, age_class: newer, install_year: 2017, controller: brand_a, spindle_type: direct_drive, rated_rpm: 12000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-14, class: vmc, age_class: newer, install_year: 2019, controller: brand_b, spindle_type: direct_drive, rated_rpm: 12000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-15, class: vmc, age_class: newer, install_year: 2021, controller: brand_a, spindle_type: direct_drive, rated_rpm: 12000, crash_load_limit_pct: 250}
+  - {machine_id: VMC-16, class: vmc, age_class: newer, install_year: 2022, controller: brand_b, spindle_type: direct_drive, rated_rpm: 12000, crash_load_limit_pct: 250}
   - {machine_id: LTH-01, class: lathe, age_class: older, install_year: 2010, controller: brand_b, spindle_type: belt, rated_rpm: 3000, crash_load_limit_pct: 250}
   - {machine_id: LTH-02, class: lathe, age_class: older, install_year: 2012, controller: brand_b, spindle_type: belt, rated_rpm: 3500, crash_load_limit_pct: 250}
   - {machine_id: LTH-03, class: lathe, age_class: newer, install_year: 2015, controller: brand_a, spindle_type: belt, rated_rpm: 4000, crash_load_limit_pct: 250}
   - {machine_id: LTH-04, class: lathe, age_class: newer, install_year: 2018, controller: brand_a, spindle_type: integral_motor, rated_rpm: 4500, live_tooling: true, crash_load_limit_pct: 250}
   - {machine_id: LTH-05, class: lathe, age_class: newer, install_year: 2020, controller: brand_b, spindle_type: integral_motor, rated_rpm: 4500, crash_load_limit_pct: 250}
+  - {machine_id: LTH-06, class: lathe, age_class: older, install_year: 2011, controller: brand_b, spindle_type: belt, rated_rpm: 3000, crash_load_limit_pct: 250}
+  - {machine_id: LTH-07, class: lathe, age_class: older, install_year: 2013, controller: brand_a, spindle_type: belt, rated_rpm: 3500, crash_load_limit_pct: 250}
+  - {machine_id: LTH-08, class: lathe, age_class: newer, install_year: 2016, controller: brand_a, spindle_type: belt, rated_rpm: 4000, crash_load_limit_pct: 250}
+  - {machine_id: LTH-09, class: lathe, age_class: newer, install_year: 2019, controller: brand_b, spindle_type: integral_motor, rated_rpm: 4500, live_tooling: true, crash_load_limit_pct: 250}
+  - {machine_id: LTH-10, class: lathe, age_class: newer, install_year: 2020, controller: brand_a, spindle_type: integral_motor, rated_rpm: 4500, crash_load_limit_pct: 250}
   - {machine_id: MTN-01, class: mill_turn, age_class: newer, install_year: 2017, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, crash_load_limit_pct: 250}
   - {machine_id: MTN-02, class: mill_turn, age_class: newer, install_year: 2020, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, crash_load_limit_pct: 250}
+  - {machine_id: MTN-03, class: mill_turn, age_class: newer, install_year: 2018, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, crash_load_limit_pct: 250}
+  - {machine_id: MTN-04, class: mill_turn, age_class: newer, install_year: 2022, controller: brand_a, spindle_type: integral_motor, rated_rpm: 12000, crash_load_limit_pct: 250}
   - {machine_id: GRD-01, class: grinder, age_class: older, install_year: 2005, controller: brand_b, spindle_type: belt, rated_rpm: 3600, crash_load_limit_pct: 250}
+  - {machine_id: GRD-02, class: grinder, age_class: older, install_year: 2009, controller: brand_b, spindle_type: belt, rated_rpm: 3600, crash_load_limit_pct: 250}
 
 hmc_spindles:
   - {machine_id: HMC-01, front: 7014C-P4, rear: 7012C-P4, last_rebuild: 2019-03-11, running_h_at_record_start: 14500, gear_ratio: 1.0}
   - {machine_id: HMC-02, front: 7014C-P4, rear: 7012C-P4, last_rebuild: 2020-02-17, running_h_at_record_start: 11500, gear_ratio: 1.0}
   - {machine_id: HMC-03, front: 7014C-P4, rear: 7012C-P4, last_rebuild: null, running_h_at_record_start: 14000, gear_ratio: 1.0}
   - {machine_id: HMC-04, front: 7014C-P4, rear: 7012C-P4, last_rebuild: null, running_h_at_record_start: 6500, gear_ratio: 1.0}
+  - {machine_id: HMC-05, front: 7014C-P4, rear: 7012C-P4, last_rebuild: 2020-09-14, running_h_at_record_start: 9000, gear_ratio: 1.0}
+  - {machine_id: HMC-06, front: 7014C-P4, rear: 7012C-P4, last_rebuild: 2021-05-10, running_h_at_record_start: 6800, gear_ratio: 1.0}
+  - {machine_id: HMC-07, front: 7014C-P4, rear: 7012C-P4, last_rebuild: null, running_h_at_record_start: 10000, gear_ratio: 1.0}
+  - {machine_id: HMC-08, front: 7014C-P4, rear: 7012C-P4, last_rebuild: null, running_h_at_record_start: 3000, gear_ratio: 1.0}
 
 pumps:
   - {asset_id: HMC-01-TSC, kind: tsc, machine_id: HMC-01, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: 2022-03-14, running_h_at_record_start: 1900}
   - {asset_id: HMC-02-TSC, kind: tsc, machine_id: HMC-02, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: 2022-09-12, running_h_at_record_start: 1150}
   - {asset_id: HMC-03-TSC, kind: tsc, machine_id: HMC-03, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: 2023-01-16, running_h_at_record_start: 650}
   - {asset_id: HMC-04-TSC, kind: tsc, machine_id: HMC-04, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: 2021-11-08, running_h_at_record_start: 2400}
+  - {asset_id: HMC-05-TSC, kind: tsc, machine_id: HMC-05, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: 2022-05-16, running_h_at_record_start: 1700}
+  - {asset_id: HMC-06-TSC, kind: tsc, machine_id: HMC-06, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: 2022-11-14, running_h_at_record_start: 1000}
+  - {asset_id: HMC-07-TSC, kind: tsc, machine_id: HMC-07, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: 2023-02-13, running_h_at_record_start: 550}
+  - {asset_id: HMC-08-TSC, kind: tsc, machine_id: HMC-08, motor_rpm: 3450, motor_kw: 7.5, motor_de_bearing: "6309", last_replacement: null, running_h_at_record_start: 2100}
   - {asset_id: HMC-01-CP, kind: flood, machine_id: HMC-01, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: 2018-05-21, running_h_at_record_start: 8000}
   - {asset_id: HMC-02-CP, kind: flood, machine_id: HMC-02, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: 2020-06-08, running_h_at_record_start: 5000}
   - {asset_id: HMC-03-CP, kind: flood, machine_id: HMC-03, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: null, running_h_at_record_start: 6000}
   - {asset_id: HMC-04-CP, kind: flood, machine_id: HMC-04, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: null, running_h_at_record_start: 3000}
+  - {asset_id: HMC-05-CP, kind: flood, machine_id: HMC-05, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: 2019-08-12, running_h_at_record_start: 7000}
+  - {asset_id: HMC-06-CP, kind: flood, machine_id: HMC-06, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: 2021-03-15, running_h_at_record_start: 4500}
+  - {asset_id: HMC-07-CP, kind: flood, machine_id: HMC-07, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: null, running_h_at_record_start: 7000}
+  - {asset_id: HMC-08-CP, kind: flood, machine_id: HMC-08, motor_rpm: 3450, motor_kw: 1.5, motor_de_bearing: "6205", last_replacement: null, running_h_at_record_start: 2300}
 
 compressors:
-  - {asset_id: CMP-01, role: duty, age_class: older, install_year: 2011, hp: 75, motor_rpm: 1780, motor_de_bearing: "6316", airend_inlet_bearing: NU2210, gear_ratio: 1.94, male_rotor_lobes: 4, female_rotor_lobes: 6, motor_bearing_replaced: 2020-04-20, motor_bearing_running_h_at_record_start: 10000, airend_rebuilt: 2019-06-10, airend_running_h_at_record_start: 14000}
-  - {asset_id: CMP-02, role: standby, age_class: newer, install_year: 2019, hp: 75, motor_rpm: 1780, motor_de_bearing: "6316", airend_inlet_bearing: NU2210, gear_ratio: 1.94, male_rotor_lobes: 4, female_rotor_lobes: 6, motor_bearing_replaced: null, motor_bearing_running_h_at_record_start: 7000, airend_rebuilt: null, airend_running_h_at_record_start: 7000}
+  - {asset_id: CMP-01, lead_order: 1, age_class: older, install_year: 2011, hp: 75, motor_rpm: 1780, motor_de_bearing: "6316", airend_inlet_bearing: NU2210, gear_ratio: 1.94, male_rotor_lobes: 4, female_rotor_lobes: 6, motor_bearing_replaced: 2020-04-20, motor_bearing_running_h_at_record_start: 10000, airend_rebuilt: 2019-06-10, airend_running_h_at_record_start: 14000}
+  - {asset_id: CMP-02, lead_order: 2, age_class: newer, install_year: 2019, hp: 75, motor_rpm: 1780, motor_de_bearing: "6316", airend_inlet_bearing: NU2210, gear_ratio: 1.94, male_rotor_lobes: 4, female_rotor_lobes: 6, motor_bearing_replaced: null, motor_bearing_running_h_at_record_start: 7000, airend_rebuilt: null, airend_running_h_at_record_start: 7000}
+  - {asset_id: CMP-03, lead_order: 3, age_class: older, install_year: 2014, hp: 75, motor_rpm: 1780, motor_de_bearing: "6316", airend_inlet_bearing: NU2210, gear_ratio: 1.94, male_rotor_lobes: 4, female_rotor_lobes: 6, motor_bearing_replaced: 2021-08-16, motor_bearing_running_h_at_record_start: 8000, airend_rebuilt: null, airend_running_h_at_record_start: 21000}
+  - {asset_id: CMP-04, lead_order: 4, age_class: newer, install_year: 2022, hp: 75, motor_rpm: 1780, motor_de_bearing: "6316", airend_inlet_bearing: NU2210, gear_ratio: 1.94, male_rotor_lobes: 4, female_rotor_lobes: 6, motor_bearing_replaced: null, motor_bearing_running_h_at_record_start: 2000, airend_rebuilt: null, airend_running_h_at_record_start: 2000}
 
 sensors:                                   # radial axis for spindles: y (vertical, perpendicular to the horizontal spindle)
   - {point_id: HMC-01-SP-F, asset_id: HMC-01-SP, location: front_bearing_housing, bearing: 7014C-P4, install_date: 2023-07-05, mounting: stud, radial_axis: y, gateway: GW-HMC}
@@ -71,7 +107,27 @@ sensors:                                   # radial axis for spindles: y (vertic
   - {point_id: HMC-04-SP-R, asset_id: HMC-04-SP, location: rear_bearing_housing, bearing: 7012C-P4, install_date: 2023-07-06, mounting: stud, radial_axis: y, gateway: GW-HMC}
   - {point_id: HMC-04-TSC, asset_id: HMC-04-TSC, location: pump_motor_de, bearing: "6309", install_date: 2023-07-06, mounting: stud, gateway: GW-HMC}
   - {point_id: HMC-04-CP, asset_id: HMC-04-CP, location: pump_motor_de, bearing: "6205", install_date: 2023-07-06, mounting: stud, gateway: GW-HMC}
+  - {point_id: HMC-05-SP-F, asset_id: HMC-05-SP, location: front_bearing_housing, bearing: 7014C-P4, install_date: 2023-07-10, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-05-SP-R, asset_id: HMC-05-SP, location: rear_bearing_housing, bearing: 7012C-P4, install_date: 2023-07-10, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-05-TSC, asset_id: HMC-05-TSC, location: pump_motor_de, bearing: "6309", install_date: 2023-07-10, mounting: stud, gateway: GW-HMC2}
+  - {point_id: HMC-05-CP, asset_id: HMC-05-CP, location: pump_motor_de, bearing: "6205", install_date: 2023-07-10, mounting: stud, gateway: GW-HMC2}
+  - {point_id: HMC-06-SP-F, asset_id: HMC-06-SP, location: front_bearing_housing, bearing: 7014C-P4, install_date: 2023-07-10, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-06-SP-R, asset_id: HMC-06-SP, location: rear_bearing_housing, bearing: 7012C-P4, install_date: 2023-07-10, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-06-TSC, asset_id: HMC-06-TSC, location: pump_motor_de, bearing: "6309", install_date: 2023-07-10, mounting: stud, gateway: GW-HMC2}
+  - {point_id: HMC-06-CP, asset_id: HMC-06-CP, location: pump_motor_de, bearing: "6205", install_date: 2023-07-10, mounting: stud, gateway: GW-HMC2}
+  - {point_id: HMC-07-SP-F, asset_id: HMC-07-SP, location: front_bearing_housing, bearing: 7014C-P4, install_date: 2023-07-11, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-07-SP-R, asset_id: HMC-07-SP, location: rear_bearing_housing, bearing: 7012C-P4, install_date: 2023-07-11, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-07-TSC, asset_id: HMC-07-TSC, location: pump_motor_de, bearing: "6309", install_date: 2023-07-11, mounting: stud, gateway: GW-HMC2}
+  - {point_id: HMC-07-CP, asset_id: HMC-07-CP, location: pump_motor_de, bearing: "6205", install_date: 2023-07-11, mounting: stud, gateway: GW-HMC2}
+  - {point_id: HMC-08-SP-F, asset_id: HMC-08-SP, location: front_bearing_housing, bearing: 7014C-P4, install_date: 2023-07-11, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-08-SP-R, asset_id: HMC-08-SP, location: rear_bearing_housing, bearing: 7012C-P4, install_date: 2023-07-11, mounting: stud, radial_axis: y, gateway: GW-HMC2}
+  - {point_id: HMC-08-TSC, asset_id: HMC-08-TSC, location: pump_motor_de, bearing: "6309", install_date: 2023-07-11, mounting: stud, gateway: GW-HMC2}
+  - {point_id: HMC-08-CP, asset_id: HMC-08-CP, location: pump_motor_de, bearing: "6205", install_date: 2023-07-11, mounting: stud, gateway: GW-HMC2}
   - {point_id: CMP-01-MDE, asset_id: CMP-01, location: motor_de, bearing: "6316", install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}
   - {point_id: CMP-01-AE, asset_id: CMP-01, location: airend_inlet, bearing: NU2210, install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}
   - {point_id: CMP-02-MDE, asset_id: CMP-02, location: motor_de, bearing: "6316", install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}
   - {point_id: CMP-02-AE, asset_id: CMP-02, location: airend_inlet, bearing: NU2210, install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}
+  - {point_id: CMP-03-MDE, asset_id: CMP-03, location: motor_de, bearing: "6316", install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}
+  - {point_id: CMP-03-AE, asset_id: CMP-03, location: airend_inlet, bearing: NU2210, install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}
+  - {point_id: CMP-04-MDE, asset_id: CMP-04, location: motor_de, bearing: "6316", install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}
+  - {point_id: CMP-04-AE, asset_id: CMP-04, location: airend_inlet, bearing: NU2210, install_date: 2023-07-07, mounting: stud, gateway: GW-CMP}

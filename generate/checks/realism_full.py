@@ -14,7 +14,7 @@ import pandas as pd
 from scipy.stats import binomtest, fisher_exact, poisson
 
 from generate.checks import realism_conditions as rc
-from generate.checks.realism import _ISO_KEY, CheckResult, _first_consecutive
+from generate.checks.realism import CheckResult, _first_consecutive
 from pdm.config import Register
 from pdm.constants import DAYS_PER_YEAR, SECONDS_PER_MINUTE
 from pdm.ingest.mtconnect_stream import AGG_DECIMALS, aggregate_minutes, compare_aggregates
@@ -85,11 +85,12 @@ def check_lead_times(
                 }
             )
     df = pd.DataFrame(rows)
+    label = ", ".join(f"{k} {v[0]}-{v[1]} wk" for k, v in er.items())
     if df.empty:
         return CheckResult(
             "5",
             "Lead times",
-            "spindle/compressor 4-12 wk, pump 2-6 wk",
+            label,
             "no failed sensored bearings",
             None,
             df,
@@ -103,7 +104,7 @@ def check_lead_times(
     return CheckResult(
         "5",
         "Lead times (median, first stage-2 envelope detection to failure)",
-        "spindle and compressor 4-12 wk, pump 2-6 wk",
+        label,
         "; ".join(parts),
         ok,
         df,
@@ -402,15 +403,31 @@ def check_label_noise(cfg: dict[str, Any], wo_truth: pd.DataFrame) -> CheckResul
     p_wrong = binomtest(k_wrong, n, ln["wrong_code_frac"]).pvalue
     p_miss = binomtest(k_miss, n, ln["missing_code_frac"]).pvalue
     rep = wo_truth[wo_truth["wo_type"].isin(["unplanned_repair", "condition_based"])]
-    lag = (rep["closed"] - rep["started"] - pd.to_timedelta(rep["downtime_hours"], unit="h")) / DAY
+    work_end = rep["started"] + pd.to_timedelta(rep["downtime_hours"], unit="h")
+    d0 = (
+        pd.to_datetime(work_end, utc=True)
+        .dt.tz_convert("America/Chicago")
+        .dt.date.to_numpy(dtype="datetime64[D]")
+    )
+    d1 = (
+        pd.to_datetime(rep["closed"], utc=True)
+        .dt.tz_convert("America/Chicago")
+        .dt.date.to_numpy(dtype="datetime64[D]")
+    )
+    lag = pd.Series(np.busday_count(d0, d1), index=rep.index).astype(
+        float
+    )  # working days (revision 2 batch close)
+    batch = float(
+        (pd.to_datetime(rep["closed"], utc=True).dt.tz_convert("America/Chicago").dt.weekday == 4).mean()
+    )
     ok = p_wrong > alpha and p_miss > alpha and lag.min() >= lag_lo - 1e-9 and lag.max() <= lag_hi + 1e-9
     return CheckResult(
         "10",
         "Label noise",
         f"wrong and missing shares consistent with {ln['wrong_code_frac']:.0%} and {ln['missing_code_frac']:.0%} "
-        f"(binomial p > {alpha}); close lag {lag_lo}-{lag_hi} d",
+        f"(binomial p > {alpha}); close lag {lag_lo}-{lag_hi} working days",
         f"wrong {k_wrong}/{n} (p = {p_wrong:.2f}), missing {k_miss}/{n} (p = {p_miss:.2f}); close lag "
-        f"{lag.min():.2f}-{lag.max():.2f} d",
+        f"{lag.min():.0f}-{lag.max():.0f} working days; closed on a Friday {batch:.0%}",
         bool(ok),
         None,
     )
@@ -567,7 +584,7 @@ def check_controller(cfg: dict[str, Any], bronze_root: Path, wo: pd.DataFrame, r
         a = a[a["execution"] == "interrupted"]
         keys |= set(zip(a["machine_id"], a["minute_utc"], strict=True))
     matched = sum((r.machine_id, r.ts_utc.floor("min")) in keys for r in stops.itertuples())
-    lag_max = pd.Timedelta(days=cfg["label_noise"]["close_lag_days"][1])
+    lag_max = pd.Timedelta(days=cfg["label_noise"]["close_batch"]["working_days_after_work"][1] + 3)
     u = wo[
         (wo["wo_type"] == "unplanned_repair")
         & wo["asset_id"].map(lambda a: _is_machine_asset(a, reg)).astype(bool)
@@ -661,8 +678,7 @@ def check_replay(
 ) -> CheckResult:
     rep = []
     for pid in scalars["point_id"].unique():
-        k = _ISO_KEY[reg.point_class(pid)]
-        s = VendorRuleSettings.for_point_class(cfg, k, "compressor" if k == "compressor" else k)
+        s = VendorRuleSettings.for_point(cfg, reg.point_class(pid))
         rep += replay_point(pid, scalars[scalars["point_id"] == pid], sensor_events, s, cfg)
     r = pd.DataFrame(rep)
     key = ["point_id", "alert_ts", "level", "rules"]
@@ -712,7 +728,7 @@ def headline_counts(
     rep = events[events["event"] == "replacement"]
     insp = wo[(wo["wo_type"] == "inspection") & wo["platform_alert_id"].notna()]
     months = (end - start) / pd.Timedelta(days=DAYS_PER_YEAR / 12)
-    instr_assets = 14
+    instr_assets = len(cfg["checks"]["instrumented_assets"])
     sh0, sh1 = shadow
     in_sh = mach[mach["ts"].between(sh0, sh1)]
     uninstr = [m for m, v in reg.machines.items() if v["class"] != "hmc"]
@@ -732,10 +748,14 @@ def headline_counts(
         "axis_ball_screw_replacements": int((f["mode"] == "ball_screw_or_guide").sum()),
         "hmc_lube_episodes_per_year": len(lube) / years,
         "benign_episodes_per_year": len(episodes) / years,
-        "alert_inspections_nff_share": float(insp["no_fault_found"].mean()) if len(insp) else np.nan,
+        "alert_inspections_nff_share": (
+            float(insp["no_fault_found"].fillna(False).astype(bool).mean()) if len(insp) else np.nan
+        ),
         "rule_alerts_per_instrumented_asset_month": len(alerts) / (instr_assets * months),
-        "shadow_failures_instrumented": int(in_sh["asset_id"].map(_instrumented_asset).astype(bool).sum()),
-        "shadow_failures_uninstrumented": int(
+        "shadow_year_failures_instrumented": int(
+            in_sh["asset_id"].map(_instrumented_asset).astype(bool).sum()
+        ),
+        "shadow_year_failures_uninstrumented": int(
             in_sh["asset_id"].map(lambda a: "-".join(a.split("-")[:2]) in uninstr).astype(bool).sum()
         ),
         "no_measurement_share": float(
@@ -766,13 +786,11 @@ def headline_counts(
         q["confirmed_conditions_jul2025_jun2026"] = confirmed_total
     rows = []
     sc = scalars.drop_duplicates(["point_id", "hour_utc"])
-    duty = next(c for c, v in reg.compressors.items() if v["role"] == "duty")
     classes = {
         "spindles": sc["point_id"].str.contains("-SP-"),
         "tsc_pumps": sc["point_id"].str.endswith("-TSC"),
         "flood_pumps": sc["point_id"].str.endswith("-CP"),
-        "duty_compressor": sc["point_id"].str.startswith(duty),
-        "standby_compressor": sc["point_id"].str.startswith("CMP") & ~sc["point_id"].str.startswith(duty),
+        **{f"compressor_{c}": sc["point_id"].str.startswith(c + "-") for c in reg.compressors},
     }
     col = events[events["event"] == "collision"]
     for qname, val in (
@@ -796,7 +814,7 @@ def headline_counts(
         rows.append(
             {
                 "quantity": f"no_measurement_share_{name}",
-                "expected": "about 0.5" if name == "standby_compressor" else "reported",
+                "expected": "reported",
                 "measured": round(float(sc.loc[mask, "no_measurement"].mean()), 3),
                 "status": "reported",
                 "basis": "scheduled hours",
