@@ -9,7 +9,7 @@ import r2_common as C
 import r19_common as R
 import r19_eval_helpers as H
 import r21_common as Q
-from cb_common import METH, REPO, cb, core
+from cb_common import METH, REPO, cb, conds51, core
 
 from pdm import splits
 from pdm.config import load_config
@@ -95,6 +95,9 @@ B["training_inspections"] = {
     "alert_driven": len(ia),
     "alert_driven_nff": float(ia["no_fault_found"].fillna(False).astype(bool).mean()),
 }
+c51 = conds51()
+on_hc = c51["asset_key"].str.startswith(("HMC", "CMP"))
+B["conditions_hmc_cmp"] = {"total": int(on_hc.sum()), "no_sensor": int((on_hc & ~c51["instrumented"]).sum())}
 B["false_longest"] = {m: {k: str(v) for k, v in out[m].iloc[0].items()} for m in METH}
 bp.write_text(json.dumps(B, indent=1, default=str))
 
