@@ -52,47 +52,23 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 | # | Deliverable | What it is | Links |
 |---|---|---|---|
-| 1 | Maintenance queue | One row per monitored asset with its status, open case and work request. Each asset's detail panel holds indicator trends against baseline, fault-band and spectral evidence from the latest vibration bursts, controller trends, and case and work order history. | [View](https://bmdvs.github.io/predictive-maintenance-ml/) |
-| 2 | Model report | Detection and warning against Vendor Rules, work requests and diagnosis, component life and remaining time, the model overview, and appendices on scoring layers, indicators, evaluation definitions, model selection, governance, validation results, platform and limitations. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) |
-| 3 | Monitoring report | Monthly monitoring of the shadow quarter against the retraining rule: event performance and alert rates by method, feature and score drift, data quality, model versions and post-repair baseline resets. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/monitoring_report.html) |
-
+| 1 | Maintenance queue | The shop's CMMS maintenance queue: one row per asset at ALERT or ALARM under either method, with Vendor Rules' status, the ML Model's shadow status, the suspected condition and the work request. Each asset's detail section holds the ML Model score and measurement trends against Vendor Rules limits, fault-band energies, envelope spectra at the alert and now, controller signals and maintenance history. | [View](https://bmdvs.github.io/predictive-maintenance-ml/) |
+| 2 | Model report | Detection and warning against Vendor Rules, escalation to ALARM and diagnosis; the model overview and condition signatures; model selection, validation, false alerts and misses, and limitations; appendix on indicators, platform and the full timeline. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) |
+| 3 | Monitoring report | Monthly monitoring of the evaluation year against the retraining rule: event performance and alert rates by method, feature and score drift, data quality, the champion model and post-repair re-centering. | [View](https://bmdvs.github.io/predictive-maintenance-ml/reports/monitoring_report.html) |
 ---
 
 ## Code
-
-### Data pipeline: [`databricks/pipeline/`](databricks/pipeline/) and [`src/pdm/ingest/`](src/pdm/ingest/), [`src/pdm/quality/`](src/pdm/quality/)
-
-| Layer | What it is, does and contains |
-|---|---|
-| Bronze | One Auto Loader streaming table per source export table, loaded from the landing volume. |
-| Silver | Measurement points, regime-tagged hourly indicators, healthy windows per point, controller features, confirmed-condition labels from the CMMS, and the data-quality views. |
-| Gold | Baselines per healthy window and regime, the fleet baseline check, rolling features over 24 hours, 7 days and 30 days, and the rule floor. |
-| Quality | Data-quality expectations per table, shared by the pipeline and the local parity run; implausible-row flags on the hourly sensor scalars; gap and measurement-state checks against the controller. |
-
-### Signal processing and features: [`src/pdm/features/`](src/pdm/features/)
-
-| File | What it does |
-|---|---|
-| `burst.py`, `filters.py` | Reduces each triaxial acceleration burst to scalar indicators: velocity, acceleration and high-frequency RMS, crest factor and kurtosis. |
-| `envelope.py`, `kinematics.py` | Envelope analysis with spectral-kurtosis band selection, and bearing defect frequencies from register geometry. |
-| `spectral.py` | Averaged spectrum, shaft-order band energies and one-third-octave band energies. |
-| `indicators.py`, `rolling.py`, `baselines.py` | The hourly indicator table, rolling features and baseline statistics. |
-| `windows.py` | Healthy windows per point from the register and CMMS. |
-| `controller.py` | Controller features per machine, hour and program, and daily controller event counts. |
 
 ### Models and scoring: [`src/pdm/`](src/pdm/)
 
 | File | What it does |
 |---|---|
 | `rules/` | The vendor's baseline alerts replayed from the sensor platform export, and the ISO 20816-3 zone rule, with persistence and suppression shared by every alerting layer. |
-| `models/nbm.py`, `models/nbm_pyfunc.py` | Per-point normal-behavior models (autoencoder, Mahalanobis distance, PCA, isolation forest), one per segment of a point, and the MLflow wrapper for the registry. |
-| `models/controller_health.py` | Spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 20 machines. |
+| `models/nbm.py`, `models/nbm_pyfunc.py` | Per-point normal-behavior models (autoencoder, Mahalanobis distance, PCA, isolation forest), one per sensor point with inputs re-centered at each repair or remount, and the MLflow wrapper for the registry. |
+| `models/controller_health.py` | Spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
 | `fusion/status.py` | Asset status from all alerting layers, and the case log. |
-| `advisory/requests.py` | Work requests at ALARM with a suspected condition from the indicator pattern. |
-| `models/survival.py` | Fleet Weibull and Cox survival models of component lives, with left truncation. |
-| `models/prognosis.py` | Remaining time for pump and compressor bearings, from first detection to the ISO zone D boundary. |
-| `models/supervised.py` | Failure-within-horizon classifier for the rotating auxiliaries, trained only above the minimum failure count. |
-| `evaluation/events.py` | Event-based evaluation against confirmed conditions, at matched false-alert budgets with chance levels. |
+| `advisory/requests.py` | Work requests at ALERT, with a suspected condition and recommended inspection from the measurement pattern. |
+| `evaluation/events.py` | Event-based evaluation against confirmed conditions: catches, warning, and false alerts and false ALARMs per asset-month for each method. |
 
 ### Orchestration, governance and deployment
 
@@ -100,7 +76,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 |---|---|
 | [`databricks.yml`](databricks.yml), [`databricks/`](databricks/) | The Declarative Automation Bundle: dev and prod targets, the Lakeflow pipeline and the monthly job. |
 | [`src/pdm/entrypoints.py`](src/pdm/entrypoints.py), [`src/pdm/tasks.py`](src/pdm/tasks.py) | The job's Python wheel tasks: train, promote, score and monitor. |
-| `src/pdm/registry.py` | Champion and challenger promotion in the Unity Catalog model registry, with the four promotion gates. |
+| `src/pdm/registry.py` | Champion and challenger promotion in the Unity Catalog model registry, with the five promotion gates. |
 | `src/pdm/monitoring/performance.py` | Monthly event performance per method, feature and score drift, and the retraining decision. |
 | `src/pdm/parity.py` | Runs the pipeline and every job task locally on the exports, checked against the workspace's tables. |
 | [`databricks/scripts/`](databricks/scripts/) | Unity Catalog setup, landing the exports, service principal grants and the data profiles, as reproducible CLI scripts. |
