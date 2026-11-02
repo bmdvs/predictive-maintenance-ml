@@ -70,7 +70,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 | `advisory/requests.py` | Work requests at ALERT, with a suspected condition and recommended inspection from the measurement pattern. |
 | `evaluation/events.py` | Event-based evaluation against confirmed conditions: catches, warning, and false alerts and false ALARMs per asset-month for each method. |
 
-### Orchestration, governance and deployment
+### Data & ML Engineering
 
 | File | What it does |
 |---|---|
