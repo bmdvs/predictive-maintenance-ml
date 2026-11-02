@@ -140,8 +140,19 @@ The datasets were generated to represent typical exports from a wireless vibrati
 - CMMS work orders and PM records;
 - ERP jobs and the asset register.
 
-Conditions are built from published degradation and failure mechanisms for rolling bearings, pumps, compressors and machine tools: bearing defect signatures, four-stage degradation, lubrication loss, crash damage and coolant system faults. Realism checks test each against its published behavior. The generators are in [`generate/`](generate/) and the checks in [`generate/checks/`](generate/checks/).
+The data is built from each machine's physical properties and published degradation mechanisms, in order to generate data that's as close to possible to real machine data. The faults were not shaped to suit either monitoring method, and neither the ML Model nor Vendor Rules plays any part in generating it.
 
+- **Machines and operation.** Vibration bursts are synthesized at 25,600 samples a second from each point's kinematics: shaft speed from the controller, and bearing defect frequencies from the bearing geometry in the asset register. Spindle speed and cutting load follow the ERP's jobs and programs, so healthy levels shift with speed and rise with load, as they do on a real spindle. Housing temperature follows load and season in a climate-controlled shop.
+- **Degradation.** Each condition develops through its published signature:
+  - bearing defects through the four degradation stages, from envelope peaks at the fault frequency to rising kurtosis and, late, velocity;
+  - lubrication loss as rising high-frequency energy and temperature;
+  - pump seal and impeller wear as energy at running speed and broadband;
+  - rotary-union leaks as a drop in through-spindle coolant pressure;
+  - spindle cooling faults as a temperature rise.
+- **Maintenance and the record.** Vendor Rules alerts raise inspections that confirm a condition or find nothing. PMs, repairs and sensor remounts reset levels, and failures stop machines. CMMS failure codes carry the miscoding rate of a real record, and the sensor data carries idle periods and implausible rows.
+- **Operating events that are not faults.** Heavy cuts, titanium jobs, new programs and coolant drift move the measurements without any condition behind them, as they do on a working floor.
+
+Realism checks test each mechanism against its published behavior, and the record was frozen before any model was trained. The generators are in [`generate/`](generate/) and the checks in [`generate/checks/`](generate/checks/).
 ---
 
 ## Running it locally
