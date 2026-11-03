@@ -39,7 +39,7 @@ The Vendor Rules' and ML Model's statuses and work requests are presented in a [
 
 [![Maintenance queue](docs/screenshots/queue.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
 
-Clicking on an asset in the maintenance queue reveals a detail section showing measurement trends, fault-band energies, spectra and maintenance history:
+Clicking on an asset in the maintenance queue reveals a detail section showing measurement trends, fault-band energies, envelope spectra and controller indicators, as well as a maintenance history table (not shown in the screenshot below):
 
 [![Maintenance queue asset detail](docs/screenshots/queue_detail.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
 
