@@ -56,7 +56,15 @@ targets:
   prod:
     mode: production
     workspace:
-      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    # Only the deploying user and the deploy service principal can manage the bundle root and its
+    # resources; workspace users get no access (the job runs as the service principal, the pipeline as
+    # its owner).
+    permissions:
+      - level: CAN_MANAGE
+        user_name: ${workspace.current_user.userName}
+      - level: CAN_MANAGE
+        service_principal_name: ${var.deploy_sp}
     # The monthly job runs as the deploy service principal. The pipeline keeps running as its owner:
     # changing a pipeline's owner or run-as identity needs a metastore admin.
     resources:

@@ -240,9 +240,6 @@ Condition types, where each appears, and the layers that caught them in validati
 - **Controller health:** per-program spindle and axis load drift, a spindle thermistor residual against speed and season, and a compressor discharge temperature residual against room temperature and load.
 - **Fusion and cases:** signals from the three layers within 72 hours combine into one status per asset. A case opens at ALARM and closes at a repair work order or after 7 quiet days.
 - **Advisory:** a work request per case, with the suspected condition from the indicator pattern and a recommended inspection.
-- **Survival:** a fleet Weibull model of component lives for PM interval review.
-- **Prognosis:** a remaining-time model on pump and compressor bearings from detection to the ISO zone C/D velocity boundary.
-- **Supervised layer:** gated on event count (appendix F).
 
 **Exhibit: Scoring flow**
 
