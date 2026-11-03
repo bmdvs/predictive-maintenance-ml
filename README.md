@@ -63,7 +63,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 ## Code
 
-### Models and scoring: [`src/pdm/`](src/pdm/)
+### ML Model (training, scoring, alerting and evaluation): [`src/pdm/`](src/pdm/)
 
 | File | What it does |
 |---|---|
