@@ -310,7 +310,7 @@ It is deployed from a Declarative Automation Bundle with development and product
 
 ## C. Monitoring report (`docs/reports/monitoring_report.html`)
 
-**Title:** Model Monitoring Report
+**Title:** Report: ML Model Monitoring
 
 **Subtitle:** July 2025 to June 2026
 
@@ -330,7 +330,9 @@ The retraining rule is evaluated every month: primary rules decide a refit, and 
 
 #### 2.1 Performance
 
-The primary trigger fired on small monthly counts: August to October held 10 of the year's 32 conditions, and the ML Model caught 4 of them. The 6 misses had no common cause: on 3, the score crossed the threshold without staying above it (a lubrication episode, a flood pump wear cycle the model had learned as healthy in training, and a TSC pump seal failure); 2 fell under an ALERT that had opened more than a week before with no sign of the condition; and 1 came while a compressor point was re-centering after a repair. December's miss, a lubrication episode on HMC-02's spindle, fell inside the ALERT that had held that spindle since July. From November the ML Model caught every condition in 5 of the 7 months with conditions. Its alert rate stayed inside the band all year except August, when it opened 3 ALERTs against 11 in July; Vendor Rules dropped the same month, to 0.46 times its reference, with measured hours at their usual level, so August was a quiet month rather than a change in the model.
+The primary trigger fired on small monthly counts: August to October held 10 of the year's 32 conditions, and the ML Model caught 4 of them. The 6 misses had no common cause: on 3, the score crossed the threshold without staying above it (a lubrication episode, a flood pump wear cycle the model had learned as healthy in training, and a TSC pump seal failure); 2 fell under an ALERT that had opened more than a week before with no sign of the condition; and 1 came while a compressor point was re-centering after a repair. December's miss, a lubrication episode on HMC-02's spindle, fell inside the ALERT that had held that spindle since July.
+
+From November the ML Model caught every condition in 5 of the 7 months with conditions. Its alert rate stayed inside the band all year except August, when it opened 3 ALERTs against 11 in July; Vendor Rules dropped the same month, to 0.46 times its reference, with measured hours at their usual level, so August was a quiet month rather than a change in the model.
 
 **Exhibit: Catch share by month**
 
