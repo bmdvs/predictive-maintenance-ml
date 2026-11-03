@@ -93,7 +93,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 ---
 
-## How it works
+## Data and ML Pipeline
 
 ```mermaid
 flowchart LR
