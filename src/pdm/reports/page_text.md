@@ -314,54 +314,59 @@ It is deployed from a Declarative Automation Bundle with development and product
 
 **Subtitle:** July 2025 to June 2026
 
-### 1. Summary
+### 1. Status and Retraining Decision
 
-The monitoring rule calls for a review and full refit of the ML Model after September and October. The verdict comes mainly from catch shares of 0.50, 0.33 and 0.50 in August, September and October against a training reference of 0.79, while the ML Model's alert rate ran at 0.4 to 1.5 times its reference of 0.267 alerts per asset-month.
+The ML Model was monitored monthly over the evaluation year, July 2025 to June 2026. Catch share and alert rate are the primary triggers: when either breaches its limit in two consecutive months, the model is flagged for a full refit. Feature and score drift are secondary triggers, reported beside the verdict. The primary trigger fired in September and October 2025, on catch shares of 0.33 and 0.50 against a limit of 0.54, so the model is flagged for a full refit; the refit was not run within the evaluation year, and version 13 stayed champion throughout.
 
-The drift trigger fired in every month without changing the verdict. Version 13 passed its promotion gates once and stayed champion for the year. A full refit is a review step and was not run within the record.
+- Catch share below the 0.54 limit in August, September and October (0.50, 0.33, 0.50), on 1 of 2, 2 of 6 and 1 of 2 conditions: the primary trigger fired in September and October.
+- Catch share below the limit again in December (1 of 2), for one month only.
+- Alert rate below 0.5 times the reference in August (0.40), for one month only.
+- Score drift above the 0.30 share in every month (0.37 to 0.63), and feature drift in 10 of 12 (0.24 to 0.37).
+- Compressor points without a measurement for more than 30% of hours in every month, while idle.
 
-**Exhibit: Monitoring by month, ML Model**
+The retraining rule is evaluated every month: primary rules decide a refit, and secondary rules flag drift for investigation.
 
-#### 2.1 Performance and alert rates
+### 2. Monitoring Results
 
-The ML Model caught 23 of the 32 conditions over the year; June had no confirmed conditions. Its alert rate was:
-- 0.39 per asset-month in July and April, its highest;
-- 0.25 in June, when all 7 of its alerts were false;
-- 0.11 in August, its lowest.
+#### 2.1 Performance
 
-Vendor Rules stayed within their band in every month but August, at 0.14 to 0.61.
+The primary trigger fired on small monthly counts: August to October held 10 of the year's 32 conditions, and the ML Model caught 4 of them. From November it caught every condition in 5 of the 7 months with conditions, and its alert rate stayed inside the band all year except August.
 
-**Exhibit: Alerts per asset-month against the training reference rate and its tolerance band**
+**Exhibit: Catch share by month**
 
-**Exhibit: Event performance by month and method**
+**Exhibit: Alert rate against reference by month**
 
-#### 2.2 Drift and data quality
+**Exhibit: False alerts per asset-month by month**
 
-Feature drift flagged 10 to 19 of the 40 points each month. The largest distances were on the HMC-07 TSC pump and the HMC-01 flood pump.
+#### 2.2 Drift
 
-The drift trigger fired for two reasons:
-- **Score drift:** 37% to 63% of point scores drifted each month, above the 30% share.
-- **Feature drift:** 24% to 37% of point-features drifted, above the 30% share in 10 of the 12 months.
+The drift trigger fired in every month without changing the verdict: score drift stayed above the 0.30 share all year, and feature drift in 10 of 12 months. The drift is concentrated on a few points, led by the HMC-07 flood pump and the HMC-01 spindle.
 
-Data-quality exceptions ran at 19 to 29 point-months a month, 278 in all. Most are isolated implausible rows spread across all 40 points; the compressors, which take no measurement while idle, account for 96.
+**Exhibit: Share of points drifted by month**
 
 **Exhibit: Feature drift by point and month**
 
+**Exhibit: Score drift by point and month**
+
+#### 2.3 Data Quality
+
+Data-quality exceptions ran at 19 to 29 point-months a month, 278 in all. The compressors account for 96, since they take no measurement while idle; the rest are mostly isolated implausible rows spread across the HMC points.
+
+**Exhibit: Data-quality exceptions by month**
+
 **Exhibit: Data quality by point and month**
 
-#### 2.3 Champion and re-centering
+#### 2.4 Champion and Re-centering
 
-- **Model versions.** Version 13 passed all five gates once and was champion for the whole year. Its false-episode rate was 0.042 against a 0.411 limit.
-- **Re-centering.** 32 points on 22 assets were re-centered 54 times after repairs or a remount; the plausibility check flagged five, on the HMC-01, HMC-03 and HMC-08 spindles.
+Version 13 passed all five promotion gates once and was champion for the year, with a false-episode rate of 0.042 against a 0.411 limit. 32 points on 22 assets were re-centered 54 times after a repair or remount; the plausibility check flagged 5, on the HMC-01, HMC-03 and HMC-08 spindles.
 
-**Exhibit: Champion, with gate results**
+**Exhibit: Post-repair re-centering by asset**
 
-**Exhibit: Post-repair re-centering**
+### 3. Monitoring Log
+
+The refit the rule calls for (training cutoff moved forward, healthy windows and thresholds re-derived, registered as a challenger for manual review) was not run within the evaluation year, which was held out to score one frozen model.
 
 ### Appendix
-- the retraining rule as defined, including the action a retrain verdict triggers;
-- drift reference definitions, including the window-only points;
-- per-point tables.
 
 Acted-on alerts remove the failures that would label them, so recall in a live deployment reads lower than the condition record supports.
 
