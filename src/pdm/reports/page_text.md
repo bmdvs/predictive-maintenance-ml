@@ -312,29 +312,27 @@ It is deployed from a Declarative Automation Bundle with development and product
 
 **Title:** Report: ML Model Monitoring
 
-**Subtitle:** July 2025 to June 2026
-
 ### 1. Status and Retraining Decision
 
-The ML Model was monitored monthly over the evaluation year, July 2025 to June 2026. Catch share and alert rate are the primary triggers: when either breaches its limit in two consecutive months, the model is flagged for a full refit. Feature and score drift are secondary triggers, reported beside the verdict. The primary trigger fired in September and October 2025, on catch shares of 0.33 and 0.50 against a limit of 0.54, so the model is flagged for a full refit; the refit was not run within the evaluation year, and version 13 stayed champion throughout.
+The ML Model was monitored monthly over the evaluation year, July 2025 to June 2026. Catch share and alert rate are the primary rule triggers: when either breaches its limit in two consecutive months, the model is flagged for a full refit. Feature and score drift are secondary rule triggers, reported beside the verdict. The primary rule trigger fired in September and October 2025, on catch shares of 0.33 and 0.50 against a limit of 0.54, so the model is flagged for a full refit; the refit was not run within the evaluation year, and version 13 stayed champion throughout.
 
-- Catch share below the 0.54 limit in August, September and October (0.50, 0.33, 0.50), on 1 of 2, 2 of 6 and 1 of 2 conditions: the primary trigger fired in September and October.
+- Catch share below the 0.54 limit in August, September and October (0.50, 0.33, 0.50), on 1 of 2, 2 of 6 and 1 of 2 conditions: the primary rule trigger fired in September and October.
 - Catch share below the limit again in December (1 of 2), for one month only.
 - Alert rate below 0.5 times the reference in August (0.40), for one month only.
 - Score drift above the 0.30 share in every month (0.37 to 0.63), and feature drift in 10 of 12 (0.24 to 0.37).
 - Compressor points without a measurement for more than 30% of hours in every month, while idle.
 
-The retraining rule is evaluated every month: primary rules decide a refit, and secondary rules flag drift for investigation.
+The retraining rule is evaluated every month: primary rule triggers decide a refit, and secondary rule triggers flag drift for investigation.
 
 ### 2. Monitoring Results
 
 #### 2.1 Performance
 
-The primary trigger fired on small monthly counts: August to October held 10 of the year's 32 conditions, and the ML Model caught 4 of them. The 6 misses had no common cause: on 3, the score crossed the threshold without staying above it (a lubrication episode, a flood pump wear cycle the model had learned as healthy in training, and a TSC pump seal failure); 2 fell under an ALERT that had opened more than a week before with no sign of the condition; and 1 came while a compressor point was re-centering after a repair. December's miss, a lubrication episode on HMC-02's spindle, fell inside the ALERT that had held that spindle since July.
-
-From November the ML Model caught every condition in 5 of the 7 months with conditions. Its alert rate stayed inside the band all year except August, when it opened 3 ALERTs against 11 in July; Vendor Rules dropped the same month, to 0.46 times its reference, with measured hours at their usual level, so August was a quiet month rather than a change in the model.
+Catch share, the first of the two primary rule triggers, fell below the 0.54 limit in August, September and October, which fired the trigger, and again in December. Those three months held 10 of the year's 32 conditions and the ML Model caught 4; the 6 misses had no common cause: on 3 the score crossed the threshold without staying above it, 2 fell under an ALERT already open with no sign of the condition, and 1 came while a compressor point was re-centering after a repair. December's miss fell inside the ALERT that had held HMC-02's spindle since July. Every other month with conditions stayed above the limit.
 
 **Exhibit: Catch share by month**
+
+Alert rate, the second primary rule trigger, left its band once, in August, at 0.40 times the reference: the ML Model opened 3 ALERTs against 11 in July, while episodes opened in July stayed open. Vendor Rules fell the same month, to 0.46 times its reference, with measured hours at their usual level, so August was a quiet month rather than a change in the model.
 
 **Exhibit: Alert rate against reference by month**
 
@@ -342,13 +340,11 @@ From November the ML Model caught every condition in 5 of the 7 months with cond
 
 #### 2.2 Drift
 
-The secondary rules compare each point with its reference: the last six months of training or, after a repair, its re-centering window plus 30 scored days. A point-feature is one of 10 vibration measurements on one point, and a point score is the ML Model's anomaly score on that point; each counts as drifted when its scaled distance from the reference is above 0.5. The rule fired every month, point scores above the 0.30 share all year (0.37 to 0.63) and point-features in 10 of 12 months (0.24 to 0.37). Drift calls for investigation, not a refit, so it did not change the verdict. The investigation found:
-- The drift is in vibration level, not impulsiveness: acceleration, high-frequency, envelope band, velocity and running-speed energies drifted in 32% to 50% of point-months, crest factor and kurtosis in 3% to 4%.
-- It sits on the spindles (50% of point-features, 71% of point scores) and barely touches the compressors (3% and 8%).
-- Narrow references inflate it: points referenced to a re-centering window alone drifted in 49% of point-features and 89% of point scores, against 30% and 48% on training references.
-- Confirmed conditions explain part of it: point-features drifted in 56% of point-months with a condition open on the asset against 27% without, but two thirds of drifted point-months had no condition open.
-- The HMC-01 spindle drifted until its April 2026 repair re-centered it; its reference came from the 30 days after an April 2025 repair, and Vendor Rules' 13 inspections there over the year all found nothing.
-- The HMC-07 flood pump drifted on all 7 level measurements in every month: since the pump was replaced in November 2024, its running-speed energy has risen to 2.5 times its level after the replacement, with no inspection or condition since. It is the one point where drift may show a developing fault and is worth an inspection.
+The secondary rule trigger flags drift when more than 30% of point-features (each point's 10 vibration measurements) or point scores (the ML Model's anomaly score on each point) sit more than 0.5 in scaled distance from their reference. Point scores drifted in all 12 months and point-features in 10. Drift calls for investigation, not a refit, so it did not change the verdict. The investigation found:
+- The drift is in vibration level on the spindles: crest factor and kurtosis drifted in under 5% of point-months, and the compressors barely drifted.
+- Narrow references inflate it: points referenced to a re-centering window alone drifted nearly twice as often as points on training references.
+- About a third of drifted point-months had a confirmed condition open on the asset; the rest had none.
+- One point may show a developing fault: the HMC-07 flood pump drifted in every month, its running-speed energy at 2.5 times its level after the pump was replaced in November 2024, with no inspection since. It is worth an inspection.
 
 **Exhibit: Share of points drifted by month**
 
