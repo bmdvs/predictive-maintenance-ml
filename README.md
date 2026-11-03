@@ -67,12 +67,12 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 | File | What it does |
 |---|---|
-| `rules/` | The vendor's baseline alerts replayed from the sensor platform export, and the ISO 20816-3 zone rule, with persistence and suppression shared by every alerting layer. |
-| `models/nbm.py`, `models/nbm_pyfunc.py` | Per-point normal-behavior models (autoencoder, Mahalanobis distance, PCA, isolation forest), one per sensor point with inputs re-centered at each repair or remount, and the MLflow wrapper for the registry. |
-| `models/controller_health.py` | Spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
-| `fusion/status.py` | Asset status from all alerting layers, and the case log. |
-| `advisory/requests.py` | Work requests at ALERT, with a suspected condition and recommended inspection from the measurement pattern. |
-| `evaluation/events.py` | Event-based evaluation against confirmed conditions: catches, warning, and false alerts and false ALARMs per asset-month for each method. |
+| `models/nbm.py`, `models/nbm_pyfunc.py` | Trains and scores the normal-behavior ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
+| `models/controller_health.py` | Scores the controller signals: spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
+| `rules/` | Alerting by Vendor Rules, replayed from the sensor platform export, and by the ISO 20816-3 zone rule, with the persistence and suppression every alerting layer shares. |
+| `fusion/status.py` | Alerting at the asset level: combines all alerting layers into one status per asset, and keeps the case log. |
+| `advisory/requests.py` | Opens work requests at ALERT, with a suspected condition and recommended inspection from the measurement pattern. |
+| `evaluation/events.py` | Evaluates each method against confirmed conditions: catches, warning, and false alerts and false ALARMs per asset-month. |
 
 ### Data & ML Engineering
 
