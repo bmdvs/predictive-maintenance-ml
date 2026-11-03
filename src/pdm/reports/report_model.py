@@ -112,7 +112,7 @@ class Report:
                     mutation_scale=9,
                     color=style.DARK_GREY,
                     lw=0.8,
-                    ls="--" if dashed else "-",
+                    ls=(0, (5, 4)) if dashed else "-",
                 )
             )
 
@@ -128,11 +128,13 @@ class Report:
         box(8.3, 4.65, 1.7, 0.7, "Maintenance queue", "", plain)
         arrow((6.72, 5.3), (8.28, 4.8))
         arrow((6.72, 4.0), (8.28, 4.5), dashed=True)
-        for x, y, t in (
-            (7.75, 5.38, "Outputs drive inspections"),
-            (7.95, 3.82, "Outputs recorded but not acted on"),
+        # left-aligned, the same distance in from the top of Vendor Rules' box and the bottom of the ML Model's
+        inset = 0.18
+        for y, t in (
+            (5.3 + 0.35 - inset, "Outputs drive inspections"),
+            (4.0 - 0.35 + inset, "Outputs recorded but not acted on"),
         ):
-            ax.text(x, y, t, ha="center", va="center", fontsize=7.5, color=style.TEXT)
+            ax.text(6.85, y, t, ha="left", va="center", fontsize=7.5, color=style.TEXT)
         handles = [
             Patch(fc=existing, ec=style.DARK_GREY, lw=0.6),
             Patch(fc=new, ec=style.DARK_GREY, lw=0.8, ls="--"),
@@ -356,7 +358,7 @@ class Report:
         ax.xaxis.grid(True, color="#EEEEEE")
         ax.set_axisbelow(True)
 
-    def _legend(self, f: Any, top: bool, size: float = 7.5) -> None:
+    def _legend(self, f: Any, top: bool, size: float = 7.5, repair: bool = False) -> None:
         hd = [
             Patch(fc="#D9D9D9"),
             Patch(fc=AMB),
@@ -375,6 +377,9 @@ class Report:
             "PM finding",
             "Failure",
         ]
+        if repair:
+            hd.append(Line2D([], [], marker="s", ls="", mfc=style.BRAND_BLUE, mec=style.BRAND_BLUE))
+            labs.append("Planned repair")
         f.legend(
             hd, labs, loc="upper center" if top else "lower center", ncol=4, frameon=False, fontsize=size
         )
@@ -383,49 +388,103 @@ class Report:
         cd = self.t["conditions"].set_index("wo_id")
         neither = cd.loc["HMC-06-WO00036"]
         assert not neither["ml_strict"] and not neither["vr_strict"] and neither["unplanned"]
+        ml_only = cd.loc["HMC-01-WO00027"]
+        assert ml_only["ml_strict"] and not ml_only["vr_strict"] and ml_only["unplanned"]
         return [
             (
-                "HMC-04-SP",
-                "Condition 1: Rotary Union Leak",
-                f"ML Model caught {cd.at['HMC-04-WO00024', 'ml_warn']:.0f} days ahead, Vendor Rules raised no ALERT",
+                "HMC-01-WO00027",
+                "Condition 1: Flood Pump Bearing Failure",
+                f"ML Model caught {ml_only['ml_warn']:.0f} days ahead, Vendor Rules raised no ALERT",
             ),
             (
-                "HMC-06-CP",
+                "HMC-06-WO00035",
                 "Condition 2: Flood Pump Wear",
                 f"Vendor Rules caught {cd.at['HMC-06-WO00035', 'vr_warn']:.0f} days ahead, ML Model raised no ALERT",
             ),
             (
-                "HMC-01-TSC",
+                "HMC-01-WO00024",
                 "Condition 3: TSC Pump Bearing Defect",
                 f"ML Model caught {cd.at['HMC-01-WO00024', 'ml_warn']:.0f} days ahead, Vendor Rules {cd.at['HMC-01-WO00024', 'vr_warn']:.0f} days ahead",
             ),
             (
-                "HMC-06-TSC",
+                "HMC-06-WO00036",
                 "Condition 4: Pump Seal or Impeller Wear",
                 "Neither raised an alert beforehand and it ended in a failure",
             ),
         ]
 
-    def panels(self) -> str:
-        """One small timeline per example condition, each under its own title; the legend under the last."""
+    def _cond_panel(self, ax: Any, wo: str, tl: pd.DataFrame) -> None:
+        """One condition over the 120 days before its confirmation: only the episodes credited with it,
+        Vendor Rules' inspections in the window and the confirming event at the right edge."""
+        r = self.t["conditions"].set_index("wo_id").loc[wo]
+        cf = pd.Timestamp(r["confirmed"])
+        a0, a1 = cf - pd.Timedelta(days=PANEL_DAYS), cf + pd.Timedelta(days=2)
+
+        def x(t: Any) -> float:
+            return (pd.Timestamp(t) - a0).total_seconds() / 86400
+
+        on = pd.Timestamp(r["onset"]) if pd.notna(r["onset"]) else cf - pd.Timedelta(days=1)
+        ax.add_patch(
+            Rectangle(
+                (x(max(on, a0)), -0.66), x(cf) - x(max(on, a0)), 0.9, fc="#BDBDBD", alpha=0.5, ec="none"
+            )
+        )
+        for k, y in (("ml", 0.0), ("vr", -0.42)):
+            if not bool(r[f"{k}_strict"]) or pd.isna(r[f"{k}_opened"]):
+                continue
+            o, c = max(pd.Timestamp(r[f"{k}_opened"]), a0), min(pd.Timestamp(r[f"{k}_closed"]), cf)
+            am = pd.Timestamp(r[f"{k}_alarm_ts"]) if pd.notna(r[f"{k}_alarm_ts"]) else None
+            mid = min(am, c) if am is not None and am < c else c
+            ax.barh(y, x(mid) - x(o), left=x(o), height=0.34, color=AMB, lw=0, zorder=2)
+            if am is not None and am < c:
+                ax.barh(
+                    y, x(c) - x(max(am, a0)), left=x(max(am, a0)), height=0.34, color=REDC, lw=0, zorder=2
+                )
+        g = tl[(tl["asset"] == r["asset"]) & (tl["start"] >= a0) & (tl["start"] <= a1)]
+        for e in g[(g["lane"] == "Vendor Rules") & g["kind"].str.startswith("inspection")].itertuples():
+            filled = e.kind.endswith("confirmed")
+            ax.plot(
+                x(e.start), -0.42, "o", ms=5, mfc=style.TEXT if filled else "white", mec=style.TEXT, zorder=3
+            )
+        both = g[g["lane"] == "both"]
+        for e in both.itertuples():
+            if e.kind == "failure":
+                ax.plot(x(e.start), -0.21, "x", ms=8, mew=1.8, color=style.TEXT, zorder=4)
+            else:
+                ax.plot(x(e.start), -0.21, "D", ms=5, mfc=style.GREEN, mec=style.GREEN, zorder=4)
+        # the finding at a PM check, and the planned repair at the confirmation (the end of the warning)
+        if r["found_by"] == "pm" and not (both["kind"] != "failure").any():
+            ax.plot(x(r["found_ts"]), -0.21, "D", ms=5, mfc=style.GREEN, mec=style.GREEN, zorder=4)
+        same_hour = pd.notna(r["found_ts"]) and abs(pd.Timestamp(r["found_ts"]) - cf) < pd.Timedelta(hours=12)
+        if not bool(r["unplanned"]) and not same_hour:
+            ax.plot(x(cf), -0.21, "s", ms=5.5, mfc=style.BRAND_BLUE, mec=style.BRAND_BLUE, zorder=5)
+        ticks = pd.date_range(a0.tz_convert(TZ).normalize(), cf.tz_convert(TZ), freq="SMS")
+        ax.set_xticks([x(t.tz_convert("UTC")) for t in ticks])
+        ax.set_xticklabels([f"{t:%b} {t.day}" for t in ticks], fontsize=9.5)
+        ax.set_xlim(0, x(a1))
+        for s_ in ("top", "right", "left"):
+            ax.spines[s_].set_visible(False)
+        ax.xaxis.grid(True, color="#EEEEEE")
+        ax.set_axisbelow(True)
+
+    def panels(self, rows: list[tuple[str, str, str]] | None = None, name: str = "timeline") -> str:
+        """One timeline per example condition, each under its own title; the legend under the last."""
         tl = self._tl()
-        rows = self.panel_titles()
+        rows = rows or self.panel_titles()
         out = ""
-        for i, (asset, head, sub) in enumerate(rows):
+        for i, (wo, head, sub) in enumerate(rows):
             last = i == len(rows) - 1
             f, ax = plt.subplots(figsize=(8.8, 1.55 + (0.55 if last else 0)))
-            ticks, labels = [], []
-            self._lanes(ax, tl, asset, 0.0, ticks, labels, label_size=8.5)
-            ax.set_yticks(ticks)
+            self._cond_panel(ax, wo, tl)
+            ax.set_yticks([0.0, -0.42])
             ax.set_yticklabels(["ML Model", "Vendor Rules"], fontsize=9.5)
             ax.set_ylim(-0.95, 0.6)
-            self._xaxis(ax, size=9.5)
             if last:
-                self._legend(f, top=False, size=9)
+                self._legend(f, top=False, size=9, repair=True)
                 f.tight_layout(rect=(0, 0.2, 1, 1))
             else:
                 f.tight_layout()
-            img = self.save(f, f"timeline_{i + 1}", f"{head}. {sub}")
+            img = self.save(f, f"{name}_{i + 1}", f"{head}. {sub}")
             out += (
                 f"<div class='chart-title panel-title'>{html.escape(head)}</div>"
                 f"<div class='panel-sub'>{html.escape(sub)}</div>{img}"
@@ -665,7 +724,7 @@ class Report:
         fnd = int((fr["vr_alarm_before"] & (fr["found"] > 0)).sum())
         noi = int((fr["vr_alarm_before"] & (fr["inspections"] == 0)).sum())
         s += p(
-            f"[[b]]The ML Model's ALARMs were more accurate than Vendor Rules[[/b]]: {pct(al['share']['ML Model'])} of its {al['n']['ML Model']} ALARMs had a confirmed condition, against {pct(al['share']['Vendor Rules'])} of Vendor Rules' {al['n']['Vendor Rules']} ALARMs, and it produced a {pct(1 - al['false']['ML Model'] / al['false']['Vendor Rules'])} lower false-alarm rate ({al['false']['ML Model']:.3f} against {al['false']['Vendor Rules']:.3f}). On the sensor data alone, which both models read, the ML Model's false-alarm rate was even lower, at {al['false_sensor_ml']:.3f}. [[b]]This accuracy came at the expense of warning time[[/b]]: the ML Model's ALARMs gave a median of {n1(al['warn']['ML Model'])} days of warning against Vendor Rules' {n1(al['warn']['Vendor Rules'])} days on the {al['warn']['n']} conditions that both layers escalated."
+            f"The ML Model's ALARMs were more accurate than Vendor Rules: {pct(al['share']['ML Model'])} of its {al['n']['ML Model']} ALARMs had a confirmed condition, against {pct(al['share']['Vendor Rules'])} of Vendor Rules' {al['n']['Vendor Rules']} ALARMs, and it produced a {pct(1 - al['false']['ML Model'] / al['false']['Vendor Rules'])} lower false-alarm rate ({al['false']['ML Model']:.3f} against {al['false']['Vendor Rules']:.3f}). On the sensor data alone, which both models read, the ML Model's false-alarm rate was even lower, at {al['false_sensor_ml']:.3f}. This accuracy came at the expense of warning time: the ML Model's ALARMs gave a median of {n1(al['warn']['ML Model'])} days of warning against Vendor Rules' {n1(al['warn']['Vendor Rules'])} days on the {al['warn']['n']} conditions that both layers escalated."
         )
         s += p(
             f"Vendor Rules ALARMed before {fl['vr_alarm_before']} of the {fl['n']} unplanned failures, and the failures still happened: the inspections it triggered found no fault in {nff}, found the problem without preventing the failure in {fnd}, and no inspection was raised in the other {noi}."
@@ -734,7 +793,7 @@ class Report:
             bbox_to_anchor=(0.5, -0.42),
             ncol=2,
         )
-        return self.save(f, "inputs", "The Model's 20 Inputs")
+        return self.save(f, "inputs", "The Model's 20 Inputs: Representative Readings on a Healthy Hour")
 
     def fig_healthy_band(self) -> str:
         d = self.t["healthy_band"]
@@ -812,7 +871,7 @@ class Report:
             style.chart_style(ax)
             g = d[d["hour"] == lab].iloc[:13]
             x = np.arange(len(g))
-            ax.bar(x, g["z"], color=style.LIGHT_BLUE if lab == "healthy" else ML, label="Input")
+            ax.bar(x, g["z"], color=style.LIGHT_BLUE, label="Input")
             ax.plot(x, g["rebuild"], "-o", color=AMB, ms=3, lw=1.2, label="Rebuild")
             for i, (z, r) in enumerate(zip(g["z"], g["rebuild"], strict=True)):
                 ax.plot([i, i], [z, r], color=REDC, lw=2.5, alpha=0.35)
@@ -835,10 +894,16 @@ class Report:
                 ha="center",
                 va="top",
                 fontsize=8.5,
-                bbox={"boxstyle": "round,pad=0.35", "fc": "white", "ec": style.DARK_GREY, "lw": 0.6},
+                bbox={
+                    "boxstyle": "round,pad=0.35",
+                    "fc": "white",
+                    "ec": style.DARK_GREY if lab == "healthy" else REDC,
+                    "lw": 0.6 if lab == "healthy" else 0.9,
+                },
             )
-        axs[0].legend(frameon=False, fontsize=8, loc="upper left")
-        f.tight_layout()
+        hd, lb = axs[0].get_legend_handles_labels()
+        f.legend(hd, lb, frameon=False, fontsize=8, loc="lower center", ncol=2)
+        f.tight_layout(rect=(0, 0.06, 1, 1))
         return self.save(f, "rebuild", "Inputs against the model's rebuild, healthy hour and faulty hour")
 
     def fig_trace(self) -> str:
@@ -1040,9 +1105,11 @@ class Report:
         speed = next(LABELS[k].split()[0].lower() for k in BAND_KEYS if inp.get(k) == 1)
         speed = {"mid": "medium"}.get(speed, speed)
         s += p(
-            f"Each of the 13 sensor measurements is calculated from these signals as one number for the hour, which is then compared to the point's normal level, so a healthy hour sits near zero. These measurements join the seven controller measurements which mark the hour's speed and load with an on/off flag (1 and 0; here, the machine was running with a {load} load at {speed} speed). Together they are the ML Model's 20 inputs."
+            f"Each of the 13 sensor measurements is calculated from these signals as one number for the hour, which is then compared to the point's normal level, so a healthy hour sits near zero. These measurements join the seven controller measurements which mark the hour's speed and load with an on/off flag (1 and 0; here, the machine was running with a {load} load at {speed} speed). Together they are the ML Model's 20 inputs, as shown below, which is calculated from the vibration data on the healthy hour as detailed above."
         )
-        s += self.exhibit("The Model's 20 Inputs", self.fig_inputs())
+        s += self.exhibit(
+            "The Model's 20 Inputs: Representative Readings on a Healthy Hour", self.fig_inputs()
+        )
         s += bold("Healthy hours")
         s += p(
             "The ML Model is trained on healthy hours which form the basis of its anomaly detection. An hour counts as healthy when the point was measured and no repair was under way, no work order was open, and, after any repair or sensor remount, the point's readings had settled at a new level. The 120 days before any confirmed condition are excluded, so that a fault developing before it was found does not enter training as a healthy hour."
@@ -1217,6 +1284,7 @@ class Report:
         top = d.groupby("method")["alert_hours"].sum().max()
         for y, m in enumerate(methods):
             g = d[d["method"] == m].groupby("cause")["alert_hours"].sum()
+            tot = float(g.sum())
             left = 0.0
             for cause, col, tc in order:
                 v = float(g.get(cause, 0.0))
@@ -1224,7 +1292,7 @@ class Report:
                     continue
                 ax.barh(y, v, left=left, color=col, height=0.55)
                 if v >= 0.035 * top:
-                    ax.text(left + v / 2, y, f"{v:,.0f}", ha="center", va="center", fontsize=8, color=tc)
+                    ax.text(left + v / 2, y, pct(v / tot), ha="center", va="center", fontsize=8, color=tc)
                 left += v
             ax.text(left + 0.01 * top, y, f"{left:,.0f}", va="center", fontsize=9, fontweight="bold")
         ax.set_yticks(range(len(methods)))
@@ -1234,7 +1302,7 @@ class Report:
         ax.xaxis.set_major_formatter(plt.matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
         hd = [Patch(fc=c) for _, c, _ in order[1:]]
         labs = [
-            "Healthy level outside training range (ML Model) or load regime missing from baseline (Vendor Rules)",
+            "New normal level outside training reference",
             *[c for c, _, _ in order[2:]],
         ]
         ax.legend(
@@ -1360,7 +1428,7 @@ class Report:
                 f"[[b]]Points stuck in ALERT.[[/b]] The HMC-02 spindle points' temperature residual ran outside its training range after {self.B['train']['min']} training hours and held both points in ALERT for most of the year, hiding two conditions. A clamp on the residual fixed HMC-02 but raised stuck points elsewhere on the folds and was set aside.",
                 f"[[b]]Conditions the sensors cannot see.[[/b]] {c['other']} of the year's {c['total']} conditions are outside this comparison: {c['no_sensors']} on machines without sensors, and {c['other'] - c['no_sensors']} that left no trace in the sensor data (trips, crashes, stoppages, compressor oil cooler faults and leaks visible only in controller pressure).",
                 "[[b]]Diagnosis limits.[[/b]] One alert names one condition, so a condition sharing an alert with another on the same asset is named only if it leads. On pumps, a rise at running speed alone cannot separate impeller wear from imbalance. Rotary-union leaks dropped through-spindle coolant pressure 9 to 10.5%; the drop names a leak only when no earlier rule fires, so one of the two caught was named bearing.",
-                f"[[b]]Re-arms during degradation.[[/b]] {self.B['scoring']['rearms_degrading']} of the {self.B['scoring']['rearms']} re-arms in the year came while the point was degrading. None cost a catch, but each raised a threshold over a developing fault.",
+                f"[[b]]Resets during degradation.[[/b]] {self.B['scoring']['rearms_degrading']} of the {self.B['scoring']['rearms']} threshold resets in the year came while the point was degrading. None cost a catch, but each raised a threshold over a developing fault.",
                 "[[b]]Wear learned as healthy.[[/b]] A wear cycle on HMC-06's flood pump was in the training years' healthy hours, so the model did not alert on its return.",
                 "[[b]]Label noise.[[/b]] CMMS failure codes are wrong on about 15% of unplanned repairs, and the same noise limits the diagnosis match, which is scored against those codes.",
                 "[[b]]Chiller faults[[/b]] have no controller fault contact, so abrupt faults show only in temperature.",
@@ -1466,6 +1534,7 @@ DESC = {
     "band_mid": "Spindle speed band: mid",
     "band_high": "Spindle speed band: high",
 }
+PANEL_DAYS = 120
 LEVEL_OUT = "Healthy level outside training range"
 REGIME_MISSING = "Load regime missing from baseline"
 REGIME_KEYS = ("regime_light", "regime_medium", "regime_heavy", "regime_running")
