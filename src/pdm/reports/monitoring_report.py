@@ -755,6 +755,7 @@ class MonitoringReport:
         self.h(2, "2. Monitoring Results", "s2")
         self.h(3, "2.1 Performance", "s21", True)
         self.text("The primary trigger fired on small monthly counts")
+        self.text("From November the ML Model caught")
         x("Exhibit: Catch share by month", self.fig_catch())
         x("Exhibit: Alert rate against reference by month", self.fig_rate())
         x("Exhibit: False alerts per asset-month by month", self.fig_false())
