@@ -442,13 +442,9 @@ class Page:
             al = pd.Series(np.inf, index=g.index)
             am = pd.Series(np.inf, index=g.index)
             wins = self._windows(pid)
-            for j, (a, b, w) in enumerate(wins):
+            for j, (a, b, _w) in enumerate(wins):
                 last_piece = j == len(wins) - 1
                 m = (g["hour_utc"] >= a) & (g["hour_utc"] < b)
-                lo, hi = w.get(f"{col}_p05"), w.get(f"{col}_p95")
-                if pd.notna(lo) and pd.notna(hi):
-                    c.band(a, b, lo, hi, col_c, self._lab(name, "level") if last_piece else None)
-                    c.fit(np.array([lo, hi]))
                 if lim:
                     L = self.q.vendor_limits(pid, b - pd.Timedelta(hours=1))
                     if np.isfinite(L.get(f"{lim}_alert", np.inf)):
@@ -513,7 +509,7 @@ class Page:
                         lo,
                         hi,
                         sv.POINT_COLORS[i],
-                        self._lab(name, "level") if j == len(wins) - 1 else None,
+                        self._lab(name, "baseline range") if j == len(wins) - 1 else None,
                     )
                     c.fit(np.array([lo, hi]))
             same = multi and i > 0 and self.q.vendor_settings(pts[0]).temp_warning_c == s.temp_warning_c
@@ -593,7 +589,7 @@ class Page:
                         lo,
                         hi,
                         sv.POINT_COLORS[i],
-                        self._lab(name, "level") if final else None,
+                        self._lab(name, "baseline range") if final else None,
                     )
                     c.fit(np.array([lo, hi]))
             v = g["temp_resid_c"].where(g["state"].isin(["scored", "plausibility"]))
@@ -693,12 +689,12 @@ class Page:
             return ""
         self.facts["assets"][asset]["bands"] = [g["name"] for g in groups]
         cols = {c for g in groups for _, _, c in g["values"][1:]}
-        leg = [("dash", sv.AMBER, "4 3", "Vendor Rules envelope limit")]
-        if sv.AMBER in cols:
-            leg.append(("box", sv.AMBER, "", "Above the limit"))
+        leg = [("box", sv.REF, "", "Baseline")]
         if sv.GRAY in cols:
             leg.append(("box", sv.GRAY, "", "Below the limit"))
-        leg.append(("box", sv.REF, "", "Baseline"))
+        if sv.AMBER in cols:
+            leg.append(("box", sv.AMBER, "", "Above the limit"))
+        leg.append(("dash", sv.AMBER, "4 3", "Vendor Rules envelope limit"))
         return (
             f"<div class='sec'><div class='sech'>Fault-band energies <span class='unit'>{h(self.q.point_label(pid))} point</span></div>"
             f"<div class='chartbox'>{sv.bars(groups, ylabel='g²', legend=leg)}</div></div>"
@@ -846,9 +842,7 @@ class Page:
                 secs.append(s)
         ctrl = self.controller_charts(a)
         if ctrl:
-            secs.append(
-                f"<div class='sec'><div class='sech'>Controller signals <span class='unit'>daily</span></div>{''.join(ctrl)}</div>"
-            )
+            secs.append(f"<div class='sec'><div class='sech'>Controller signals</div>{''.join(ctrl)}</div>")
         hist = self.history(a)
         if hist:
             secs.append(hist)
