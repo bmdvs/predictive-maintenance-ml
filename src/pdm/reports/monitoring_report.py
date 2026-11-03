@@ -759,7 +759,7 @@ class MonitoringReport:
         x("Exhibit: Alert rate against reference by month", self.fig_rate())
         x("Exhibit: False alerts per asset-month by month", self.fig_false())
         self.h(3, "2.2 Drift", "s22", True)
-        self.text("The drift trigger fired in every month")
+        self.text("The secondary rules compare each point")
         x("Exhibit: Share of points drifted by month", self.fig_drift_share())
         x("Exhibit: Feature drift by point and month", self.heatmap())
         x("Exhibit: Score drift by point and month", self.score_heatmap())
