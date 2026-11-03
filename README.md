@@ -71,7 +71,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 | File | What it does |
 |---|---|
-| [`models/nbm.py`](src/pdm/models/nbm.py), [`models/nbm_pyfunc.py`](src/pdm/models/nbm_pyfunc.py) | Trains and scores the normal-behavior ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
+| [`models/nbm.py`](src/pdm/models/nbm.py), [`models/nbm_pyfunc.py`](src/pdm/models/nbm_pyfunc.py) | Trains and scores the anomaly detection ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
 | [`models/controller_health.py`](src/pdm/models/controller_health.py) | Scores the controller signals: spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
 | [`rules/`](src/pdm/rules/) | Alerting by Vendor Rules, replayed from the sensor platform export, and by the ISO 20816-3 zone rule, with the persistence and suppression every alerting layer shares. |
 | [`fusion/status.py`](src/pdm/fusion/status.py) | Alerting at the asset level: combines all alerting layers into one status per asset, and keeps the case log. |
