@@ -794,6 +794,7 @@ class MonitoringReport:
 
 
 EXTRA_CSS = f"""
+main.content > h2:first-child {{ margin-top: 0; }}
 .status-block {{ border: 2px solid; border-radius: 6px; overflow: hidden; margin: 18px 0; }}
 .status-header {{ display: flex; align-items: center; gap: 12px; padding: 12px 18px; color: #fff; }}
 .status-icon {{ font-size: 20px; font-weight: 700; }}

@@ -354,7 +354,8 @@ The secondary rule trigger flags drift when more than 30% of point-features (eac
 
 #### 2.3 Data Quality
 
-A data-quality exception is a point-month with any implausible rows, or with more than 30% of its scheduled hours without a measurement. Exceptions ran at 19 to 29 point-months a month, 278 in all. The 8 compressor points were exceptions in every month (96): they take no measurement while idle or on standby, 46% of their scheduled hours, and their morning start-ups trip the implausible-row rule (1,965 of their 1,983 implausible rows are temperature jumps as the housing warms from idle: real readings that the jump rule flags). The other 182 are on the HMC points, mostly isolated implausible rows at 0.20% of measured hours, and the HMC point-months above 30% without a measurement are whole machines out of service (HMC-04 in May, HMC-08 in June). Nothing points to a failing sensor.
+A data-quality exception is a point-month with any implausible rows, or with more than 30% of its scheduled hours without a measurement. Exceptions ran at 19 to 29 point-months a month, 278 in all. Nothing points to a failing sensor.
+The 8 compressor points were exceptions in every month (96): they take no measurement while idle or on standby, 46% of their scheduled hours, and their morning start-ups trip the implausible-row rule (1,965 of their 1,983 implausible rows are temperature jumps as the housing warms from idle: real readings that the jump rule flags). The other 182 are on the HMC points, mostly isolated implausible rows at 0.20% of measured hours, and the HMC point-months above 30% without a measurement are whole machines out of service (HMC-04 in May, HMC-08 in June).
 
 **Exhibit: Data-quality exceptions by month**
 
