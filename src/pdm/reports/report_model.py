@@ -47,6 +47,16 @@ def p(s: str) -> str:
     return f"<p>{esc(s)}</p>"
 
 
+WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+def num(n: float, cap: bool = False) -> str:
+    """A count in text: words below ten, numerals from ten up."""
+    n = int(n)
+    w = WORDS[n] if 0 <= n < 10 else f"{n:,}"
+    return w.capitalize() if cap else w
+
+
 def ul(items: list[str]) -> str:
     return "<ul>" + "".join(f"<li>{esc(i)}</li>" for i in items) + "</ul>"
 
@@ -679,15 +689,15 @@ class Report:
             ),
         )
         s += p(
-            "A condition counts as caught when an ALERT was open on the asset in the 30 days before confirmation. An ALERT that opened more than 7 days before the condition began, with no sign of degradation on the asset, is deemed coincidental and not counted."
+            "A condition counts as caught when an ALERT was open on the asset in the 30 days before confirmation. An ALERT that opened more than seven days before the condition began, with no sign of degradation on the asset, is deemed coincidental and not counted."
         )
         s += p(
             f"[[b]]Of the 32 conditions, the ML Model's ALERTs caught {a['strict']['ML Model']} and Vendor Rules caught {a['strict']['Vendor Rules']}[[/b]]. {a['both']} conditions were caught by both models."
         )
         s += ul(
             [
-                f"The ML Model caught {a['only_ml']} conditions Vendor Rules missed: two spindle cooling faults, a lubrication episode, a bearing failure and a rotary union leak. On these, Vendor Rules either had no alert (2) or produced unrelated ALERTs that missed the condition (3).",
-                f"Vendor Rules caught {a['only_vr']} conditions the ML Model missed: two with under half a day's warning (a spindle cooling fault and a compressor lubrication episode), a pump wear cycle the ML Model had learned as normal in training, and a rotary union leak that fell inside a long ML Model alert on the same spindle.",
+                f"The ML Model caught {num(a['only_ml'])} conditions Vendor Rules missed: two spindle cooling faults, a lubrication episode, a bearing failure and a rotary union leak. On these, Vendor Rules either had no alert (2) or produced unrelated ALERTs that missed the condition (3).",
+                f"Vendor Rules caught {num(a['only_vr'])} conditions the ML Model missed: two with under half a day's warning (a spindle cooling fault and a compressor lubrication episode), a pump wear cycle the ML Model had learned as normal in training, and a rotary union leak that fell inside a long ML Model alert on the same spindle.",
             ]
         )
         s += p(
@@ -736,7 +746,7 @@ class Report:
             f"[[b]]The ML Model's ALARMs were more accurate than Vendor Rules[[/b]]: {pct(al['share']['ML Model'])} of its {al['n']['ML Model']} ALARMs had a confirmed condition, against {pct(al['share']['Vendor Rules'])} of Vendor Rules' {al['n']['Vendor Rules']} ALARMs, and it produced a {pct(1 - al['false']['ML Model'] / al['false']['Vendor Rules'])} lower false-alarm rate ({al['false']['ML Model']:.3f} against {al['false']['Vendor Rules']:.3f}). On the sensor data alone, which both models read, the ML Model's false-alarm rate was even lower, at {al['false_sensor_ml']:.3f}. This accuracy came at the expense of warning time: the ML Model's ALARMs gave a median of {n1(al['warn']['ML Model'])} days of warning against Vendor Rules' {n1(al['warn']['Vendor Rules'])} days on the {al['warn']['n']} conditions that both layers escalated."
         )
         s += p(
-            f"Vendor Rules ALARMed before {fl['vr_alarm_before']} of the {fl['n']} unplanned failures, and the failures still happened: the inspections it triggered found no fault in {nff}, found the problem without preventing the failure in {fnd}, and no inspection was raised in the other {noi}."
+            f"Vendor Rules ALARMed before {num(fl['vr_alarm_before'])} of the {num(fl['n'])} unplanned failures, and the failures still happened: the inspections it triggered found no fault in {num(nff)}, found the problem without preventing the failure in {num(fnd)}, and no inspection was raised in the other {num(noi)}."
         )
         s += bold("Condition Diagnosis")
         ru = {r["wo_id"]: r for r in self.B["ru"]["catches"]}
@@ -744,7 +754,7 @@ class Report:
             f"Work requests on the ML Model's ALERTs and ALARMs correctly diagnosed the confirmed condition on {d['strict_named']} of the {d['strict']} conditions it caught."
         )
         s += p(
-            f"The ML Model's work requests were strongest on conditions with a distinct signature, naming all {d['bearing']} bearing defects ({d['bearing_located']} with the damaged component located), {d['lub_named']} of {d['lub']} lubrication episodes and both imbalance and looseness cases. It struggled where conditions overlapped or share a signal: 3 of 4 pump-wear cases were misnamed, mostly as imbalance; the 3 spindle cooling faults were named lubrication, the condition sharing their alert; and 1 of 2 rotary union leaks was named bearing despite a {100 * ru['HMC-03-WO00045']['drop share max']:.1f}% coolant pressure drop."
+            f"The ML Model's work requests were strongest on conditions with a distinct signature, naming all {num(d['bearing'])} bearing defects ({num(d['bearing_located'])} with the damaged component located), {num(d['lub_named'])} of {num(d['lub'])} lubrication episodes and both imbalance and looseness cases. It struggled where conditions overlapped or share a signal: three of four pump-wear cases were misnamed, mostly as imbalance; the three spindle cooling faults were named lubrication, the condition sharing their alert; and one of two rotary union leaks was named bearing despite a {100 * ru['HMC-03-WO00045']['drop share max']:.1f}% coolant pressure drop."
         )
         s += self.exhibit("Diagnosis by confirmed condition", self.fig_grid())
         return s
@@ -1078,7 +1088,7 @@ class Report:
         )
         s += self.exhibit("Sensor points by asset type", style.table(pts, cls="data ctr2"))
         s += p(
-            "The sensor node computes and reports 13 measurements (used by both layers): vibration velocity, high-frequency acceleration, bearing fault-frequency energies (six: the outer race, inner race and rolling elements, each at 1× and 2× its fault frequency), shaft-order energies (two: 1× and 2× running speed), crest factor, kurtosis and housing temperature. The ML Model also reads 7 measurements (so 20 total inputs) of the machine's operating state from its controller, such as the spindle speed band and the cutting load, so it compares each hour with healthy hours under the same conditions."
+            "The sensor node computes and reports 13 measurements (used by both layers): vibration velocity, high-frequency acceleration, bearing fault-frequency energies (six: the outer race, inner race and rolling elements, each at 1× and 2× its fault frequency), shaft-order energies (two: 1× and 2× running speed), crest factor, kurtosis and housing temperature. The ML Model also reads seven measurements (so 20 total inputs) of the machine's operating state from its controller, such as the spindle speed band and the cutting load, so it compares each hour with healthy hours under the same conditions."
         )
         s += bold("ML Model at a glance")
         s += style.table(
@@ -1137,7 +1147,7 @@ class Report:
         s += self.exhibit("Healthy training hours per sensor point", self.fig_train_hours())
         s += "<h3 id='s33'>3.2 Scoring Summary</h3>"
         s += p(
-            f"The ML model's ALERT threshold is the 99.5th percentile of each point's healthy training scores. Six consecutive hours above it raise ALERT, or two hours above five times it, except on a pump during a low-pressure alarm. ALARM follows on an open ALERT when a severity criterion for the asset class holds (section 2). If a point stays above its threshold for 30 days with no open work order, no confirmed condition and no significant upward trend, its threshold is reset on those 30 days; {sc['rearms']} points were reset in this way over the evaluation year."
+            f"The ML model's ALERT threshold is the 99.5th percentile of each point's healthy training scores. Six consecutive hours above it raise ALERT, or two hours above five times it, except on a pump during a low-pressure alarm. ALARM follows on an open ALERT when a severity criterion for the asset class holds (section 2). If a point stays above its threshold for 30 days with no open work order, no confirmed condition and no significant upward trend, its threshold is reset on those 30 days; {num(sc['rearms'])} points were reset in this way over the evaluation year."
         )
         rb = self.t["rebuild"]
         fg = (
@@ -1398,7 +1408,7 @@ class Report:
             rows += [r1, r2_, r3]
         s += self.exhibit("Results by period", style.table(pd.DataFrame(rows)))
         s += p(
-            "Over the evaluation year, the ML Model matched or beat Vendor Rules on every condition type except pump seal or impeller wear (4 of 6 against 5 of 6), and caught all 6 bearing defects, one unplanned bearing defect and one spindle cooling fault more than Vendor Rules. Lubrication, the most common condition, was caught at 60% by both methods."
+            "Over the evaluation year, the ML Model matched or beat Vendor Rules on every condition type except pump seal or impeller wear (four of six against five of six), and caught all six bearing defects, one unplanned bearing defect and one spindle cooling fault more than Vendor Rules. Lubrication, the most common condition, was caught at 60% by both methods."
         )
         s += self.exhibit("Catch rate by condition type, evaluation year", self.fig_type_bars())
         os_ = self.t["own_signal"].set_index(["type", "method"])
@@ -1424,17 +1434,17 @@ class Report:
         lvl = fm[fm["cause"] == LEVEL_OUT]
         n_ = fm["cause"].value_counts()
         s += p(
-            f"The ML Model raised half the false-alert hours as Vendor Rules ({fm['alert_hours'].sum():,.0f} vs. {fv['alert_hours'].sum():,.0f}). {pct(lvl['alert_hours'].sum() / fm['alert_hours'].sum())} of the ML Model's false alert-hours came from sensor points whose healthy level moved outside the range it was trained on. {len(lvl)} of its {len(fm)} false alerts, across {lvl['lead_point'].nunique()} sensor points, opened this way. Of the rest, {n_.get('Transient', 0)} were short crossings above threshold and {n_.get('Unexplained', 0)} had no identifiable cause."
+            f"The ML Model raised half the false-alert hours as Vendor Rules ({fm['alert_hours'].sum():,.0f} vs. {fv['alert_hours'].sum():,.0f}). {pct(lvl['alert_hours'].sum() / fm['alert_hours'].sum())} of the ML Model's false alert-hours came from sensor points whose healthy level moved outside the range it was trained on. {len(lvl)} of its {len(fm)} false alerts, across {num(lvl['lead_point'].nunique())} sensor points, opened this way. Of the rest, {n_.get('Transient', 0)} were short crossings above threshold and {n_.get('Unexplained', 0)} had no identifiable cause."
         )
         s += self.exhibit("False alert-hours by cause, evaluation year", self.fig_false_causes())
         mi = self.t["misses"]
         cnt = mi["Reason"].value_counts()
-        s += p(f"[[b]]The ML Model missed {len(mi)} of the 32 conditions:[[/b]]")
+        s += p(f"[[b]]The ML Model missed {num(len(mi))} of the 32 conditions:[[/b]]")
         s += ul(
             [
-                f"{cnt.get('removed as a coincidence', 0) + cnt.get('inside an episode opened more than 120 days earlier', 0)} fell under an ALERT that had opened more than a week before the condition showed any sign on the machine, so the ALERT could not have been prompted by it and they are not counted.",
-                f"{cnt.get('precursor under the threshold', 0)} had a score that crossed the threshold without staying above it: a lubrication episode, a wear cycle on HMC-06's flood pump that the model had learned as healthy in training, and a wear cycle on HMC-06's TSC pump.",
-                f"{cnt.get('point re-centering', 0)} came while the point was re-centering after a repair, with no level to score against: a compressor lubrication episode.",
+                f"{num(cnt.get('removed as a coincidence', 0) + cnt.get('inside an episode opened more than 120 days earlier', 0), cap=True)} fell under an ALERT that had opened more than a week before the condition showed any sign on the machine, so the ALERT could not have been prompted by it and they are not counted.",
+                f"{num(cnt.get('precursor under the threshold', 0), cap=True)} had a score that crossed the threshold without staying above it: a lubrication episode, a wear cycle on HMC-06's flood pump that the model had learned as healthy in training, and a wear cycle on HMC-06's TSC pump.",
+                f"{num(cnt.get('point re-centering', 0), cap=True)} came while the point was re-centering after a repair, with no level to score against: a compressor lubrication episode.",
             ]
         )
         mt = mi[["Asset", "Condition", "Confirmed", "Reason"]].copy()
@@ -1445,11 +1455,11 @@ class Report:
         c = self.B["conditions"]
         s += ul(
             [
-                f"[[b]]Small counts.[[/b]] 32 conditions and {self.B['failures']['n']} failures; a difference of two or three conditions could reverse in another year.",
+                f"[[b]]Small counts.[[/b]] 32 conditions and {num(self.B['failures']['n'])} failures; a difference of two or three conditions could reverse in another year.",
                 f"[[b]]Points stuck in ALERT.[[/b]] The HMC-02 spindle points' temperature residual ran outside its training range after {self.B['train']['min']} training hours and held both points in ALERT for most of the year, hiding two conditions. A clamp on the residual fixed HMC-02 but raised stuck points elsewhere on the folds and was set aside.",
-                f"[[b]]Conditions the sensors cannot see.[[/b]] {c['other']} of the year's {c['total']} conditions are outside this comparison: {c['no_sensors']} on machines without sensors, and {c['other'] - c['no_sensors']} that left no trace in the sensor data (trips, crashes, stoppages, compressor oil cooler faults and leaks visible only in controller pressure).",
+                f"[[b]]Conditions the sensors cannot see.[[/b]] {c['other']} of the year's {c['total']} conditions are outside this comparison: {num(c['no_sensors'])} on machines without sensors, and {c['other'] - c['no_sensors']} that left no trace in the sensor data (trips, crashes, stoppages, compressor oil cooler faults and leaks visible only in controller pressure).",
                 "[[b]]Diagnosis limits.[[/b]] One alert names one condition, so a condition sharing an alert with another on the same asset is named only if it leads. On pumps, a rise at running speed alone cannot separate impeller wear from imbalance. Rotary-union leaks dropped through-spindle coolant pressure 9 to 10.5%; the drop names a leak only when no earlier rule fires, so one of the two caught was named bearing.",
-                f"[[b]]Resets during degradation.[[/b]] {self.B['scoring']['rearms_degrading']} of the {self.B['scoring']['rearms']} threshold resets in the year came while the point was degrading. None cost a catch, but each raised a threshold over a developing fault.",
+                f"[[b]]Resets during degradation.[[/b]] {num(self.B['scoring']['rearms_degrading'], cap=True)} of the {num(self.B['scoring']['rearms'])} threshold resets in the year came while the point was degrading. None cost a catch, but each raised a threshold over a developing fault.",
                 "[[b]]Wear learned as healthy.[[/b]] A wear cycle on HMC-06's flood pump was in the training years' healthy hours, so the model did not alert on its return.",
                 "[[b]]Label noise.[[/b]] CMMS failure codes are wrong on about 15% of unplanned repairs, and the same noise limits the diagnosis match, which is scored against those codes.",
                 "[[b]]Chiller faults[[/b]] have no controller fault contact, so abrupt faults show only in temperature.",
