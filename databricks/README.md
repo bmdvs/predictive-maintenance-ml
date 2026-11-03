@@ -66,12 +66,20 @@ Targets:
 | Target | Mode | Catalog | Run as | Root path |
 |---|---|---|---|---|
 | `dev` | development (prefixed names, paused schedules, development pipeline) | `pdm_dev`; landing read from `/Volumes/pdm/landing/exports`, Auto Loader schemas in `pdm_dev.landing.autoloader` | the deploying user | the user's `.bundle/pdm/dev` |
-| `prod` | production | `pdm` | the job: the deploy service principal (`BUNDLE_VAR_deploy_sp`); the pipeline: its owner | `/Workspace/Shared/.bundle/pdm/prod` |
+| `prod` | production | `pdm` | the job: the deploy service principal (`BUNDLE_VAR_deploy_sp`); the pipeline: its owner | the deploying user's `.bundle/pdm/prod` |
 
-The prod root path is under `/Workspace/Shared`, so the binding (run by a person) and the deploys (run by the
-service principal) share one deployment state. Workspace folder permissions are additive and `/Workspace/Shared`
-gives all users manage access by inheritance, so bundle permissions cannot narrow that folder; they would also
-apply to the job and the pipeline. The folder stays as it is; `bundle validate -t prod` warns about it.
+The prod root path is in the deploying user's folder, and the prod permissions give manage access to the
+deploying user and the deploy service principal only (workspace users get none); they apply to the root folder,
+the job and the pipeline. Prod is deployed locally by a person: the deployment state lives in that person's
+folder, so a deploy by another identity would start a separate state.
+
+A local prod deploy needs `BUNDLE_VAR_deploy_sp` set to the deploy service principal's application id, or the
+job's run-as identity changes. Keep it in a gitignored `.env` at the repository root and load it before deploying:
+
+```bash
+set -a; . ./.env; set +a
+databricks bundle deploy -t prod
+```
 
 The workspace host comes from the CLI profile or `DATABRICKS_HOST`; bundles do not accept a variable for
 the host. Runs are started with `--no-wait` and followed in the UI, so no waiting command ends a run.

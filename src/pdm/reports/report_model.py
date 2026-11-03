@@ -1599,6 +1599,7 @@ REASON = {
     "point re-centering": "Point re-centering after a repair",
 }
 EXTRA_CSS = """
+main.content > h2:first-child { margin-top: 0; }
 .exnote { font-size: 12px; color: var(--muted); margin: 2px 0 14px; }
 table.boxes td { width: 33%; background: #F7F9FB; }
 table.even2 { table-layout: fixed; font-size: 15px; }
