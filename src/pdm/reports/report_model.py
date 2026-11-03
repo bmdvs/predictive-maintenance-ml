@@ -688,7 +688,6 @@ class Report:
             [
                 f"The ML Model caught {a['only_ml']} conditions Vendor Rules missed: two spindle cooling faults, a lubrication episode, a bearing failure and a rotary union leak. On these, Vendor Rules either had no alert (2) or produced unrelated ALERTs that missed the condition (3).",
                 f"Vendor Rules caught {a['only_vr']} conditions the ML Model missed: two with under half a day's warning (a spindle cooling fault and a compressor lubrication episode), a pump wear cycle the ML Model had learned as normal in training, and a rotary union leak that fell inside a long ML Model alert on the same spindle.",
-                f"Neither caught {a['neither']}: in 2 (a lubrication episode and a rotary union leak), both methods produced unrelated ALERTs that missed the condition; in 2 lubrication episodes, Vendor Rules' produced unrelated ALERTs and the ML Model had none that counted; in 1, a pump wear cycle on HMC-06's TSC pump, the ML Model's score crossed its threshold without staying above it and Vendor Rules showed nothing.",
             ]
         )
         s += p(
@@ -1361,6 +1360,15 @@ class Report:
         s += p(
             f"On the evaluation year, the ML Model caught {pct(a['strict']['ML Model'] / 32)} of conditions with {n1(fo['eval_warn'])} days of warning on its catches at {a['false']['ML Model']:.3f} false episodes per asset-month, against {pct(fo['strict'] / fo['conditions'])} with {n1(fo['warn'])} days of warning on its catches at {fo['false']:.3f} false episodes per asset-month on the training folds. It caught fewer conditions in evaluation than training, mostly on lubrication episodes, discussed in 4.3."
         )
+        s += (
+            "<p>"
+            + esc(
+                "The ML Model raised fewer false alerts than Vendor Rules in every period, on both training folds and in all four quarters of the evaluation year. It caught a higher share of conditions on both folds and in Q2 and Q3, and a lower share in Q1 (44% against 78%, the quarter the "
+            )
+            + "<a href='monitoring_report.html'>monitoring report</a>"
+            + esc(" flags) and Q4 (67% against 83%).")
+            + "</p>"
+        )
         per = self.t["periods"]
         per = per[per["definition"] == "E7"]
         rows = []
@@ -1389,6 +1397,9 @@ class Report:
                 )
             rows += [r1, r2_, r3]
         s += self.exhibit("Results by period", style.table(pd.DataFrame(rows)))
+        s += p(
+            "Over the evaluation year, the ML Model matched or beat Vendor Rules on every condition type except pump seal or impeller wear (4 of 6 against 5 of 6), and caught all 6 bearing defects, one unplanned bearing defect and one spindle cooling fault more than Vendor Rules. Lubrication, the most common condition, was caught at 60% by both methods."
+        )
         s += self.exhibit("Catch rate by condition type, evaluation year", self.fig_type_bars())
         os_ = self.t["own_signal"].set_index(["type", "method"])
         lv, sc_ = os_.loc[("lubrication", "Vendor Rules")], os_.loc[("spindle cooling", "ML Model")]
