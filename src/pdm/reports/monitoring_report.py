@@ -566,7 +566,11 @@ class MonitoringReport:
         ax.bar(x, hmc, width=0.62, color=HMC_SHADE, label="HMC points")
         ax.bar(x, cmp_, width=0.62, bottom=hmc, color=CMP_SHADE, label="Compressor points")
         for i, (a, b) in enumerate(zip(hmc, cmp_, strict=True)):
-            ax.text(i, a + b + 0.4, str(a + b), ha="center", va="bottom", fontsize=7.5)
+            if a:
+                ax.text(i, a / 2, str(a), ha="center", va="center", fontsize=7.5, color="white")
+            if b:
+                ax.text(i, a + b / 2, str(b), ha="center", va="center", fontsize=7.5, color=style.TEXT)
+            ax.text(i, a + b + 0.4, str(a + b), ha="center", va="bottom", fontsize=7.5, fontweight="bold")
         ax.set_ylim(0, float((hmc + cmp_).max()) * 1.18)
         ax.set_ylabel("Point-months with an exception", fontsize=8.5)
         ax.legend(frameon=False, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2)
