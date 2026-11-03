@@ -153,7 +153,7 @@ def test_entrypoint_keyword_arguments():
     assert b.auto_promote is True and b.run_id is None and b.job_run_id == "7"
     with pytest.raises(SystemExit):
         entrypoints.parse("pdm-promote", ["--catalog=pdm", "--config=c.yaml", "--auto_promote=maybe"])
-    assert entrypoints.train_stages("ml_model,survival") == ["ml_model", "survival"]
+    assert entrypoints.train_stages("controller_health,ml_model") == ["ml_model", "controller_health"]
     with pytest.raises(ValueError):
         entrypoints.train_stages("nbm")
 

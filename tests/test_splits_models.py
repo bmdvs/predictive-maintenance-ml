@@ -1,5 +1,5 @@
 """Splits, per-point models (shape, determinism, leaked-window refusal, seasonal coverage), controller
-health, prognosis, fusion, advisory and event-based evaluation on small known inputs."""
+health, advisory and event-based evaluation on small known inputs."""
 
 import copy
 
@@ -12,7 +12,7 @@ from pdm.advisory.requests import asset_kind, family_of, suspected
 from pdm.config import load_config
 from pdm.evaluation import events as ev
 from pdm.models import controller_health as ch
-from pdm.models import nbm, prognosis
+from pdm.models import nbm
 
 CFG = load_config()
 # the base mechanisms are tested with every model fix off (the frozen switches: test_fix_switches.py)
@@ -269,27 +269,6 @@ def test_controller_drift_and_thermistor():
     assert {"axis_drift", "thermistor_residual"} <= set(al["rule"])
 
 
-def _inst(name: str, b: float, life: float, seed: int) -> prognosis.Instance:
-    rng = np.random.default_rng(seed)
-    det = pd.Timestamp("2024-01-01", tz=UTC)
-    days = pd.date_range(det, periods=int(life), freq="D")
-    v = 2.0 + np.exp(-1.0 + b * np.arange(len(days)) + rng.normal(0, 0.05, len(days)))
-    thr = 2.0 + np.exp(-1.0 + b * life)
-    return prognosis.Instance(name, det, det + pd.Timedelta(days=life), pd.Series(v, index=days), 2.0, thr)
-
-
-def test_prognosis_bayesian_intervals_and_alpha_lambda():
-    train = [_inst(f"T{i}", 0.08 + 0.005 * i, 40, i) for i in range(4)]
-    prior = prognosis.prior_from_training(train)
-    assert prior.mean[1] > 0
-    test = _inst("V", 0.09, 40, 9)
-    p = prognosis.scores(prognosis.predict(test, prior, [0.5, 0.75], 0.9, 2000, 7), 0.2)
-    q = prognosis.predict(test, prior, [0.5, 0.75], 0.9, 2000, 7)
-    assert np.allclose(p["pred_rul_days"], q["pred_rul_days"])
-    assert p["within_alpha"].all() and p["covered"].all()
-    assert (p["pi_low"] <= p["pred_rul_days"]).all() and (p["pred_rul_days"] <= p["pi_high"]).all()
-
-
 def test_ml_cases_and_status_from_episodes():
     from pdm import ml_tasks
 
@@ -422,97 +401,6 @@ def test_condition_scope_affected_point():
     assert list(c["asset_key"]) == ["CMP-01", "HMC-01-SP", "HMC-02-SP", "HMC-03"]
 
 
-def test_shared_shape_weibull():
-    from pdm.models import survival
-
-    rng = np.random.default_rng(3)
-    rows = []
-    for cls, scale in (("a", 500.0), ("b", 2000.0)):
-        life = scale * rng.weibull(1.5, 60)
-        cens = rng.uniform(100, 3000, 60)
-        rows.append(
-            pd.DataFrame(
-                {
-                    "component_class": cls,
-                    "duration_days": np.minimum(life, cens),
-                    "event": (life <= cens).astype(int),
-                    "entry_days": 0.0,
-                }
-            )
-        )
-    lives = pd.concat(rows, ignore_index=True)
-    t, shape = survival.shared_shape_weibull(lives, 0.9)
-    assert t["shape_rho"].nunique() == 1 and 1.1 < shape["shape_rho"] < 2.0
-    a, b = t.set_index("component_class")["scale_lambda_days"]
-    assert 300 < a < 800 and 1300 < b < 3000
-    assert (t["scale_low"] < t["scale_lambda_days"]).all() and (
-        t["scale_lambda_days"] < t["scale_high"]
-    ).all()
-
-
-def _life_inputs(replacements: str, install_year: int | None):
-    machines = pd.DataFrame([{"machine_id": "HMC-09", "age_class": "newer", "install_year": install_year}])
-    pumps = pd.DataFrame(
-        [
-            {
-                "asset_id": "HMC-09-CP",
-                "kind": "flood",
-                "machine_id": "HMC-09",
-                "replacement_dates": replacements,
-            }
-        ]
-    )
-    spindles = pd.DataFrame(columns=["machine_id", "rebuild_dates"])
-    comps = pd.DataFrame(columns=["asset_id", "motor_bearing_replaced", "airend_rebuilt", "install_year"])
-    ts = lambda s: pd.Timestamp(s, tz="UTC")  # noqa: E731
-    wo = pd.DataFrame(
-        [
-            {
-                "asset_id": "HMC-09-CP",
-                "wo_type": "unplanned_repair",
-                "failure_code": "PMP-BRG",
-                "opened": ts("2024-05-10 12:00"),
-                "closed": ts("2024-05-11 09:00"),
-                "downtime_hours": 8.0,
-            },
-        ]
-    )
-    col = pd.DataFrame(columns=["machine_id", "ts_utc"])
-    pm = pd.DataFrame(columns=["pm_task", "asset_id", "due", "outcome"])
-    return machines, pumps, spindles, comps, wo, col, pm, (ts("2023-07-01"), ts("2026-07-01"))
-
-
-def test_lives_register_date_on_failure_day_is_the_same_event():
-    from pdm.models import survival
-
-    # register date at midnight of the failure's opening day: it is the failure's replacement
-    lives = survival.lifetimes(*_life_inputs("2022-03-01;2024-05-10", 2019), close_lag_days=2)
-    assert len(lives) == 2
-    first, second = lives.sort_values("start").itertuples()
-    assert first.event == 1 and first.start == pd.Timestamp("2022-03-01", tz="UTC")
-    assert (
-        abs(first.duration_days - (pd.Timestamp("2024-05-10 12:00") - pd.Timestamp("2022-03-01")).days - 0.5)
-        < 1e-9
-    )
-    assert second.start == pd.Timestamp("2024-05-11 09:00", tz="UTC") and second.event == 0
-    assert (lives["duration_days"] > 1).all()
-    # without the rule the midnight date would cut a 0.5-day life ending in the failure
-    lag0 = survival.same_event_removed(
-        [pd.Timestamp("2024-05-10", tz="UTC")], _life_inputs("", 2019)[4], pd.Timedelta(0)
-    )
-    assert lag0 == []
-
-
-def test_lives_start_at_install_when_no_register_date_precedes_the_record():
-    from pdm.models import survival
-
-    lives = survival.lifetimes(*_life_inputs("", 2019), close_lag_days=2).sort_values("start")
-    first = lives.iloc[0]
-    assert first["start"] == pd.Timestamp("2019-07-01", tz="UTC")
-    assert first["entry_days"] == (pd.Timestamp("2023-07-01") - pd.Timestamp("2019-07-01")).days
-    assert first["event"] == 1
-
-
 def test_entrypoint_arguments(monkeypatch):
     from pdm import entrypoints
 
@@ -536,40 +424,6 @@ def test_entrypoint_arguments(monkeypatch):
     )
     assert store.catalog == "pdm_dev" and args.experiment_root == "/Shared/pdm" and "splits" in cfg
     assert seen["spark.sql.session.timeZone"] == "UTC"
-
-
-def test_lives_register_date_on_preventive_work_order_day_is_that_replacement():
-    from pdm.models import survival
-
-    ts = lambda s: pd.Timestamp(s, tz="UTC")  # noqa: E731
-    inputs = list(_life_inputs("2022-03-01;2025-03-16", 2019))
-    pm = pd.DataFrame(
-        [
-            {
-                "asset_id": "HMC-09-CP",
-                "wo_type": "pm",
-                "failure_code": None,
-                "opened": ts("2025-03-16 05:47"),
-                "closed": ts("2025-03-16 15:35"),
-                "downtime_hours": 4.0,
-            },
-            {
-                "asset_id": "HMC-09-CP",
-                "wo_type": "condition_based",
-                "failure_code": "VIB-IMBAL",
-                "opened": ts("2025-09-01 11:00"),
-                "closed": ts("2025-09-02 08:00"),
-                "downtime_hours": 3.0,
-            },
-        ]
-    )
-    inputs[4] = pd.concat([inputs[4], pm], ignore_index=True)
-    inputs[1].loc[0, "replacement_dates"] = "2022-03-01;2025-03-16;2025-09-01"
-    lives = survival.lifetimes(*inputs, close_lag_days=2).sort_values("start")
-    assert (lives["duration_days"] > 1).all()
-    starts = list(lives["start"])
-    assert ts("2025-03-16") not in starts and ts("2025-09-01") not in starts
-    assert ts("2025-03-16 15:35") in starts and ts("2025-09-02 08:00") in starts
 
 
 def test_per_input_limits_alert_alongside_the_score():

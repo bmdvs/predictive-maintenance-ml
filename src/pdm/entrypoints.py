@@ -72,7 +72,7 @@ def setup(prog: str, argv: list[str] | None = None) -> tuple[Store, dict[str, An
     return Store(spark, catalog=args.catalog), cfg, args
 
 
-TRAIN_STAGES = ("rule_floor", "ml_model", "controller_health", "survival", "supervised")
+TRAIN_STAGES = ("rule_floor", "ml_model", "controller_health")
 
 
 MONITOR_STAGES = ("evaluation", "monitoring")
@@ -95,8 +95,7 @@ def train_stages(value: str) -> list[str]:
 
 def train_models(argv: list[str] | None = None) -> None:
     """Rule-floor comparison runs, the ML Model's training run (expanding-window selection on two folds,
-    the champion refit on all of training), controller health, survival and the supervised gate;
-    --train-stages runs a subset."""
+    the champion refit on all of training) and controller health; --train-stages runs a subset."""
     store, cfg, args = setup("pdm-train-models", argv)
     root = args.experiment_root.rstrip("/")
     stages = train_stages(args.train_stages)
@@ -107,10 +106,6 @@ def train_models(argv: list[str] | None = None) -> None:
         ml_tasks.train_task(store, cfg, f"{root}/ml_model", job_run_id=args.job_run_id)
     if "controller_health" in stages:
         tasks.controller_health_task(store, cfg, f"{root}/controller_health")
-    if "survival" in stages:
-        tasks.survival_task(store, cfg, f"{root}/survival")
-    if "supervised" in stages:
-        tasks.supervised_task(store, cfg)
 
 
 def promote(argv: list[str] | None = None) -> None:
@@ -144,12 +139,11 @@ def champion(catalog: str, alias: str = registry.CHAMPION) -> tuple[Any, str]:
 
 
 def score(argv: list[str] | None = None) -> None:
-    """The shadow year scored with the frozen ML Model, then prognosis, and the levels of both methods
+    """The shadow year scored with the frozen ML Model, then the levels of both methods
     (ALERT episodes and ALARM starts) with the ML Model's cases and work requests."""
     store, cfg, args = setup("pdm-score", argv)
     model, version = champion(args.catalog, args.alias)
     ml_tasks.score_task(store, cfg, model, version)
-    tasks.prognosis_task(store, cfg)
     ml_tasks.levels_task(store, cfg)
 
 

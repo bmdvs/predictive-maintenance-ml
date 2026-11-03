@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -25,8 +26,14 @@ from matplotlib.patches import Patch, Rectangle
 from pdm import paths
 from pdm.reports import style
 from pdm.reports.data import Data
-from pdm.reports.model_report import exhibit_title
 from pdm.reports.text import PageText
+
+
+def exhibit_title(t: PageText, section: str, start: str) -> str:
+    line = t.lines(section, start)[0]
+    m = re.match(r"\*\*Exhibit(?: \(NEW\))?: (.+?)\*\*", line.strip())
+    return m.group(1)
+
 
 S = "C"
 CACHE = paths.REPO_ROOT / "build" / "monitoring_cache"

@@ -89,29 +89,6 @@ def test_entrypoint_as_of():
     assert entrypoints.parse("pdm-score", ["--catalog", "pdm", "--config", "c.yaml"]).as_of is None
 
 
-def test_case_trigger_text_does_not_depend_on_row_order():
-    from pdm.fusion.status import cases
-
-    t0 = pd.Timestamp("2026-04-10 10:00", tz=UTC)
-    sig = pd.DataFrame(
-        {
-            "method": ["vendor", "nbm", "iso", "vendor"],
-            "asset_id": "A",
-            "machine_id": "A",
-            "point_id": ["P", "P", "P", "P"],
-            "ts": [t0, t0, t0, t0 + pd.Timedelta(hours=1)],
-            "level": ["alarm", "alarm", "alarm", "alarm"],
-            "rules": ["vendor:alarm", "nbm:x,y", "iso:alarm", "vendor:alarm"],
-        }
-    )
-    changes = pd.DataFrame({"asset_id": ["A"], "ts": [t0], "status": ["ALARM"], "layers": ["vendor"]})
-    wo = pd.DataFrame(columns=["asset_id", "wo_id", "wo_type", "failure_code", "opened", "closed"])
-    a = cases(changes, sig, wo, 7)
-    b = cases(changes, sig.iloc[[2, 0, 1, 3]].reset_index(drop=True), wo, 7)
-    assert a["trigger_rules"].tolist() == b["trigger_rules"].tolist()
-    assert a["trigger_rules"].iat[0].split(";")[:3] == ["iso:iso:alarm", "nbm:nbm:x,y", "vendor:vendor:alarm"]
-
-
 def _hourly(point: str, start: str, end: str, level_by_period: list[tuple[str, float]]) -> pd.DataFrame:
     hours = pd.date_range(start, end, freq="h", tz="UTC", inclusive="left")
     rng = np.random.default_rng(0)
@@ -205,8 +182,8 @@ def test_retraining_decision_action_and_score_drift():
 
 def test_train_stages():
     assert entrypoints.train_stages("all") == list(entrypoints.TRAIN_STAGES)
-    assert entrypoints.train_stages("survival") == ["survival"]
-    assert entrypoints.train_stages("survival, rule_floor") == ["rule_floor", "survival"]
+    assert entrypoints.train_stages("ml_model") == ["ml_model"]
+    assert entrypoints.train_stages("ml_model, rule_floor") == ["rule_floor", "ml_model"]
     with pytest.raises(ValueError):
         entrypoints.train_stages("nbm,unknown")
     assert entrypoints.stages("monitoring", entrypoints.MONITOR_STAGES) == ["monitoring"]
@@ -235,8 +212,8 @@ def test_every_job_parameter_is_accepted_by_every_task():
             "--config=c.yaml",
             "--as_of=2026-06",
             "--auto_promote=false",
-            "--train_stages=survival",
+            "--train_stages=ml_model",
             "--monitor_stages=monitoring",
         ],
     )
-    assert args.train_stages == "survival" and args.monitor_stages == "monitoring"
+    assert args.train_stages == "ml_model" and args.monitor_stages == "monitoring"

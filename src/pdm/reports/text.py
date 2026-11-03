@@ -1,7 +1,7 @@
 """The page text: paragraphs and labelled lines from page_text.md, rendered to HTML verbatim.
 
-Inputs: page_text.md, sections A (queue page), B (model report), C (monitoring report), D (README).
-Outputs: HTML (or Markdown for the README) for one block of text, found by the start of its first line.
+Inputs: page_text.md, sections A (queue page), B (model report), C (monitoring report).
+Outputs: HTML for one block of text, found by the start of its first line.
 """
 
 from __future__ import annotations

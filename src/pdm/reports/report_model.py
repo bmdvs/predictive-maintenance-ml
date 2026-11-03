@@ -705,7 +705,7 @@ class Report:
         )
         s += self.panels()
         s += p(
-            f"[[b]]The ML Model produces {a['false']['ML Model']:.3f} false ALERTs per asset-month against the Vendor Rules' {a['false']['Vendor Rules']:.3f}[[/b]]. Vendor Rules raised {ins['vr_n']} false alerts, which took {ins['vr_hours']:.0f} inspection hours. The ML Model raised {ins['ml_n']}, which would have taken about {ins['ml_hours']:.0f} hours at the same labor rate. At their peak month, Vendor Rules' inspections took {pct(ins['vr_peak_share'], 1)} of the three technicians' available hours, against {pct(ins['ml_peak_share'], 1)} if the ML Model's ALERTs were used to drive inspections."
+            f"[[b]]The ML Model produces {a['false']['ML Model']:.3f} false ALERTs per asset-month against Vendor Rules' {a['false']['Vendor Rules']:.3f}[[/b]]. Vendor Rules raised {ins['vr_n']} false alerts, which took {ins['vr_hours']:.0f} inspection hours. The ML Model raised {ins['ml_n']}, which would have taken about {ins['ml_hours']:.0f} hours at the same labor rate. At their peak month, Vendor Rules' inspections took {pct(ins['vr_peak_share'], 1)} of the three technicians' available hours, against {pct(ins['ml_peak_share'], 1)} if the ML Model's ALERTs were used to drive inspections."
         )
         cv = self.t["curves"]
         mlc = cv[(cv["method"] == "ML Model") & (cv["setting"] != "operating threshold (prod)")]

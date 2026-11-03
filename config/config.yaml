@@ -657,24 +657,6 @@ models:                                   # [fixed]
     stage4: {broadband_ratio: 2.0, hf_or_envelope_fall_frac: 0.30, peak_window_days: 30, velocity_slope_days: 7}
     discharge_temp_c: 100.0
     criticality: {spindle: 1, tsc_pump: 2, flood_pump: 3, compressor: 3}
-  supervised:
-    asset_class: rotating_auxiliaries
-    horizon_days: 14
-    min_train_events: 8
-    candidates: [logistic_l2, gradient_boosting]
-    calibration: isotonic
-  survival:
-    models: [weibull_aft, cox]
-    covariates: [component_class, machine_age_class, crash_count, lube_pm_compliance]   # reported; not supported by this record (step 5 review 2)
-    pm_review: shared_shape_weibull         # final design round: one shape across classes, class-specific scale (was per_class_weibull)
-    unstable_max_events: 2                  # per-class fits with this many events or fewer are reported as unstable
-    interval: 0.90
-  prognosis:
-    failure_mode: auxiliary_bearing_stage2_onward
-    indicator: velocity_rms                 # step 5 review (was envelope_fault_band_energy)
-    threshold: iso_zone_d                   # step 5 review: ISO 20816-3 zone D boundary per machine group (was stage4)
-    interval: 0.90
-    alpha: 0.2
 
 advisory:                                 # 10.9 controller signals for diagnosis
   tsc_pressure_reference_days: [14, 44]    # TSC pressure drop: daily median against the median 14 to 44 days earlier

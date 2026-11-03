@@ -74,7 +74,6 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 | [`models/nbm.py`](src/pdm/models/nbm.py), [`models/nbm_pyfunc.py`](src/pdm/models/nbm_pyfunc.py) | Trains and scores the anomaly detection ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
 | [`models/controller_health.py`](src/pdm/models/controller_health.py) | Scores the controller signals: spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
 | [`rules/`](src/pdm/rules/) | Alerting by Vendor Rules, replayed from the sensor platform export, and by the ISO 20816-3 zone rule, with the persistence and suppression every alerting layer shares. |
-| [`fusion/status.py`](src/pdm/fusion/status.py) | Alerting at the asset level: combines all alerting layers into one status per asset, and keeps the case log. |
 | [`advisory/requests.py`](src/pdm/advisory/requests.py) | Opens work requests at ALERT, with a suspected condition and recommended inspection from the measurement pattern. |
 | [`evaluation/events.py`](src/pdm/evaluation/events.py) | Evaluates each method against confirmed conditions: catches, warning, and false alerts and false ALARMs per asset-month. |
 
@@ -87,7 +86,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 | [`src/pdm/entrypoints.py`](src/pdm/entrypoints.py), [`src/pdm/tasks.py`](src/pdm/tasks.py) | Runs the monthly job as Python wheel tasks: train, promote, score and monitor. |
 | [`src/pdm/registry.py`](src/pdm/registry.py) | Promotes the champion and challenger in the Unity Catalog model registry, through the five promotion gates. |
 | [`src/pdm/monitoring/performance.py`](src/pdm/monitoring/performance.py) | Monitors event performance per method, feature and score drift each month, and makes the retraining decision. |
-| [`src/pdm/reports/`](src/pdm/reports/) | Publishes the queue, both reports and this README from the gold snapshot in [`data/gold_snapshot/`](data/gold_snapshot/). |
+| [`src/pdm/reports/`](src/pdm/reports/) | Publishes the queue and both reports from the gold snapshot in [`data/gold_snapshot/`](data/gold_snapshot/). |
 | [`src/pdm/parity.py`](src/pdm/parity.py) | Tests the pipeline and every job task locally on the exports, checked against the workspace's tables. |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lints and tests every change, and validates the bundle when workspace credentials are configured. |
 
@@ -110,9 +109,9 @@ flowchart LR
     GLD[("Gold<br/>baselines, rolling features,<br/>rule floor")]
   end
   subgraph JOB["Monthly Lakeflow job"]
-    TRAIN["Train<br/>per-point models, controller health,<br/>survival, supervised gate"]
+    TRAIN["Train<br/>ML models,<br/>controller health"]
     PROM["Promote<br/>Unity Catalog registry,<br/>champion alias, five gates"]
-    SCORE["Score<br/>per-point scores, prognosis,<br/>fusion, advisory"]
+    SCORE["Score<br/>per-point scores,<br/>advisory"]
     MON["Monitor<br/>evaluation, drift, data quality,<br/>retraining decision"]
   end
   SP --> LAND
@@ -132,7 +131,7 @@ flowchart LR
 Raw exports from the sensor platform, machine controllers, compressor controllers, CMMS and ERP land in a Unity Catalog volume. A Lakeflow pipeline loads them into bronze tables and builds the silver and gold tables, with data-quality expectations on each. Along the way, each hourly vibration burst is reduced to condition indicators, and each point's healthy windows are set from the asset register and CMMS. The monthly job then:
 - trains the challengers;
 - promotes one to champion in the Unity Catalog registry when it passes its gates;
-- scores every point from the champion and fuses the layers into cases and work requests;
+- scores every point from the champion and opens work requests from its ALERTs;
 - monitors performance, drift and data quality.
 
 The pipeline and job are deployed from a Declarative Automation Bundle, and GitHub Actions lints and tests every change.
@@ -178,7 +177,7 @@ python -m generate
 # 3. The pipeline and every job task on the local exports
 python -m pdm.parity
 
-# 4. The queue, the reports and this README from the gold snapshot
+# 4. The queue and the reports from the gold snapshot
 python -m pdm.reports.build
 
 # 5. Lint and tests
@@ -205,7 +204,7 @@ The page build writes standalone HTML to [`docs/`](docs/), which GitHub Pages se
 | Ingestion & transformation | Lakeflow Declarative Pipelines (Auto Loader, materialized views, expectations), PySpark, Delta Lake |
 | Orchestration & deployment | Lakeflow Jobs (Python wheel tasks), Declarative Automation Bundles, GitHub Actions, service principal |
 | Signal processing | NumPy, SciPy (filtering, envelope analysis, spectra) |
-| Modeling | scikit-learn (autoencoder, PCA, isolation forest, Mahalanobis distance), lifelines, scikit-survival |
+| Modeling | scikit-learn (autoencoder, PCA, isolation forest, Mahalanobis distance) |
 | Model tracking & registry | MLflow, Unity Catalog model registry |
 | Monitoring | SciPy (Wasserstein distance), Databricks data profiling |
 | Data generation | Python, NumPy, pandas |

@@ -29,7 +29,7 @@ from pdm.store import Store
 
 LOG = log.get_logger("pdm.parity")
 SKIP_BRONZE_COPY = {"ctrl_hz1"}
-MODEL_STAGES = ("ml_train", "controller_health", "survival", "supervised", "prognosis")
+MODEL_STAGES = ("ml_train", "controller_health")
 STAGES = ("bronze", "silver", "gold", *MODEL_STAGES, "ml_score", "levels", "evaluation", "monitoring")
 MODEL_FILE = "ml_model.pkl"
 
@@ -173,9 +173,6 @@ def run(stages: tuple[str, ...] = STAGES, as_of: str | None = None) -> dict[str,
     model_tasks = {
         "ml_train": ml_tasks.train_task,
         "controller_health": tasks.controller_health_task,
-        "survival": tasks.survival_task,
-        "supervised": tasks.supervised_task,
-        "prognosis": tasks.prognosis_task,
     }
     model_path = paths.LOCAL_GOLD_DIR / MODEL_FILE
     for name, fn in model_tasks.items():
