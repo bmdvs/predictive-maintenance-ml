@@ -203,7 +203,7 @@ class MonitoringReport:
                 f"{caught} of {conds} ({caught / conds:.2f}) against a {self.ref_catch:.2f} reference",
                 "pass" if self.ref_catch - caught / conds <= self.tol else "refit",
             ),
-            ("Primary trigger", f"fired {' and '.join(fired)} {year}", "refit"),
+            ("Primary rule trigger", f"fired {' and '.join(fired)} {year}", "refit"),
             (
                 "Alert rate, year",
                 f"{rate:.2f} per asset-month, {rate / rate_ref:.2f} of the {rate_ref:.3f} reference",
@@ -215,7 +215,7 @@ class MonitoringReport:
                 "pass",
             ),
             (
-                "Drift trigger",
+                "Secondary rule trigger",
                 f"fired in {'all ' if drift_months == len(MONTHS) else ''}{drift_months} months",
                 "watch",
             ),
@@ -369,7 +369,7 @@ class MonitoringReport:
         labs = [
             "ML Model, passes",
             "ML Model, below the limit one month",
-            "ML Model, primary trigger",
+            "ML Model, primary rule trigger",
             "Vendor Rules",
         ]
         ax.legend(
@@ -704,16 +704,16 @@ class MonitoringReport:
         ml_win = str(self.ref.at[ML, "rate_window"])
         rows = [
             (
-                "Primary trigger",
+                "Primary rule trigger",
                 f"Catch share more than {self.tol:.2f} below the reference catch share on the training folds (July 2024 to June 2025), or alerts per asset-month outside {self.lo} to {self.hi} times the training reference rate ({win}; for the ML Model, the fold-2 model's alerts from {ml_win}), for {self.need} consecutive months",
             ),
             (
-                "Secondary trigger",
+                "Secondary rule trigger",
                 f"Share of point-features, or of point scores, with scaled Wasserstein distance above {self.thr} greater than {self.share:.2f}",
             ),
             (
                 "Verdict",
-                "Retrain when the primary trigger fires; the secondary trigger is reported beside it",
+                "Retrain when the primary rule trigger fires; the secondary rule trigger is reported beside it",
             ),
             ("Action", str(self.rd.loc[self.rd["retrain"].astype(bool), "action"].iat[0]).capitalize()),
         ]
@@ -754,13 +754,13 @@ class MonitoringReport:
         self.parts.append(self.matrix())
         self.h(2, "2. Monitoring Results", "s2")
         self.h(3, "2.1 Performance", "s21", True)
-        self.text("The primary trigger fired on small monthly counts")
-        self.text("From November the ML Model caught")
+        self.text("Catch share, the first of the two primary rule triggers")
         x("Exhibit: Catch share by month", self.fig_catch())
+        self.text("Alert rate, the second primary rule trigger")
         x("Exhibit: Alert rate against reference by month", self.fig_rate())
         x("Exhibit: False alerts per asset-month by month", self.fig_false())
         self.h(3, "2.2 Drift", "s22", True)
-        self.text("The secondary rules compare each point")
+        self.text("The secondary rule trigger flags drift")
         x("Exhibit: Share of points drifted by month", self.fig_drift_share())
         x("Exhibit: Feature drift by point and month", self.heatmap())
         x("Exhibit: Score drift by point and month", self.score_heatmap())
@@ -784,7 +784,7 @@ class MonitoringReport:
         self.toc.append(("aB", "Drift references", "sub"))
         self.parts.append(self.references())
         body = "".join(self.parts)
-        page = style.report_shell(t.field(S, "Title"), t.field(S, "Subtitle"), body, self.toc)
+        page = style.report_shell(t.field(S, "Title"), "", body, self.toc)
         style.write("reports/monitoring_report.html", page.replace("</style>", EXTRA_CSS + "</style>", 1))
         return "docs/reports/monitoring_report.html"
 
