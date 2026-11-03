@@ -39,3 +39,6 @@ CLAUDE-run05-mechanisms.md
 # Bundle build output
 dist/
 build/
+
+# Local MLflow tracking store
+mlflow.db

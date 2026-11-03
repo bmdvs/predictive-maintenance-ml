@@ -16,13 +16,11 @@ MODEL_OWNER="${PDM_MODEL_OWNER:-account users}"
 
 # Tables the job tasks write (train, score, monitor); the pipeline's own tables are not listed.
 JOB_TABLES=(
-  asset_status cases cases_sweep component_lives compressor_discharge_daily controller_health_daily
+  asset_status cases cases_sweep compressor_discharge_daily controller_health_daily
   controller_health_exceedances diagnosis_agreement_validation evaluation_curves_validation
   evaluation_events_validation evaluation_headline_by_type_validation evaluation_headline_validation
   evaluation_matched_validation nbm_candidates nbm_exceedance_diagnosis nbm_exceedances nbm_models
-  nbm_scores nbm_train_scores point_healthy_stats prognosis prognosis_skipped rule_floor_training_curve
-  signals supervised_gate survival_aft_coefficients survival_class_weibull survival_shared_shape_weibull
-  survival_summary work_requests
+  nbm_scores nbm_train_scores point_healthy_stats rule_floor_training_curve signals work_requests
 )
 
 if [[ "${1:-}" == "--check" ]]; then
