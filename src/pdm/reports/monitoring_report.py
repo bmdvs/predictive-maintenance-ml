@@ -765,7 +765,7 @@ class MonitoringReport:
         x("Exhibit: Feature drift by point and month", self.heatmap())
         x("Exhibit: Score drift by point and month", self.score_heatmap())
         self.h(3, "2.3 Data Quality", "s23", True)
-        self.text("Data-quality exceptions ran")
+        self.text("A data-quality exception is a point-month")
         x("Exhibit: Data-quality exceptions by month", self.fig_dq())
         x("Exhibit: Data quality by point and month", self.quality())
         self.h(3, "2.4 Champion and Re-centering", "s24", True)

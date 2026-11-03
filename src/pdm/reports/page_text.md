@@ -322,13 +322,13 @@ The ML Model was monitored monthly over the evaluation year, July 2025 to June 2
 - Score drift above the 0.30 share in every month (0.37 to 0.63), and feature drift in 10 of 12 (0.24 to 0.37).
 - Compressor points without a measurement for more than 30% of hours in every month, while idle.
 
-The retraining rule is evaluated every month: primary rule triggers decide a refit, and secondary rule triggers flag drift for investigation.
+The retraining rule is evaluated every month: primary rules decide a refit, and secondary rules flag drift for investigation.
 
 ### 2. Monitoring Results
 
 #### 2.1 Performance
 
-Catch share, the first of the two primary rule triggers, fell below the 0.54 limit in August, September and October, which fired the trigger, and again in December. Those three months held 10 of the year's 32 conditions and the ML Model caught 4; the 6 misses had no common cause: on 3 the score crossed the threshold without staying above it, 2 fell under an ALERT already open with no sign of the condition, and 1 came while a compressor point was re-centering after a repair. December's miss fell inside the ALERT that had held HMC-02's spindle since July. Every other month with conditions stayed above the limit.
+Catch share, the first of the two primary rule triggers, fell below the 0.54 limit in August, September and October, and again in December. Those three months held 10 of the year's 32 conditions and the ML Model caught 4; the 6 misses had no common cause: on 3 the score crossed the threshold without staying above it, 2 fell under an ALERT already open with no sign of the condition, and 1 came while a compressor point was re-centering after a repair. December's miss fell inside the ALERT that had held HMC-02's spindle since July. Every other month with conditions stayed above the limit.
 
 **Exhibit: Catch share by month**
 
@@ -343,7 +343,7 @@ Alert rate, the second primary rule trigger, left its band once, in August, at 0
 The secondary rule trigger flags drift when more than 30% of point-features (each point's 10 vibration measurements) or point scores (the ML Model's anomaly score on each point) sit more than 0.5 in scaled distance from their reference. Point scores drifted in all 12 months and point-features in 10. Drift calls for investigation, not a refit, so it did not change the verdict. The investigation found:
 - The drift is in vibration level on the spindles: crest factor and kurtosis drifted in under 5% of point-months, and the compressors barely drifted.
 - Narrow references inflate it: points referenced to a re-centering window alone drifted nearly twice as often as points on training references.
-- About a third of drifted point-months had a confirmed condition open on the asset; the rest had none.
+- Drift tracks real faults only loosely: point-features drifted twice as often in months with a confirmed condition open on the asset (56% against 27%), but two thirds of drifted point-months had no condition open, so drift alone is a weak sign of a fault.
 - One point may show a developing fault: the HMC-07 flood pump drifted in every month, its running-speed energy at 2.5 times its level after the pump was replaced in November 2024, with no inspection since. It is worth an inspection.
 
 **Exhibit: Share of points drifted by month**
@@ -354,7 +354,7 @@ The secondary rule trigger flags drift when more than 30% of point-features (eac
 
 #### 2.3 Data Quality
 
-Data-quality exceptions ran at 19 to 29 point-months a month, 278 in all. The compressors account for 96, since they take no measurement while idle; the rest are mostly isolated implausible rows spread across the HMC points. Nothing points to a failing sensor: implausible rows on the HMC points ran at 0.20% of measured hours, and the HMC point-months above 30% without a measurement are whole machines out of service (HMC-04 in May, HMC-08 in June). On the compressors, 1,965 of the 1,983 implausible rows are temperature jumps at the morning start-up, as the housing warms from idle: real readings that the jump rule flags.
+A data-quality exception is a point-month with any implausible rows, or with more than 30% of its scheduled hours without a measurement. Exceptions ran at 19 to 29 point-months a month, 278 in all. The 8 compressor points were exceptions in every month (96): they take no measurement while idle or on standby, 46% of their scheduled hours, and their morning start-ups trip the implausible-row rule (1,965 of their 1,983 implausible rows are temperature jumps as the housing warms from idle: real readings that the jump rule flags). The other 182 are on the HMC points, mostly isolated implausible rows at 0.20% of measured hours, and the HMC point-months above 30% without a measurement are whole machines out of service (HMC-04 in May, HMC-08 in June). Nothing points to a failing sensor.
 
 **Exhibit: Data-quality exceptions by month**
 
