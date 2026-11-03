@@ -28,7 +28,7 @@ ML, VR = style.BRAND_BLUE, style.GREY
 VR_LABEL = "#8C8C8C"  # thin grey text reads lighter than the grey line; one step darker matches it
 AMB, REDC = style.AMBER, style.RED
 TZ = "America/Chicago"
-TITLE = "Predictive Maintenance: ML Model Report"
+TITLE = "Report: Predictive Maintenance ML Model Overview & Performance"
 
 
 def pct(x: float, d: int = 0) -> str:
