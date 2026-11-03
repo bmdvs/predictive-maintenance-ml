@@ -4,7 +4,7 @@ All code related to the ML model (training, scoring, alerting and evaluation) an
 
 <br> 
 
-This project was built on Azure Databricks: a Lakeflow pipeline ingests and transforms raw exports from the shop's sensor platform, machine controllers, CMMS and ERP, and a monthly job trains, gates, scores and monitors the models through MLflow and the Unity Catalog model registry. 
+This project was built on Azure Databricks: a Lakeflow pipeline ingests and transforms raw exports from the shop's sensor platform, machine controllers, CMMS and ERP, and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. 
 
 A **Predictive Maintenance ML model** (anomaly detection) was built on the past three years of the shop's records. Every hour, it reads vibration and temperature measurements from 40 wireless sensor points on eight HMCs and four plant compressors. When readings depart from a sensor point’s normal behavior, the model raises an ALERT (inspection needed), escalating to an ALARM (urgent repair) when the condition becomes severe. The model is detailed in the [model report](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) and summarized below.
 
@@ -39,7 +39,7 @@ The Vendor Rules' and ML Model's statuses and work requests are presented in a [
 
 [![Maintenance queue](docs/screenshots/queue.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
 
-Clicking on an asset in the maintenance queue reveals a detail section showing measurement trends, fault-band energies, spectra and maintenance history:
+Clicking on an asset in the maintenance queue reveals a detail section showing measurement trends, fault-band energies, envelope spectra and controller signals, as well as a maintenance history table (not shown in the screenshot below):
 
 [![Maintenance queue asset detail](docs/screenshots/queue_detail.png)](https://bmdvs.github.io/predictive-maintenance-ml/)
 
@@ -71,7 +71,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 | File | What it does |
 |---|---|
-| [`models/nbm.py`](src/pdm/models/nbm.py), [`models/nbm_pyfunc.py`](src/pdm/models/nbm_pyfunc.py) | Trains and scores the normal-behavior ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
+| [`models/nbm.py`](src/pdm/models/nbm.py), [`models/nbm_pyfunc.py`](src/pdm/models/nbm_pyfunc.py) | Trains and scores the anomaly detection ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
 | [`models/controller_health.py`](src/pdm/models/controller_health.py) | Scores the controller signals: spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
 | [`rules/`](src/pdm/rules/) | Alerting by Vendor Rules, replayed from the sensor platform export, and by the ISO 20816-3 zone rule, with the persistence and suppression every alerting layer shares. |
 | [`fusion/status.py`](src/pdm/fusion/status.py) | Alerting at the asset level: combines all alerting layers into one status per asset, and keeps the case log. |
@@ -93,7 +93,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 ---
 
-## How it works
+## Data and ML Pipeline
 
 ```mermaid
 flowchart LR
