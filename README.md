@@ -1,10 +1,10 @@
 # Machine Learning Model: Predictive Maintenance
 
-This project is built on generated vibration and temperature sensor data, machine and compressor controller data, and ERP and CMMS exports. The sensor data is transmitted wirelessly to the vendor's cloud platform, which exports it as Parquet files. The controller data is read over MTConnect (the HMCs) and over Modbus into Ignition (the compressors), published on an MQTT UNS (Sparkplug B for the compressors), and written to Parquet files. 
+This project is built on generated vibration and temperature sensor data, machine and compressor controller data, and ERP and CMMS exports. The data is generated from each machine’s physical properties and published degradation mechanisms, so that it reflects the behavior of real equipment. See [Data Generation](#data-generation). 
 
-All exports land in Azure Databricks, where a Lakeflow pipeline transforms them and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. 
+The sensor data is transmitted wirelessly to the vendor's cloud platform and exported. The machine controller data is read over MTConnect, and the compressor controller data over Modbus into Ignition; both are published on an MQTT UNS and written to files. All files land in Azure Databricks, where a Lakeflow pipeline transforms them and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. See [Architecture](#architecture). 
 
-All code related to data connectivity, pipelines and the ML model (training, scoring, alerting and evaluation) is organized below in the [Code](#code) section. 
+All code related to data connectivity, the data platform and MLOps, and the ML model (training, scoring, alerting and evaluation) is organized below in the [Code](#code) section. 
 
 ---
 
@@ -71,17 +71,22 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 ## Code
 
-### ML Model (training, scoring, alerting and evaluation)
+### Data Connectivity (MTConnect, Modbus, Ignition, MQTT UNS)
 
 | File | What it does |
 |---|---|
-| [`models/nbm.py`](src/pdm/models/nbm.py), [`models/nbm_pyfunc.py`](src/pdm/models/nbm_pyfunc.py) | Trains and scores the anomaly detection ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
-| [`models/controller_health.py`](src/pdm/models/controller_health.py) | Scores the controller signals: spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
-| [`rules/`](src/pdm/rules/) | Alerting by Vendor Rules, replayed from the sensor platform export, and by the ISO 20816-3 zone rule, with the persistence and suppression every alerting layer shares. |
-| [`advisory/requests.py`](src/pdm/advisory/requests.py) | Opens work requests at ALERT, with a suspected condition and recommended inspection from the measurement pattern. |
-| [`evaluation/events.py`](src/pdm/evaluation/events.py) | Evaluates each method against confirmed conditions: catches, warning, and false alerts and false ALARMs per asset-month. |
+| [`replay/build_native.py`](connectivity/src/idc/replay/build_native.py) | Writes the HMCs' MTConnect SHDR logs and the compressors' Modbus register images from the controller record. |
+| [`replay/shdr_adapter.py`](connectivity/src/idc/replay/shdr_adapter.py) | Serves each HMC's MTConnect SHDR log to the MTConnect agent, as the machine's adapter. |
+| [`replay/modbus_server.py`](connectivity/src/idc/replay/modbus_server.py), [`replay/register_map.py`](connectivity/src/idc/replay/register_map.py) | Serves the compressor controllers' holding registers over Modbus TCP, with the register map for encoding and decoding. |
+| [`bridge/mtconnect_to_mqtt.py`](connectivity/src/idc/bridge/mtconnect_to_mqtt.py) | Reads the MTConnect agent's sample stream and publishes each machine's record to the MQTT UNS. |
+| [`ignition/`](connectivity/ignition/) | Ignition configuration: Modbus device, compressor UDT and tags, and MQTT Transmission publishing Sparkplug B to the MQTT broker. |
+| [`landing/controller_writer.py`](connectivity/src/idc/landing/controller_writer.py), [`landing/minute_writer.py`](connectivity/src/idc/landing/minute_writer.py) | Lands the HMCs' 1 Hz controller stream from the UNS as Parquet, and builds its per-minute aggregates. |
+| [`landing/compressor_writer.py`](connectivity/src/idc/landing/compressor_writer.py) | Decodes the compressors' Sparkplug B messages and lands them as Parquet. |
+| [`checks/acceptance.py`](connectivity/src/idc/checks/acceptance.py), [`checks/opcua_readback.py`](connectivity/src/idc/checks/opcua_readback.py) | Compares the landed files with the bronze controller inputs row for row, and reads the compressor tags back over OPC UA. |
+| [`run_chain.py`](connectivity/src/idc/run_chain.py) | Runs the chain end to end: replay, publish to the UNS, land and acceptance. |
+| [`docker-compose.yml`](connectivity/docker-compose.yml) | Runs the MTConnect agent, the Mosquitto MQTT broker and the Ignition gateway. |
 
-### Data & ML Engineering
+### Data Platform & MLOps (Azure Databricks) 
 
 | File | What it does |
 |---|---|
@@ -94,19 +99,60 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 | [`src/pdm/parity.py`](src/pdm/parity.py) | Tests the pipeline and every job task locally on the exports, checked against the workspace's tables. |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lints and tests every change, and validates the bundle when workspace credentials are configured. |
 
+### ML Model (training, scoring, alerting and evaluation)
+
+| File | What it does |
+|---|---|
+| [`models/nbm.py`](src/pdm/models/nbm.py), [`models/nbm_pyfunc.py`](src/pdm/models/nbm_pyfunc.py) | Trains and scores the anomaly detection ML models (autoencoder, Mahalanobis distance, PCA, isolation forest), one for each sensor point, with inputs re-centered at each repair or remount, and wraps them in MLflow for the registry. |
+| [`models/controller_health.py`](src/pdm/models/controller_health.py) | Scores the controller signals: spindle and axis load drift per program, the spindle thermistor residual and the compressor discharge temperature residual, for all 40 machines. |
+| [`rules/`](src/pdm/rules/) | Alerting by Vendor Rules, replayed from the sensor platform export, and by the ISO 20816-3 zone rule, with the persistence and suppression every alerting layer shares. |
+| [`advisory/requests.py`](src/pdm/advisory/requests.py) | Opens work requests at ALERT, with a suspected condition and recommended inspection from the measurement pattern. |
+| [`evaluation/events.py`](src/pdm/evaluation/events.py) | Evaluates each method against confirmed conditions: catches, warning, and false alerts and false ALARMs per asset-month. |
+
 ---
 
-## Data and ML Pipeline
+## Architecture
+
+### Data Connectivity
 
 ```mermaid
 flowchart LR
-  subgraph SRC["Source systems"]
-    SP["Sensor platform<br/>hourly scalars, alert log,<br/>vibration bursts"]
-    CNC["Machine controllers<br/>1 Hz stream, per-minute<br/>aggregates, event log"]
-    CMPC["Compressor controllers<br/>load, discharge pressure<br/>and temperature"]
+  subgraph FLOOR["Shop floor"]
+    SENS["Wireless sensors<br/>40 points"]
+    HMC["HMC controllers<br/>8 machines"]
+    CMP["Compressor controllers<br/>4 compressors, room unit"]
+  end
+  subgraph CONN["Connectivity"]
+    ADP["MTConnect adapters"]
+    AGENT["MTConnect agent"]
+    BRIDGE["MTConnect-to-MQTT<br/>bridge"]
+    IGN["Ignition<br/>Modbus driver,<br/>MQTT Transmission"]
+    UNS[("MQTT UNS<br/>Mosquitto")]
+    WRT["Landing writers"]
+  end
+  subgraph BIZ["Business systems"]
     CMMS["CMMS<br/>work orders, PM records"]
     ERP["ERP<br/>jobs, asset register"]
   end
+  VEND["Sensor vendor's<br/>cloud platform"]
+  LAND[("Landing volume<br/>Parquet")]
+
+  SENS -- "wireless" --> VEND -- "scheduled export" --> LAND
+  HMC --> ADP -- "SHDR" --> AGENT --> BRIDGE -- "JSON" --> UNS
+  CMP -- "Modbus TCP" --> IGN -- "Sparkplug B" --> UNS
+  UNS --> WRT --> LAND
+  HMC -. "event log export" .-> LAND
+  CMMS -- "export" --> LAND
+  ERP -- "export" --> LAND
+```
+
+The sensor data is transmitted wirelessly to the vendor’s cloud platform and exported. The HMC controller data is read over MTConnect, and the compressor controller data over Modbus into Ignition; both are published on an MQTT UNS and written to files. Together with the CMMS and ERP exports, these files land in a Unity Catalog volume, which feeds the data platform below.
+
+### Data Platform & MLOps
+
+```mermaid
+flowchart LR
+  LAND[("Landing volume")]
   subgraph PIPE["Lakeflow pipeline"]
     BRZ["Bronze<br/>Auto Loader streaming tables"]
     SLV["Silver<br/>hourly indicators, healthy windows,<br/>controller features, labels"]
@@ -118,12 +164,7 @@ flowchart LR
     SCORE["Score<br/>per-point scores,<br/>advisory"]
     MON["Monitor<br/>evaluation, drift, data quality,<br/>retraining decision"]
   end
-  SP --> LAND
-  CNC --> LAND
-  CMPC --> LAND
-  CMMS --> LAND
-  ERP --> LAND
-  LAND[("Landing volume")] --> BRZ
+  LAND --> BRZ
   BRZ --> SLV --> GLD
   GLD --> TRAIN --> PROM --> SCORE
   SCORE --> CASES[("Cases and<br/>work requests")]
@@ -132,7 +173,7 @@ flowchart LR
   MON --> REP["Model and<br/>monitoring reports"]
 ```
 
-Exports from the sensor platform, machine controllers, compressor controllers, CMMS and ERP land in a Unity Catalog volume. A Lakeflow pipeline loads them into bronze tables and builds the silver and gold tables, with data-quality expectations on each. Along the way, each hourly vibration burst is reduced to condition indicators, and each point's healthy windows are set from the asset register and CMMS. The monthly job then:
+A Lakeflow pipeline loads the landed files into bronze tables and builds the silver and gold tables, with data-quality expectations on each. Along the way, each hourly vibration burst is reduced to condition indicators, and each point's healthy windows are set from the asset register and CMMS. The monthly job then:
 - trains the challengers;
 - promotes one to champion in the Unity Catalog registry when it passes its gates;
 - scores every point from the champion and opens work requests from its ALERTs;
@@ -142,26 +183,34 @@ The pipeline and job are deployed from a Declarative Automation Bundle, and GitH
 
 ---
 
-## Data
+## Data Generation
 
-The datasets were generated to represent typical exports from a wireless vibration monitoring platform, CNC and compressor controllers, a CMMS and an ERP, so the full workflow can be shared publicly. The record covers July 2023 to June 2026 and holds:
-- hourly sensor scalars and retained vibration bursts;
-- controller minute aggregates and events;
-- compressor controller data;
-- CMMS work orders and PM records;
-- ERP jobs and the asset register.
+The data is generated from each machine’s physical properties and published degradation mechanisms to reflect the behavior of real equipment. The faults follow those mechanisms alone and were not shaped to suit any monitoring method.
 
-The data is built from each machine's physical properties and published degradation mechanisms, in order to generate data that's as close as possible to real machine data. The faults were not shaped to suit either monitoring method, and neither the ML Model nor Vendor Rules plays any part in generating it.
-
-- **Machines and operation.** Vibration bursts are synthesized at 25,600 samples a second from each point's kinematics: shaft speed from the controller, and bearing defect frequencies from the bearing geometry in the asset register. Spindle speed and cutting load follow the ERP's jobs and programs, so healthy levels shift with speed and rise with load, as they do on a real spindle. Housing temperature follows load and season in a climate-controlled shop.
+- **Healthy operation.** Each point's healthy signal is built from its physical properties:
+  - vibration bursts synthesized at 25,600 samples a second from the point's kinematics, with shaft speed from the controller and bearing defect frequencies from the asset register;
+  - shaft-order energy at 1×, 2× and 3× running speed, and lobe-pass energy on the compressor airends;
+  - structural noise shaped by the point's own housing resonance, between 4 and 8 kHz;
+  - levels that shift with spindle speed and rise with cutting load, following the ERP's jobs and programs;
+  - housing temperature that rises over room temperature by asset type, lags its load and follows season;
+  - a new healthy level after each sensor remount, from a small shift in the sensor's gain and resonance.
 - **Degradation.** Each condition develops through its published signature:
   - bearing defects through the four degradation stages, from envelope peaks at the fault frequency to rising kurtosis and, late, velocity;
   - lubrication loss as rising high-frequency energy and temperature;
   - pump seal and impeller wear as energy at running speed and broadband;
   - rotary-union leaks as a drop in through-spindle coolant pressure;
   - spindle cooling faults as a temperature rise.
-- **Maintenance and the record.** Vendor Rules alerts raise inspections that confirm a condition or find nothing. PMs, repairs and sensor remounts reset levels, and failures stop machines. CMMS failure codes carry the miscoding rate of a real record, and the sensor data carries idle periods and implausible rows.
-- **Operating events that are not faults.** Heavy cuts, titanium jobs, new programs and coolant drift move the measurements without any condition behind them, as they do on a working floor.
+- **Maintenance and the record.** Inspections confirm a condition or find nothing; PMs, repairs and remounts reset levels, and failures stop machines. CMMS failure codes carry a real record's miscoding rate, and the sensor data carries idle periods and implausible rows.
+- **Operating events that are not faults.** Heavy cuts, titanium jobs, new programs and coolant drift move the measurements without any condition behind them.
+
+The record covers July 2023 to June 2026 as typical exports from a wireless vibration monitoring platform, CNC and compressor controllers, a CMMS and an ERP:
+- hourly sensor scalars and retained vibration bursts;
+- controller 1 Hz stream, minute aggregates and events;
+- compressor controller data;
+- CMMS work orders and PM records;
+- ERP jobs and the asset register.
+
+The connectivity chain replays the controller data in its native device formats (MTConnect SHDR logs for the HMCs, Modbus register images for the compressors), written from this record.
 
 Realism checks test each mechanism against its published behavior, and the record was frozen before any model was trained. The generators are in [`generate/`](generate/) and the checks in [`generate/checks/`](generate/checks/).
 
@@ -174,19 +223,30 @@ Realism checks test each mechanism against its published behavior, and the recor
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev,spark]"
+pip install -e connectivity
 
-# 2. Generate the source exports, run the realism checks and write the run report
+# 2. Generate the source record, run the realism checks and write the run report
 python -m generate
 
-# 3. The pipeline and every job task on the local exports
+# 3. Replay the controller data through the connectivity chain and verify the landed files
+cd connectivity
+python -m idc.replay.build_native       # MTConnect SHDR logs and Modbus register images
+docker compose up -d                    # MTConnect agent, MQTT broker, Ignition gateway
+python -m idc.run_chain                 # replay, publish to the UNS and land Parquet files
+python -m idc.checks.acceptance         # landed files against the bronze inputs, row for row
+cd ..
+
+# 4. The pipeline and every job task on the local exports
 python -m pdm.parity
 
-# 4. The queue and the reports from the gold snapshot
+# 5. The queue and the reports from the gold snapshot
 python -m pdm.reports.build
 
-# 5. Lint and tests
+# 6. Lint and tests
 ruff check . && pytest
 ```
+
+Ignition's gateway setup is described in [`connectivity/ignition/`](connectivity/ignition/).
 
 On the platform, from a configured Databricks CLI:
 
@@ -204,6 +264,7 @@ The page build writes standalone HTML to [`docs/`](docs/), which GitHub Pages se
 
 | Layer | Tools |
 |---|---|
+| Data connectivity | MTConnect (cppagent), Modbus TCP (pymodbus), Ignition (Modbus driver, OPC UA, MQTT Transmission), MQTT (Mosquitto, Sparkplug B), Docker |
 | Platform | Azure Databricks, Unity Catalog, Azure Data Lake Storage Gen2 |
 | Ingestion & transformation | Lakeflow Declarative Pipelines (Auto Loader, materialized views, expectations), PySpark, Delta Lake |
 | Orchestration & deployment | Lakeflow Jobs (Python wheel tasks), Declarative Automation Bundles, GitHub Actions, service principal |
