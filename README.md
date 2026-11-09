@@ -4,7 +4,7 @@ This project is built on generated vibration and temperature sensor data, machin
 
 The sensor data is transmitted wirelessly to the vendor's cloud platform and exported. The machine controller data is read over MTConnect, and the compressor controller data over Modbus into Ignition; both are published on an MQTT UNS and written to files. All files land in Azure Databricks, where a Lakeflow pipeline transforms them and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. See [Architecture](#architecture). 
 
-All code related to data connectivity, the data platform and MLOps, and the ML model (training, scoring, alerting and evaluation) is organized below in the [Code](#code) section. 
+All code related to industrial connectivity, the data platform and MLOps, and the ML model (training, scoring, alerting and evaluation) is organized below in the [Code](#code) section. 
 
 ---
 
@@ -71,7 +71,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 ## Code
 
-### Data Connectivity (MTConnect, Modbus, Ignition, MQTT UNS)
+### Industrial Connectivity (MTConnect, Modbus, Ignition, MQTT UNS)
 
 | File | What it does |
 |---|---|
@@ -113,7 +113,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 ## Architecture
 
-### Data Connectivity
+### Industrial Connectivity
 
 ```mermaid
 flowchart LR
