@@ -1,6 +1,6 @@
 # Machine Learning Model: Predictive Maintenance
 
-This project is built off generated vibration sensor data, machine and compressor controller data, and ERP and CMMS exports. The sensor data is transmitted wirelessly. The controller data is read over MTConnect and Modbus, published on an MQTT UNS, and written to Parquet files. Azure Databricks ingests this data, a Lakeflow pipeline transforms it, and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. 
+This project is built on generated vibration and temperature sensor data, machine and compressor controller data, and ERP and CMMS exports. The sensor data is transmitted wirelessly to the vendor's cloud platform, which exports it as Parquet files. The controller data is read over MTConnect (the HMCs) and Modbus (the compressors), published on an MQTT UNS, and written to Parquet files. All exports land in Azure Databricks, where a Lakeflow pipeline transforms them and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. 
 
 All code related to the ML model (training, scoring, alerting and evaluation) and data / ML engineering is organized below in the Code section. 
 
