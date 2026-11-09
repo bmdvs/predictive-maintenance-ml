@@ -264,7 +264,7 @@ The page build writes standalone HTML to [`docs/`](docs/), which GitHub Pages se
 
 | Layer | Tools |
 |---|---|
-| Data connectivity | MTConnect (cppagent), Modbus TCP (pymodbus), Ignition (Modbus driver, OPC UA, MQTT Transmission), MQTT (Mosquitto, Sparkplug B), Docker |
+| Industrial connectivity | MTConnect (cppagent), Modbus TCP (pymodbus), Ignition (Modbus driver, OPC UA, MQTT Transmission), MQTT (Mosquitto, Sparkplug B), Docker |
 | Platform | Azure Databricks, Unity Catalog, Azure Data Lake Storage Gen2 |
 | Ingestion & transformation | Lakeflow Declarative Pipelines (Auto Loader, materialized views, expectations), PySpark, Delta Lake |
 | Orchestration & deployment | Lakeflow Jobs (Python wheel tasks), Declarative Automation Bundles, GitHub Actions, service principal |
