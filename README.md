@@ -117,7 +117,7 @@ To lower this false alert rate, and to catch developing faults earlier, the pilo
 
 ```mermaid
 flowchart LR
-  subgraph FLOOR["Shop floor"]
+  subgraph FLOOR["Field devices"]
     SENS["Wireless sensors<br/>40 points"]
     HMC["HMC controllers<br/>8 machines"]
     CMP["Compressor controllers<br/>4 compressors, room unit"]
