@@ -2,6 +2,7 @@
 
 This project is built off wireless vibration sensor data, machine and compressor controller data, and ERP and CMMS exports. The controller data is collected through a plant-floor connectivity chain. Machine controllers are read over MTConnect and published on an MQTT UNS; compressor controllers are read over Modbus by Kepware, served over OPC UA to Ignition, and published as Sparkplug B. This data lands as files in Azure Databricks, where a Lakeflow pipeline ingests and transforms it, and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. All code related to the ML model (training, scoring, alerting and evaluation) and data / ML engineering is organized below in the Code section. 
 
+<br>
 
 A **Predictive Maintenance ML model** (anomaly detection) was built on the past three years of the shop's records. Every hour, it reads vibration and temperature measurements from 40 wireless sensor points on eight HMCs and four plant compressors. When readings depart from a sensor point’s normal behavior, the model raises an ALERT (inspection needed), escalating to an ALARM (urgent repair) when the condition becomes severe. The model is detailed in the [model report](https://bmdvs.github.io/predictive-maintenance-ml/reports/model_report.html) and summarized below.
 
