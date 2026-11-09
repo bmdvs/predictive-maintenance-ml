@@ -1,6 +1,6 @@
 # Machine Learning Model: Predictive Maintenance
 
-This project is built off generated wireless vibration sensor data, machine and compressor controller data, and ERP and CMMS exports. The machine controller data is read over MTConnect and published on an MQTT UNS; compressor controller data is read over Modbus by Kepware, served over OPC UA to Ignition, and published as Sparkplug B. 
+This project is built off generated wireless sensor data, machine and compressor controller data, and ERP and CMMS exports. The machine controller data is read over MTConnect and published on an MQTT UNS; compressor controller data is read over Modbus by Kepware, served over OPC UA to Ignition, and published as Sparkplug B. 
 
 The data lands as files in Azure Databricks, where a Lakeflow pipeline ingests and transforms it, and a monthly job trains, scores and monitors the models through MLflow and the Unity Catalog model registry. All code related to the ML model (training, scoring, alerting and evaluation) and data / ML engineering is organized below in the Code section. 
 
