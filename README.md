@@ -130,7 +130,7 @@ flowchart LR
   MON --> REP["Model and<br/>monitoring reports"]
 ```
 
-Raw exports from the sensor platform, machine controllers, compressor controllers, CMMS and ERP land in a Unity Catalog volume. A Lakeflow pipeline loads them into bronze tables and builds the silver and gold tables, with data-quality expectations on each. Along the way, each hourly vibration burst is reduced to condition indicators, and each point's healthy windows are set from the asset register and CMMS. The monthly job then:
+Exports from the sensor platform, machine controllers, compressor controllers, CMMS and ERP land in a Unity Catalog volume. A Lakeflow pipeline loads them into bronze tables and builds the silver and gold tables, with data-quality expectations on each. Along the way, each hourly vibration burst is reduced to condition indicators, and each point's healthy windows are set from the asset register and CMMS. The monthly job then:
 - trains the challengers;
 - promotes one to champion in the Unity Catalog registry when it passes its gates;
 - scores every point from the champion and opens work requests from its ALERTs;
