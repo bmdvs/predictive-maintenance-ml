@@ -1,5 +1,4 @@
 # Build specification and private notes
-CLAUDE.md
 DEVIATIONS.md
 
 # Generation archives and model registry
@@ -24,17 +23,11 @@ spark-warehouse/
 metastore_db/
 derby.log
 
-# Platform build specification merged into CLAUDE.md
-CLAUDE-azure-databricks.md
-
 # Databricks and Azure local state and credentials
 .databrickscfg
 .env
 *.azcred
 .databricks/
-
-# Mechanism additions merged into CLAUDE.md
-CLAUDE-run05-mechanisms.md
 
 # Bundle build output
 dist/

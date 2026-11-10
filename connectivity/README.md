@@ -6,8 +6,8 @@ This folder holds the connectivity chain that replays the HMC and compressor con
 cd connectivity
 python -m idc.replay.build_native       # MTConnect SHDR logs and Modbus register images
 docker compose up -d                    # MTConnect agent, MQTT broker, Ignition gateway
-python -m idc.run_chain                 # replay, publish to the UNS and land Parquet files
-python -m idc.checks.acceptance         # landed files against the bronze inputs, row for row
+python -m idc.run_chain                 # replay, publish to the UNS, land Parquet files and run acceptance
+python -m idc.checks.acceptance         # rerun acceptance on its own, row for row against the bronze inputs
 ```
 
 - Code: [Industrial Connectivity (MTConnect, Modbus, Ignition, MQTT UNS)](../README.md#industrial-connectivity-mtconnect-modbus-ignition-mqtt-uns)
