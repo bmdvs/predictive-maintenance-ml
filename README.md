@@ -232,8 +232,8 @@ python -m generate
 cd connectivity
 python -m idc.replay.build_native       # MTConnect SHDR logs and Modbus register images
 docker compose up -d                    # MTConnect agent, MQTT broker, Ignition gateway
-python -m idc.run_chain                 # replay, publish to the UNS and land Parquet files
-python -m idc.checks.acceptance         # landed files against the bronze inputs, row for row
+python -m idc.run_chain                 # replay, publish to the UNS, land Parquet files and run acceptance
+python -m idc.checks.acceptance         # rerun acceptance on its own, row for row against the bronze inputs
 cd ..
 
 # 4. The pipeline and every job task on the local exports
@@ -244,6 +244,7 @@ python -m pdm.reports.build
 
 # 6. Lint and tests
 ruff check . && pytest
+(cd connectivity && pytest)
 ```
 
 Ignition's gateway setup is described in [`connectivity/ignition/`](connectivity/ignition/).
