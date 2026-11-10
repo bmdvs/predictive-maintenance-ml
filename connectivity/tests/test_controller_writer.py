@@ -270,3 +270,90 @@ def test_unreadable_record_is_rejected_without_changing_state(tmp_path):
     s = landing.stats
     assert s.rejected == 2 and len(s.rejected_samples) == 2
     assert s.gaps == [] and len(landing.rows) == 2
+
+
+# --- start-up order: the bridge's starting position ---------------------------------------
+
+class _PublishInfo:
+    mid = 1
+
+    def wait_for_publish(self, timeout=None):
+        return None
+
+    def is_published(self):
+        return True
+
+
+class _Client:
+    def __init__(self):
+        self.published: list[tuple[str, dict]] = []
+
+    def publish(self, topic, payload, qos):
+        self.published.append((topic, json.loads(payload)))
+        return _PublishInfo()
+
+
+class _Buffer:
+    """Agent buffer: observations arrive in sequence; `received` counts those buffered."""
+
+    def __init__(self, obs: list[br.Observation]):
+        self.obs, self.received = obs, 0
+
+    def get(self, endpoint, **params):
+        arrived = self.obs[:self.received]
+        nxt = arrived[-1].sequence + 1 if arrived else self.obs[0].sequence
+        head = {"instanceId": 7, "firstSequence": self.obs[0].sequence,
+                "lastSequence": nxt - 1, "nextSequence": nxt, "bufferSize": 1 << 20}
+        if endpoint == "current":
+            return head, []
+        return head, [o for o in arrived if o.sequence >= params["from"]]
+
+
+def _bridged(frame: pd.DataFrame, tmp_path, buffered_before_start: int,
+             monkeypatch) -> pd.DataFrame:
+    """Replay `frame` through the bridge's own prime and poll, with the adapter's first
+    `buffered_before_start` observations already in the agent when the bridge starts."""
+    monkeypatch.setattr(br, "parse_sample", lambda response: response)
+    buffer = _Buffer(_agent([line for _, line in sa.shdr_lines(frame)]))
+    b = object.__new__(br.Bridge)
+    b.config = {"mqtt": {"topic_root": "shop/main", "qos": 1,
+                         "controller_topic": "{root}/machining/{cell}/{machine_id}/controller",
+                         "status_topic": "{root}/machining/{cell}/{machine_id}/controller/status"}}
+    b.cells, b.count, b.qos = {"HMC-01": "cell-hmc"}, 1000, 1
+    b.stats, b.pending, b.device_filter = br.BridgeStats(), {}, None
+    b.bookmark = b.instance_id = None
+    b.client = _Client()
+    b._get = buffer.get
+    buffer.received = buffered_before_start
+    b.prime()
+    buffer.received = len(buffer.obs)
+    while b.poll_once():
+        pass
+    b.poll_once()
+    land = _landing(tmp_path)
+    for topic, body in b.client.published:
+        land.handle(topic, body)
+    (path,) = land.write_all()
+    return pd.read_parquet(path)
+
+
+def _six_seconds() -> pd.DataFrame:
+    frame = _hz1([f"2026-04-01 11:00:0{i}" for i in range(6)])
+    frame["spindle_load_pct"] = [4.8, 4.9, 5.0, 5.1, 5.2, 5.3]
+    return frame
+
+
+def test_bridge_started_before_the_adapter_lands_every_row(tmp_path, monkeypatch):
+    frame = _six_seconds()
+    landed = _bridged(frame, tmp_path, buffered_before_start=0, monkeypatch=monkeypatch)
+    assert_frame_equal(frame, landed, check_exact=True)
+
+
+def test_adapter_started_before_its_bridge_loses_its_first_rows(tmp_path, monkeypatch):
+    frame = _six_seconds()
+    obs = _agent([line for _, line in sa.shdr_lines(frame)])
+    first_two = sum(1 for o in obs if pd.Timestamp(o.timestamp) < frame["ts_utc"][2])
+    landed = _bridged(frame, tmp_path, buffered_before_start=first_two,
+                      monkeypatch=monkeypatch)
+    missing = frame.loc[~frame["ts_utc"].isin(landed["ts_utc"]), "ts_utc"]
+    assert missing.tolist() == frame["ts_utc"][:2].tolist()

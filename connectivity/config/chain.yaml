@@ -22,6 +22,10 @@ mtconnect:
   sample_count: 5000
   # Wait between polls when the buffer has no new observations, in seconds.
   idle_poll_seconds: 0.5
+  # Longest interval between bridge position lines in the log, in seconds, busy or idle.
+  position_log_seconds: 10
+  # Seconds the orchestrator waits for every bridge to read its starting position.
+  bridge_ready_timeout_seconds: 60
 
 mqtt:
   host: localhost

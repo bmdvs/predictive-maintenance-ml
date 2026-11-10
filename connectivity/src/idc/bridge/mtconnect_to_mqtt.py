@@ -310,6 +310,7 @@ class Bridge:
         self.agent = config["mtconnect"]["agent_url"].rstrip("/")
         self.count = int(config["mtconnect"].get("sample_count", 5000))
         self.idle = float(config["mtconnect"].get("idle_poll_seconds", 0.5))
+        self.position_log_seconds = float(config["mtconnect"].get("position_log_seconds", 10))
         self.qos = int(config["mqtt"].get("qos", 1))
         self.stats = BridgeStats()
         self.bookmark: int | None = None
@@ -334,7 +335,7 @@ class Bridge:
         self.instance_id = head["instanceId"]
         self.bookmark = head["nextSequence"]
         self.stats.instance_id = head["instanceId"]
-        log.info("agent instanceId=%d nextSequence=%d bufferSize=%d",
+        log.info("starting position: agent instanceId=%d nextSequence=%d bufferSize=%d",
                  head["instanceId"], head["nextSequence"], head["bufferSize"])
 
     def poll_once(self) -> int:
@@ -405,6 +406,7 @@ class Bridge:
         Raises SequenceGap or AgentRestarted when continuity cannot be guaranteed.
         """
         self.prime()
+        logged = time.monotonic()
         try:
             while True:
                 n = self.poll_once()
@@ -412,10 +414,14 @@ class Bridge:
                     break
                 if n == 0:
                     time.sleep(self.idle)
-                elif self.stats.polls % 20 == 0:
+                # Position line every 20 busy polls, and at least every position_log_seconds
+                # while idle, so the bookmark in the log stays current for lag reporting.
+                if (n and self.stats.polls % 20 == 0) or \
+                        time.monotonic() - logged >= self.position_log_seconds:
                     log.info("polls=%d observations=%d messages=%d bookmark=%d",
                              self.stats.polls, self.stats.observations, self.stats.messages,
                              self.bookmark)
+                    logged = time.monotonic()
         finally:
             try:
                 self.flush()

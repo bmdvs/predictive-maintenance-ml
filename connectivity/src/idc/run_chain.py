@@ -5,7 +5,9 @@ broker, lands them in the bronze layout and checks the landed files against the 
 
 - HMC path: one MTConnect bridge and one controller writer per machine group
   (``--groups``) run from start to finish; each machine replays its months in order from its
-  SHDR logs (``shdr_adapter --from-log``) with up to ``--hmc-parallel`` machines at once. If a
+  SHDR logs (``shdr_adapter --from-log``) with up to ``--hmc-parallel`` machines at once. No
+  adapter starts until every bridge has logged the starting position it read from the agent,
+  and the run fails if a bridge does not confirm within ``bridge_ready_timeout_seconds``. If a
   bridge stops on a sequence gap or agent restart, it is restarted and every machine-month of
   its group in flight is rerun once at half speed.
   After the replay each landed hz1 file is compared with its export; a failing machine-month
@@ -51,6 +53,8 @@ from idc.replay.build_native import read_register_image
 from idc.replay.register_map import RING_SLOTS
 
 log = logging.getLogger("idc.run_chain")
+# The line a bridge logs once it has read its starting position from the agent.
+BRIDGE_READY = re.compile(rb"starting position: agent instanceId=\d+ nextSequence=\d+")
 PY = sys.executable
 CREATE_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -76,6 +80,7 @@ class ChainRun:
             "stamp": self.stamp, "started_utc": now_iso(), "args": vars(args),
             "status": "running", "hmc": {"machine_months": {}, "bridge_restarts": [],
                                          "writer_restarts": [], "sequence_gap_reruns": [],
+                                         "verification_mismatches": [],
                                          "unconfirmed_reruns": [], "verify_reruns": []},
             "compressor": {"chunks": [], "trial_resets": [], "server_restarts": [],
                            "gap_reruns": [], "path": "ignition-sparkplug"},
@@ -86,9 +91,10 @@ class ChainRun:
     # Process helpers -----------------------------------------------------------------------
 
     def spawn(self, name: str, argv: list[str]) -> subprocess.Popen:
+        """Start a chain component with the run's configuration; output goes to its log."""
         out = open(self.dir / f"{name}.log", "ab")
-        proc = subprocess.Popen([PY, *argv], stdout=out, stderr=subprocess.STDOUT,
-                                creationflags=CREATE_FLAGS)
+        proc = subprocess.Popen([PY, *argv, "--config", str(self.args.config)], stdout=out,
+                                stderr=subprocess.STDOUT, creationflags=CREATE_FLAGS)
         with self.lock:
             self.procs[name] = proc
         return proc
@@ -125,16 +131,17 @@ def cutoff_iso(seconds: float) -> str:
 # Preflight -----------------------------------------------------------------------------------
 
 
-def preflight(config: dict) -> dict:
-    """Confirm the agent, broker and gateway are up; returns their status."""
+def preflight(config: dict, gateway: bool = True) -> dict:
+    """Confirm the agent and broker, and the gateway when it is used, are up; returns status."""
     status = {}
     agent = requests.get(config["mtconnect"]["agent_url"] + "/probe", timeout=10)
     status["agent"] = agent.status_code
     with socket.create_connection((config["mqtt"]["host"], int(config["mqtt"]["port"])), 5):
         status["broker"] = "reachable"
-    ping = requests.get(config["ignition"]["gateway_url"] + "/StatusPing", timeout=10).json()
-    status["ignition"] = ping.get("state")
-    if agent.status_code != 200 or status["ignition"] != "RUNNING":
+    if gateway:
+        ping = requests.get(config["ignition"]["gateway_url"] + "/StatusPing", timeout=10)
+        status["ignition"] = ping.json().get("state")
+    if agent.status_code != 200 or status.get("ignition", "RUNNING") != "RUNNING":
         raise RunFailed(f"preflight failed: {status}")
     return status
 
@@ -144,6 +151,18 @@ def agent_sequence(config: dict) -> dict:
     text = requests.get(config["mtconnect"]["agent_url"] + "/current", timeout=10).text
     header = next(el for el in ET.fromstring(text).iter() if el.tag.endswith("Header"))
     return {k: int(header.attrib[k]) for k in ("bufferSize", "firstSequence", "nextSequence")}
+
+
+def mismatch_detail(export_path: Path, landed_path: Path, rel: Path) -> dict:
+    """Row counts and the first and last export timestamps missing from the landed file."""
+    expected = pd.read_parquet(export_path, columns=["ts_utc"])["ts_utc"]
+    landed = pd.read_parquet(landed_path, columns=["ts_utc"])["ts_utc"]
+    missing = expected[~expected.isin(landed)].sort_values()
+    return {"file": rel.as_posix(), "rows_expected": len(expected), "rows_landed": len(landed),
+            "missing": len(missing),
+            "first_missing": missing.iloc[0].isoformat() if len(missing) else None,
+            "last_missing": missing.iloc[-1].isoformat() if len(missing) else None,
+            "unexpected": int((~landed.isin(expected)).sum())}
 
 
 def last_match(path: Path, pattern: str) -> re.Match | None:
@@ -176,6 +195,7 @@ class HmcPath:
         # loses its unflushed rows, so these are rerun.
         self.since_writer_start: list[set[tuple[str, str]]] = [set() for _ in self.groups]
         self.writers_restarting = False
+        self.bridge_starts: dict[int, tuple[subprocess.Popen, Path, int]] = {}
         self.lock = threading.Lock()
         self.failed: str | None = None
 
@@ -210,14 +230,45 @@ class HmcPath:
             self.start_writer(i, clean)
 
     def start_services(self) -> None:
+        """Start the writers, then the bridges, and return once every bridge has read its
+        starting position from the agent. No adapter starts before this returns: data the
+        agent buffers before a bridge reads its starting position is never published."""
         self.start_writers(clean=True)
         for i in range(len(self.groups)):
             self.start_bridge(i)
+        self.wait_for_bridges()
 
     def start_bridge(self, i: int) -> None:
         self.bridge_epoch += 1
-        self.s.spawn(f"bridge_{i}", ["-m", "idc.bridge.mtconnect_to_mqtt", "--devices",
-                                     ",".join(self.groups[i]), "--client-id", f"idc-bridge-{i}"])
+        log_path = self.s.dir / f"bridge_{i}.log"
+        offset = log_path.stat().st_size if log_path.exists() else 0
+        proc = self.s.spawn(f"bridge_{i}", ["-m", "idc.bridge.mtconnect_to_mqtt", "--devices",
+                                            ",".join(self.groups[i]), "--client-id",
+                                            f"idc-bridge-{i}"])
+        self.bridge_starts[i] = (proc, log_path, offset)
+
+    def wait_for_bridges(self) -> None:
+        """Wait for each bridge's starting-position line; raise RunFailed on exit or timeout."""
+        timeout = float(self.s.config["mtconnect"].get("bridge_ready_timeout_seconds", 60))
+        deadline = time.monotonic() + timeout
+        waiting = set(range(len(self.groups)))
+        while waiting:
+            for i in sorted(waiting):
+                proc, log_path, offset = self.bridge_starts[i]
+                if proc.poll() is not None:
+                    raise RunFailed(f"bridge {i} exited before reading its starting position "
+                                    f"(exit {proc.returncode}); no adapter was started")
+                if log_path.exists():
+                    with open(log_path, "rb") as f:
+                        f.seek(offset)
+                        line = BRIDGE_READY.search(f.read())
+                    if line:
+                        log.info("bridge %d confirmed its %s", i, line.group(0).decode())
+                        waiting.discard(i)
+            if waiting and time.monotonic() > deadline:
+                raise RunFailed(f"bridge(s) {sorted(waiting)} did not read a starting position "
+                                f"from the agent within {timeout:.0f} s; no adapter was started")
+            time.sleep(0.2)
 
     def writer_check(self) -> None:
         """Restart a writer that exited and queue the machine-months it may have lost."""
@@ -346,7 +397,12 @@ class HmcPath:
                                           "utc": now_iso()})
                 self.replay(machine, month, self.speed / 2, "rerun")
         self.drain()
+        if self.s.args.verify == "off":
+            self.done.set()
+            return
         failed = self.verify()
+        if self.s.args.verify == "report":
+            failed = []
         for machine, month in failed:
             if self.s.stopping():
                 return
@@ -357,7 +413,7 @@ class HmcPath:
             self.drain()
         self.done.set()
 
-    def drain(self, quiet_seconds: float = 30.0) -> None:
+    def drain(self, quiet_seconds: float = 30.0, poll_seconds: float = 5.0) -> None:
         """Wait until the bridge has published everything and the writers are idle."""
         last = None
         stable_since = time.monotonic()
@@ -365,15 +421,17 @@ class HmcPath:
             m = last_match(self.s.dir / f"{name}.log", pattern)
             return m.group(0) if m else ""
 
+        # Bridges log their position while idle and the agent's sequence keeps advancing, so
+        # quiet is judged on the messages each bridge has published, not on its bookmark.
         while not self.s.stopping():
             current = tuple(mark(f"controller_writer_{i}", r"messages=\d+") +
-                            mark(f"bridge_{i}", r"bookmark=\d+")
+                            mark(f"bridge_{i}", r"messages=\d+")
                             for i in range(len(self.groups)))
             if current != last:
                 last, stable_since = current, time.monotonic()
             elif time.monotonic() - stable_since > quiet_seconds:
                 return
-            time.sleep(5)
+            time.sleep(poll_seconds)
 
     def restart_writers(self) -> None:
         """Stop the controller writers (they flush) and start them again."""
@@ -399,10 +457,23 @@ class HmcPath:
         for machine in self.machines:
             for month in self.months:
                 rel = Path("controller") / "hz1" / f"month={month}" / f"{machine}.parquet"
-                ok = (landing / rel).exists() and \
-                    compare_files("ctrl_hz1", export / rel, landing / rel).ok
-                if not ok:
-                    failed.append((machine, month))
+                if not (landing / rel).exists():
+                    detail = {"file": rel.as_posix(), "landed": False}
+                    log.warning("hz1 mismatch %s: no landed file", rel.as_posix())
+                else:
+                    result = compare_files("ctrl_hz1", export / rel, landing / rel)
+                    if result.ok:
+                        continue
+                    detail = mismatch_detail(export / rel, landing / rel, rel)
+                    detail["comparison"] = result.detail[:500]
+                    log.warning("hz1 mismatch %s: expected %d rows, landed %d; %d missing "
+                                "(first %s, last %s); %d unexpected; %s", detail["file"],
+                                detail["rows_expected"], detail["rows_landed"],
+                                detail["missing"], detail["first_missing"],
+                                detail["last_missing"], detail["unexpected"],
+                                detail["comparison"])
+                failed.append((machine, month))
+                self.s.event("hmc", "verification_mismatches", {"utc": now_iso(), **detail})
         log.info("hz1 verification: %d of %d machine-months match",
                  len(self.machines) * len(self.months) - len(failed),
                  len(self.machines) * len(self.months))
@@ -663,13 +734,13 @@ def progress_loop(chain: ChainRun, hmc: HmcPath | None, cmp: CompressorPath | No
                 for i in range(len(hmc.groups)):
                     m = last_match(chain.dir / f"controller_writer_{i}.log", r"records=(\d+)")
                     records += int(m.group(1)) if m else 0
+                    # Each bridge logs its position at least every position_log_seconds, busy
+                    # or idle, so this is its lag behind the agent's next sequence.
                     b = last_match(chain.dir / f"bridge_{i}.log", r"bookmark=(\d+)")
-                    if b:
-                        lags.append(seq["nextSequence"] - int(b.group(1)))
-                lag = max(lags) if lags else None
+                    lags.append(seq["nextSequence"] - int(b.group(1)) if b else None)
                 parts += [f"hmc_done={done}", f"hmc_in_flight={sorted(hmc.in_flight)}",
                           f"writer_records={records}", f"agent_buffer={seq['bufferSize']}",
-                          f"bridge_lag_obs={lag}"]
+                          "bridge_lag_obs=[" + ",".join(str(x) for x in lags) + "]"]
             if cmp is not None:
                 p = cmp._progress()
                 parts += [f"cmp_last_minute={p['last_minute'] if p else None}",
@@ -704,6 +775,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="stop after this many seconds (throughput measurement)")
     parser.add_argument("--skip-finish", action="store_true",
                         help="do not run minute_writer and acceptance at the end")
+    parser.add_argument("--verify", choices=["rerun", "report", "off"], default="rerun",
+                        help="hz1 verification after the replay: rerun failing machine-months "
+                             "once at half speed, only report them, or skip verification")
     args = parser.parse_args(argv)
     config = load_config(args.config)
     chain = ChainRun(config, args)
@@ -730,7 +804,7 @@ def main(argv: list[str] | None = None) -> int:
             log.error("%s path failed: %s", name, exc)
 
     try:
-        chain.summary["preflight"] = preflight(config)
+        chain.summary["preflight"] = preflight(config, gateway=cmp is not None)
         threads = []
         if hmc is not None:
             threads.append(threading.Thread(target=guarded, args=("hmc", hmc.run)))
@@ -749,10 +823,12 @@ def main(argv: list[str] | None = None) -> int:
         if cmp is not None:
             chain.summary["compressor"]["finished_utc"] = now_iso()
         if not failures and not args.skip_finish and not chain.stopping():
-            minutes = subprocess.run([PY, "-m", "idc.landing.minute_writer"],
+            minutes = subprocess.run([PY, "-m", "idc.landing.minute_writer", "--config",
+                                      str(args.config)],
                                      capture_output=True, text=True, creationflags=CREATE_FLAGS)
             (chain.dir / "minute_writer.log").write_text(minutes.stdout + minutes.stderr)
-            accept = subprocess.run([PY, "-m", "idc.checks.acceptance"], capture_output=True,
+            accept = subprocess.run([PY, "-m", "idc.checks.acceptance", "--config",
+                                     str(args.config)], capture_output=True,
                                     text=True, creationflags=CREATE_FLAGS)
             (chain.dir / "acceptance.log").write_text(accept.stdout + accept.stderr)
             chain.summary["acceptance_exit"] = accept.returncode
