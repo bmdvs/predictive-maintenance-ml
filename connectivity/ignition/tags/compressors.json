@@ -1,0 +1,1885 @@
+{
+  "name": "",
+  "tagType": "Provider",
+  "tags": [
+    {
+      "name": "_types_",
+      "tagType": "Folder",
+      "tags": [
+        {
+          "name": "Compressor",
+          "tagType": "UdtType",
+          "parameters": {
+            "UnitId": {
+              "dataType": "Integer",
+              "value": 1
+            }
+          },
+          "tags": [
+            {
+              "name": "s00_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS1"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s00_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS2"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s00_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS3"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s00_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS4"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s00_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS5"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s00_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS6"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s00_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS7"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s00_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS8"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS9"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS10"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS11"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS12"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS13"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS14"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS15"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s01_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS16"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS17"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS18"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS19"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS20"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS21"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS22"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS23"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s02_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS24"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS25"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS26"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS27"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS28"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS29"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS30"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS31"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s03_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS32"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS33"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS34"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS35"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS36"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS37"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS38"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS39"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s04_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS40"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS41"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS42"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS43"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS44"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS45"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS46"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS47"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s05_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS48"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS49"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS50"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS51"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS52"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS53"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS54"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS55"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s06_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS56"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS57"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS58"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS59"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS60"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS61"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS62"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS63"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s07_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS64"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS65"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS66"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS67"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS68"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS69"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS70"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS71"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s08_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS72"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS73"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS74"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS75"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS76"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS77"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS78"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS79"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s09_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS80"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS81"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS82"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS83"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS84"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS85"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS86"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS87"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s10_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS88"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS89"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS90"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS91"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS92"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS93"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS94"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS95"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s11_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS96"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS97"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS98"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS99"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS100"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS101"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS102"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS103"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s12_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS104"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS105"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS106"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS107"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS108"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS109"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS110"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS111"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s13_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS112"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r0",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS113"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r1",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS114"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r2",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS115"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r3",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS116"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r4",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS117"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r5",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS118"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r6",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS119"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            },
+            {
+              "name": "s14_r7",
+              "tagType": "AtomicTag",
+              "valueSource": "opc",
+              "dataType": "Int4",
+              "opcServer": "Ignition OPC UA Server",
+              "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "ns=1;s=[compressor-replay]{UnitId}.HRUS120"
+              },
+              "tagGroup": "Fast",
+              "historyEnabled": false,
+              "deadband": 0.0,
+              "scaleMode": "Off"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compressors",
+      "tagType": "Folder",
+      "tags": [
+        {
+          "name": "CMP-01",
+          "tagType": "UdtInstance",
+          "typeId": "Compressor",
+          "parameters": {
+            "UnitId": {
+              "dataType": "Integer",
+              "value": 1
+            }
+          }
+        },
+        {
+          "name": "CMP-02",
+          "tagType": "UdtInstance",
+          "typeId": "Compressor",
+          "parameters": {
+            "UnitId": {
+              "dataType": "Integer",
+              "value": 2
+            }
+          }
+        },
+        {
+          "name": "CMP-03",
+          "tagType": "UdtInstance",
+          "typeId": "Compressor",
+          "parameters": {
+            "UnitId": {
+              "dataType": "Integer",
+              "value": 3
+            }
+          }
+        },
+        {
+          "name": "CMP-04",
+          "tagType": "UdtInstance",
+          "typeId": "Compressor",
+          "parameters": {
+            "UnitId": {
+              "dataType": "Integer",
+              "value": 4
+            }
+          }
+        },
+        {
+          "name": "room",
+          "tagType": "UdtInstance",
+          "typeId": "Compressor",
+          "parameters": {
+            "UnitId": {
+              "dataType": "Integer",
+              "value": 5
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

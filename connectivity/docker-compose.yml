@@ -1,0 +1,53 @@
+# Containers for the connectivity chain: MTConnect agent, Mosquitto broker and Ignition gateway.
+# The SHDR replay adapters and the Modbus replay server run on the Windows host; containers
+# reach them at 192.168.65.254, Docker Desktop's IPv4 host alias.
+
+services:
+  mtconnect-agent:
+    image: mtconnect/agent:latest
+    container_name: idc-mtconnect-agent
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mtconnect:/mtconnect/config:ro
+      - mtconnect-log:/mtconnect/log
+    restart: unless-stopped
+
+  mosquitto:
+    image: eclipse-mosquitto:2.1.2-alpine
+    container_name: idc-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+  # Ignition gateway: reads the compressor controllers over its Modbus TCP driver and publishes
+  # their tags as Sparkplug B through the Cirrus Link MQTT Transmission module. Commissioning
+  # is seeded from the environment; admin credentials come from the gitignored .env.
+  ignition:
+    image: inductiveautomation/ignition:8.3.10
+    container_name: idc-ignition
+    command: ["-n", "idc-gateway"]
+    ports:
+      - "8088:8088"
+      - "8043:8043"
+      - "62541:62541"
+    environment:
+      ACCEPT_IGNITION_EULA: "Y"
+      IGNITION_EDITION: standard
+      GATEWAY_ADMIN_USERNAME: ${IGNITION_ADMIN_USER}
+      GATEWAY_ADMIN_PASSWORD: ${IGNITION_ADMIN_PASSWORD}
+      DISABLE_QUICKSTART: "true"
+      ACCEPT_MODULE_LICENSES: com.cirruslink.mqtt.transmission.gateway
+      ACCEPT_MODULE_CERTS: com.cirruslink.mqtt.transmission.gateway
+      TZ: UTC
+    volumes:
+      - ./ignition/data:/usr/local/bin/ignition/data
+      - ./ignition/modules/MQTT-Transmission-signed.modl:/usr/local/bin/ignition/user-lib/modules/MQTT-Transmission-signed.modl:ro
+    restart: unless-stopped
+
+volumes:
+  mtconnect-log:
+  mosquitto-data:

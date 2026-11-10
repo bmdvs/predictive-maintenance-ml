@@ -42,3 +42,13 @@ build/
 
 # Local MLflow tracking store
 mlflow.db
+
+# Connectivity chain: run outputs and reports, landed Parquet, native device files, Ignition gateway
+# data volume, the vendor module and machine-specific config. The 1 Hz window is under data/ above.
+connectivity/runs/
+connectivity/landing/
+connectivity/native/
+connectivity/**/*.parquet
+connectivity/ignition/data/
+*.modl
+connectivity/config/chain.local.yaml

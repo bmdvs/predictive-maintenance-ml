@@ -1,0 +1,207 @@
+# Paths, replay settings and acceptance targets for the connectivity chain.
+# Machine-specific overrides go in config/chain.local.yaml (gitignored) with the same keys.
+
+# Relative paths resolve from connectivity/, the parent of this config directory.
+paths:
+  # The repository's bronze exports, including the April to June 2026 1 Hz controller window.
+  export_root: ../data/bronze
+  # Where the landing writers put their output, in the same folder layout as export_root.
+  landing_root: ./landing
+  # Per-run reports (gap and integrity reports, comparison results).
+  run_reports: ./runs
+  # The repository's fleet register; the MTConnect device model is generated from it.
+  register: ../config/register.yaml
+  # Native device files the replay components serve (SHDR logs, Modbus register images).
+  native_root: ./native
+
+mtconnect:
+  agent_url: http://localhost:5000
+  # Replay speed multiple for the adapter (record seconds per wall second).
+  replay_speed: 60
+  # Observations requested per /sample call. The agent caps a response at the buffer size.
+  sample_count: 5000
+  # Wait between polls when the buffer has no new observations, in seconds.
+  idle_poll_seconds: 0.5
+
+mqtt:
+  host: localhost
+  port: 1883
+  # ISA-95 topic root: enterprise/site. Area, work center and work unit are appended per machine.
+  topic_root: shop/main
+  # Raw edge layer: one JSON message per machine per record second.
+  controller_topic: "{root}/machining/{cell}/{machine_id}/controller"
+  status_topic: "{root}/machining/{cell}/{machine_id}/controller/status"
+  qos: 1
+
+modbus:
+  # Modbus TCP port for the compressor replay server (502 requires administrator rights).
+  port: 5020
+  # Single-block mode: seconds each record minute is held before the next is loaded.
+  hold_seconds: 2.0
+  # Ring-buffer mode: record minutes written per tick, and seconds held after each tick.
+  ring_minutes_per_tick: 5
+  ring_hold_seconds: 0.5
+  # Modbus unit (slave) IDs. One device per compressor, one for the room/dryer controller.
+  unit_ids:
+    CMP-01: 1
+    CMP-02: 2
+    CMP-03: 3
+    CMP-04: 4
+    room: 5
+
+# Work center (cell) per machine class, for the ISA-95 path.
+cells:
+  hmc: cell-hmc
+  vmc: cell-vmc
+  lathe: cell-lathe
+  mill_turn: cell-millturn
+  grinder: cell-grind
+
+landing:
+  # The export files each controller row under the month of its plant-local date (shift days
+  # run past UTC midnight), so the controller writer partitions in the plant time zone.
+  controller_partition_timezone: America/Chicago
+
+source_run:
+  run_id: run09_20261030T090522Z_3eced8fb
+  config_hash: 3eced8fbea7265a08f89ab6079eec9859d3af0f74251a58037127f22c35c4309
+
+# Acceptance targets, relative to export_root. Each entry names the bronze table so the
+# comparator knows the key columns.
+acceptance:
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-01.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-01.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-02.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-02.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-03.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-03.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-04.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-04.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-05.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-05.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-06.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-06.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-07.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-07.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-04/HMC-08.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-04/HMC-08.parquet
+  - table: cmp_minute
+    path: compressor_ctrl/minute/month=2026-04/compressor_minute.parquet
+  - table: cmp_room
+    path: compressor_ctrl/room/month=2026-04/room.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-01.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-01.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-02.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-02.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-03.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-03.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-04.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-04.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-05.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-05.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-06.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-06.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-07.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-07.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-05/HMC-08.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-05/HMC-08.parquet
+  - table: cmp_minute
+    path: compressor_ctrl/minute/month=2026-05/compressor_minute.parquet
+  - table: cmp_room
+    path: compressor_ctrl/room/month=2026-05/room.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-01.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-01.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-02.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-02.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-03.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-03.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-04.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-04.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-05.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-05.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-06.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-06.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-07.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-07.parquet
+  - table: ctrl_hz1
+    path: controller/hz1/month=2026-06/HMC-08.parquet
+  - table: ctrl_minute
+    path: controller/minute_agg/month=2026-06/HMC-08.parquet
+  - table: cmp_minute
+    path: compressor_ctrl/minute/month=2026-06/compressor_minute.parquet
+  - table: cmp_room
+    path: compressor_ctrl/room/month=2026-06/room.parquet
+
+# Replay scope: the machines and months the chain replays and lands.
+replay:
+  hmcs: [HMC-01, HMC-02, HMC-03, HMC-04, HMC-05, HMC-06, HMC-07, HMC-08]
+  months: ["2026-04", "2026-05", "2026-06"]
+
+ignition:
+  gateway_url: http://localhost:8088
+  container: idc-ignition
+  # The gateway runs in trial mode; a restart begins a new two-hour trial period.
+  trial_restart_minutes: 90
+  opcua_url: opc.tcp://localhost:62541
+  sparkplug_group: shop
+  sparkplug_edge_node: main
+  modbus_device: compressor-replay
+  tag_folder: compressors
+  tag_group: Fast
+  tag_group_rate_ms: 100
+
+# Development slices: small windows for building each stage before the full acceptance runs.
+dev_slices:
+  controller:
+    machine_id: HMC-01
+    day: 2026-06-09
+  compressor:
+    compressor_id: CMP-01
+    start: 2026-06-01T11:00:00Z
+    hours: 4

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "industrial-data-connectivity"
+version = "0.1.0"
+description = "Plant-floor connectivity chain that lands CNC controller and compressor controller data in the bronze layout read by predictive-maintenance-ml."
+requires-python = ">=3.12"
+authors = [{ name = "Brian Davis" }]
+dependencies = [
+    "pandas>=2.1",
+    "pyarrow>=16",
+    "pyyaml>=6",
+    "paho-mqtt>=2.1",
+    "requests>=2.32",
+    "pymodbus>=3.16,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff==0.17.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
